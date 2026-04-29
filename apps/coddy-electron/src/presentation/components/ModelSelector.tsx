@@ -1,4 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type WheelEvent as ReactWheelEvent,
+} from 'react'
 import {
   MODEL_PROVIDER_CATALOG,
   getModelCatalogEntry,
@@ -21,6 +26,18 @@ export function ModelSelector({ model, onSelect }: Props) {
   const activeModel = getModelCatalogEntry(model)
   const activeLabel = `${model.provider}/${model.name}`
   const activeProviderLabel = activeProvider?.shortLabel ?? model.provider
+
+  const handleMenuWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    const menu = event.currentTarget
+    const maxScrollTop = menu.scrollHeight - menu.clientHeight
+
+    event.stopPropagation()
+    if (maxScrollTop <= 0) return
+
+    event.preventDefault()
+    const nextScrollTop = menu.scrollTop + getWheelDeltaPixels(event, menu)
+    menu.scrollTop = Math.max(0, Math.min(maxScrollTop, nextScrollTop))
+  }
 
   useEffect(() => {
     if (!isOpen) return
@@ -72,9 +89,9 @@ export function ModelSelector({ model, onSelect }: Props) {
       >
         <div
           data-testid="model-selector-menu"
-          className="model-selector-menu flex max-h-[min(620px,calc(100vh-96px))] min-w-[360px] max-w-[calc(100vw-32px)] flex-col gap-2 overflow-y-auto overscroll-contain rounded-lg border border-outline-variant/80 p-2 pr-3 shadow-[0_24px_56px_rgba(0,0,0,0.72)]"
+          className="model-selector-menu flex min-w-[360px] max-w-[calc(100vw-32px)] flex-col gap-2 rounded-lg border border-outline-variant/80 p-2 pr-3 shadow-[0_24px_56px_rgba(0,0,0,0.72)]"
           aria-label="Model provider catalog"
-          onWheel={(event) => event.stopPropagation()}
+          onWheelCapture={handleMenuWheel}
         >
           {MODEL_PROVIDER_CATALOG.map((provider) => (
             <ProviderGroup
@@ -91,6 +108,21 @@ export function ModelSelector({ model, onSelect }: Props) {
       </div>
     </div>
   )
+}
+
+function getWheelDeltaPixels(
+  event: ReactWheelEvent<HTMLDivElement>,
+  menu: HTMLDivElement,
+) {
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    return event.deltaY * 16
+  }
+
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    return event.deltaY * menu.clientHeight
+  }
+
+  return event.deltaY
 }
 
 function ProviderGroup({

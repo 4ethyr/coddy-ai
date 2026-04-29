@@ -61,4 +61,15 @@ describe('FloatingTerminal', () => {
       screen.getByRole('button', { name: 'Restore floating terminal' }),
     ).toBeInTheDocument()
   })
+
+  it('keeps header controls in a dedicated layer above terminal output', () => {
+    render(<FloatingTerminal />)
+
+    expect(screen.getByTestId('floating-terminal-header')).toHaveClass(
+      'floating-terminal-header',
+    )
+    expect(screen.getByTestId('floating-terminal-canvas')).toHaveClass(
+      'terminal-canvas',
+    )
+  })
 })

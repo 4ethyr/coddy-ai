@@ -101,7 +101,10 @@ export function FloatingTerminal() {
       }`}
       style={terminalStyle}
     >
-      <header className="relative z-[120] flex w-full flex-shrink-0 items-center justify-between border-b border-primary/20 bg-slate-950/60 px-6 py-3 shadow-[0_4px_30px_rgba(0,0,0,0.15)] backdrop-blur-xl">
+      <header
+        data-testid="floating-terminal-header"
+        className="floating-terminal-header relative z-[120] flex w-full flex-shrink-0 items-center justify-between border-b border-primary/20 bg-slate-950/60 px-6 py-3 shadow-[0_4px_30px_rgba(0,0,0,0.15)] backdrop-blur-xl"
+      >
         <div className="flex items-center gap-3">
           <Icon
             name="terminal"
@@ -194,7 +197,10 @@ export function FloatingTerminal() {
         </div>
       </header>
 
-      <div className="terminal-canvas flex-1 overflow-y-auto px-8 py-7">
+      <div
+        data-testid="floating-terminal-canvas"
+        className="terminal-canvas flex-1 overflow-y-auto px-8 py-7"
+      >
         <div className="flex flex-col gap-7">
           <SystemLine text="system.initialize(context='coddy_floating');" />
           <SystemLine text={`daemon.status=${connecting ? 'connecting' : 'ready'}; model='${session.selected_model.name}';`} />
@@ -241,7 +247,7 @@ export function FloatingTerminal() {
         </div>
       </div>
 
-      <div className="flex flex-shrink-0 items-center gap-3 border-t border-primary/15 bg-surface-dim/70 px-8 py-4 backdrop-blur-md">
+      <div className="floating-terminal-input-row flex flex-shrink-0 items-center gap-3 border-t border-primary/15 bg-surface-dim/70 px-8 py-4 backdrop-blur-md">
         <div className="flex-1">
           <InputBar
             onSend={ask}

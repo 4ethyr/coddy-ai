@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ModelSelector } from '@/presentation/components/ModelSelector'
 
@@ -86,6 +86,32 @@ describe('ModelSelector', () => {
     for (const group of groups) {
       expect(group).toHaveClass('shrink-0')
     }
+  })
+
+  it('scrolls the provider catalog from wheel events inside the dropdown', async () => {
+    render(
+      <ModelSelector model={{ provider: 'ollama', name: 'gemma4-E2B' }} />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Active model ollama/gemma4-E2B' }),
+    )
+
+    const menu = screen.getByTestId('model-selector-menu')
+    Object.defineProperty(menu, 'clientHeight', {
+      configurable: true,
+      value: 120,
+    })
+    Object.defineProperty(menu, 'scrollHeight', {
+      configurable: true,
+      value: 520,
+    })
+
+    fireEvent.wheel(menu, { deltaY: 90 })
+    expect(menu.scrollTop).toBe(90)
+
+    fireEvent.wheel(menu, { deltaY: -200 })
+    expect(menu.scrollTop).toBe(0)
   })
 
   it('emits cloud provider selections without credential side effects', async () => {

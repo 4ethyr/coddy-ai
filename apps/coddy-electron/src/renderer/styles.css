@@ -99,10 +99,19 @@ body.window-resizing * {
   z-index: 1;
 }
 
+.floating-terminal-header {
+  z-index: 160;
+}
+
 .terminal-canvas {
+  z-index: 10;
   background:
     linear-gradient(90deg, rgba(0, 219, 233, 0.03), transparent 22%),
     radial-gradient(circle at 78% 44%, rgba(182, 0, 248, 0.08), transparent 36%);
+}
+
+.floating-terminal-input-row {
+  z-index: 20;
 }
 
 .terminal-input {
@@ -113,8 +122,13 @@ body.window-resizing * {
 
 .model-selector-menu {
   isolation: isolate;
+  min-height: 0;
+  max-height: min(620px, calc(100vh - 96px));
+  overflow-y: scroll;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+  touch-action: pan-y;
+  pointer-events: auto;
   background:
     linear-gradient(135deg, rgba(0, 219, 233, 0.06), transparent 42%, rgba(182, 0, 248, 0.1)),
     rgba(18, 18, 18, 0.985);
