@@ -33,6 +33,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Repl,
     Ask {
         #[arg(required = true, trailing_var_arg = true)]
         text: Vec<String>,
@@ -234,6 +235,17 @@ async fn main() -> Result<()> {
         .init();
 
     match cli.command {
+        Some(Command::Repl) => {
+            let result = send_repl_command(
+                &config,
+                ReplCommand::OpenUi {
+                    mode: ReplMode::FloatingTerminal,
+                },
+                cli.speak,
+            )
+            .await?;
+            print_job_result(result)
+        }
         Some(Command::Ask { text }) => {
             let text = join_command_text(text);
             let result = send_repl_command(
@@ -360,7 +372,7 @@ async fn main() -> Result<()> {
             command: DoctorCommand::Shortcuts,
         }) => run_shortcuts_doctor(&config).await,
         None => {
-            println!("Use `coddy ask`, `coddy voice`, `coddy screen explain`, `coddy model select`, `coddy ui open`, `coddy stop-speaking`, `coddy stop-active-run`, `coddy session snapshot`, `coddy shortcuts test` ou `coddy doctor shortcuts`.");
+            println!("Use `coddy repl`, `coddy ask`, `coddy voice`, `coddy screen explain`, `coddy model select`, `coddy ui open`, `coddy stop-speaking`, `coddy stop-active-run`, `coddy session snapshot`, `coddy shortcuts test` ou `coddy doctor shortcuts`.");
             Ok(())
         }
     }
@@ -688,6 +700,13 @@ mod tests {
             }) => assert!(matches!(mode, CliReplMode::DesktopApp)),
             _ => panic!("unexpected command"),
         }
+    }
+
+    #[test]
+    fn parses_repl_command() {
+        let cli = Cli::try_parse_from(["coddy", "repl"]).expect("parse repl");
+
+        assert!(matches!(cli.command, Some(Command::Repl)));
     }
 
     #[test]

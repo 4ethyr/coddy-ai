@@ -592,19 +592,49 @@ Escopo entregue:
 
 ## Proximo bloco recomendado
 
-Adicionar fixtures versionadas e serializacao estavel dos evals.
+Implementado: fundacao do REPL shell desacoplada da UI.
 
 Motivo:
 
-- o eval runner ja cobre read-only, shell e edit approval/reject em testes Rust;
-- fixtures versionadas deixam o baseline mais visivel e facilitam regressao no
-  futuro CI;
-- serializacao estavel permite rodar os mesmos casos por CLI, CI e UI sem
-  recompilar testes.
+- a Fase 1 dos `.agent` pede comandos basicos antes de expandir o agent loop;
+- o parser precisa viver no core Rust para ser reaproveitado por CLI, Electron e
+  uma futura UI terminal sem misturar regras de dominio com renderizacao;
+- o alias `coddy repl` deve abrir o terminal flutuante atual sem criar
+  dependencia com VisionClip.
+
+Escopo entregue:
+
+- `ReplShellInput`, `ReplShellAction`, `ReplShellContext` e
+  `ReplShellResponse`;
+- parser puro para texto livre, entrada vazia e comandos `/help`, `/?`,
+  `/status`, `/config`, `/tools`, `/exit` e `/quit`;
+- handler que converte texto livre em `ReplCommand::Ask` com
+  `ContextPolicy::WorkspaceOnly`;
+- respostas deterministicas para status, config, tools, help e comando
+  desconhecido;
+- `coddy repl` como alias para `ReplCommand::OpenUi` em
+  `ReplMode::FloatingTerminal`;
+- testes focados cobrindo parser, handler, comandos, ordenacao de tools,
+  entrada vazia e parsing CLI.
+
+## Proximo bloco recomendado
+
+Conectar o shell puro a um loop interativo local.
+
+Motivo:
+
+- os comandos slash ja estao no dominio, mas ainda nao existe loop de
+  input/output com historico;
+- o proximo passo da Fase 1 e exercitar `/help`, `/status`, `/tools`, `/config`
+  e `/exit` em uma sessao real;
+- o loop deve continuar em Rust e enviar apenas comandos/eventos estruturados
+  para preservar o desacoplamento da UI glassmorphism em TypeScript.
 
 Escopo recomendado:
 
-- adicionar schema declarativo para `EvalCase`;
-- criar fixtures em `docs/repl/evals` ou `crates/coddy-agent/testdata`;
-- adicionar runner CLI depois que o formato estiver estavel;
-- manter execucao local/offline e sem provider real.
+- adicionar um adaptador de terminal fino em `apps/coddy` ou crate dedicado;
+- carregar `ReplShellContext` a partir de snapshot de sessao, config e registry
+  de tools;
+- renderizar `ReplShellResponse` sem regras de dominio na UI;
+- suportar historico local e interrupcao limpa;
+- manter fixtures versionadas de evals como bloco posterior.

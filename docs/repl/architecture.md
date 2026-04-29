@@ -109,7 +109,7 @@ Comandos propostos:
 
 ```bash
 coddy                         # abre modo desktop app ou última UI usada
-coddy repl                    # abre terminal flutuante
+coddy repl                    # abre terminal flutuante (alias implementado para OpenUi/FloatingTerminal)
 coddy ask "explique esse erro"
 coddy screen explain          # captura tela e explica
 coddy screen code             # captura tela e analisa código visível
@@ -136,6 +136,7 @@ Responsabilidades:
 - Tipos de mensagens.
 - Políticas de assessment.
 - Contratos de intents do REPL.
+- Parser/handler puro de shell REPL para `/help`, `/status`, `/tools`, `/config`, `/exit` e texto livre.
 - Builders de contexto.
 - Serialização/validação.
 
@@ -147,6 +148,7 @@ crates/coddy-core/src/
   session.rs
   event.rs
   command.rs
+  repl_shell.rs
   assessment.rs
   context.rs
   policy.rs

@@ -6,6 +6,7 @@ pub mod event_broker;
 pub mod event_log;
 pub mod permission;
 pub mod policy;
+pub mod repl_shell;
 pub mod search;
 pub mod session;
 pub mod shortcut;
@@ -26,6 +27,10 @@ pub use permission::{
     PermissionRequest, PermissionResponse, PermissionRule, PermissionRuleset,
 };
 pub use policy::{evaluate_assistance, evaluate_shortcut_conflict};
+pub use repl_shell::{
+    handle_repl_shell_input, parse_repl_shell_input, ReplShellAction, ReplShellContext,
+    ReplShellInput, ReplShellResponse,
+};
 pub use search::{
     SearchExtractionPolicy, SearchProvider, SearchResultContext, SearchResultItem, SourceQuality,
 };
