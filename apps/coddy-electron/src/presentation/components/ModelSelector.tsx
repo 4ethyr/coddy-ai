@@ -72,8 +72,9 @@ export function ModelSelector({ model, onSelect }: Props) {
       >
         <div
           data-testid="model-selector-menu"
-          className="model-selector-menu flex max-h-[min(620px,calc(100vh-96px))] min-w-[360px] max-w-[calc(100vw-32px)] flex-col gap-2 overflow-y-auto rounded-lg border border-outline-variant/80 p-2 shadow-[0_24px_56px_rgba(0,0,0,0.72)]"
+          className="model-selector-menu flex max-h-[min(620px,calc(100vh-96px))] min-w-[360px] max-w-[calc(100vw-32px)] flex-col gap-2 overflow-y-auto overscroll-contain rounded-lg border border-outline-variant/80 p-2 pr-3 shadow-[0_24px_56px_rgba(0,0,0,0.72)]"
           aria-label="Model provider catalog"
+          onWheel={(event) => event.stopPropagation()}
         >
           {MODEL_PROVIDER_CATALOG.map((provider) => (
             <ProviderGroup
@@ -102,7 +103,10 @@ function ProviderGroup({
   onSelect: (model: ModelRef) => void
 }) {
   return (
-    <section className="rounded-md border border-white/[0.08] bg-surface-container-low/90 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+    <section
+      data-testid="model-provider-group"
+      className="shrink-0 rounded-md border border-white/[0.08] bg-surface-container-low/90 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]"
+    >
       <div className="mb-2 flex items-start justify-between gap-3 px-1">
         <div className="min-w-0">
           <h3 className="font-display text-xs font-medium uppercase tracking-[0.16em] text-on-surface">

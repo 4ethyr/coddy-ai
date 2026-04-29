@@ -72,6 +72,22 @@ describe('ModelSelector', () => {
     )
   })
 
+  it('keeps provider groups from shrinking so the menu can scroll', async () => {
+    render(
+      <ModelSelector model={{ provider: 'ollama', name: 'gemma4-E2B' }} />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Active model ollama/gemma4-E2B' }),
+    )
+
+    const groups = screen.getAllByTestId('model-provider-group')
+    expect(groups.length).toBeGreaterThan(1)
+    for (const group of groups) {
+      expect(group).toHaveClass('shrink-0')
+    }
+  })
+
   it('emits cloud provider selections without credential side effects', async () => {
     const onSelect = vi.fn()
     render(
