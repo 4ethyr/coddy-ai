@@ -24,6 +24,14 @@ describe('ModelSelector', () => {
       />,
     )
 
+    const trigger = screen.getByRole('button', {
+      name: 'Active model ollama/gemma4-E2B',
+    })
+    expect(trigger).toHaveAttribute('aria-expanded', 'false')
+
+    await userEvent.click(trigger)
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+
     await userEvent.click(
       screen.getByRole('button', { name: /qwen2.5:0.5b/ }),
     )
@@ -31,6 +39,45 @@ describe('ModelSelector', () => {
     expect(onSelect).toHaveBeenCalledWith({
       provider: 'ollama',
       name: 'qwen2.5:0.5b',
+    })
+  })
+
+  it('renders first-class API provider groups', async () => {
+    render(
+      <ModelSelector model={{ provider: 'ollama', name: 'gemma4-E2B' }} />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Active model ollama/gemma4-E2B' }),
+    )
+
+    expect(screen.getByText('Local Ollama')).toBeInTheDocument()
+    expect(screen.getByText('OpenAI')).toBeInTheDocument()
+    expect(screen.getByText('OpenRouter')).toBeInTheDocument()
+    expect(screen.getByText('Google Vertex')).toBeInTheDocument()
+    expect(screen.getByText('Azure OpenAI')).toBeInTheDocument()
+  })
+
+  it('emits cloud provider selections without credential side effects', async () => {
+    const onSelect = vi.fn()
+    render(
+      <ModelSelector
+        model={{ provider: 'ollama', name: 'gemma4-E2B' }}
+        onSelect={onSelect}
+      />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Active model ollama/gemma4-E2B' }),
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Select GPT-4.1 via OpenAI' }),
+    )
+
+    expect(onSelect).toHaveBeenCalledWith({
+      provider: 'openai',
+      name: 'gpt-4.1',
     })
   })
 })

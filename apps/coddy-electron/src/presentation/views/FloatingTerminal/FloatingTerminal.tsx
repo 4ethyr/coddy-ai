@@ -38,13 +38,14 @@ export function FloatingTerminal() {
     useState<ScreenAssistMode | null>(null)
   const [confirmationDismissed, setConfirmationDismissed] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
     () => loadSettings().floatingAppearance,
   )
 
   // Auto-scroll to bottom on new messages or streaming tokens
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' })
   }, [session.messages.length, session.streaming_text])
 
   useEffect(() => {
@@ -60,6 +61,7 @@ export function FloatingTerminal() {
   }, [])
 
   const handleMaximize = useCallback(() => {
+    setExpanded((value) => !value)
     if (typeof window !== 'undefined' && window.replApi) {
       void window.replApi.invoke('window:maximize')
     }
@@ -89,10 +91,14 @@ export function FloatingTerminal() {
 
   return (
     <main
-      className="floating-terminal-shell aurora-gradient flex h-[min(800px,calc(100vh-48px))] w-[min(1120px,calc(100vw-48px))] flex-col overflow-hidden rounded-xl border border-primary/20"
+      className={`floating-terminal-shell aurora-gradient flex flex-col overflow-hidden border border-primary/20 transition-[width,height,border-radius] duration-200 ease-out ${
+        expanded
+          ? 'h-screen w-screen rounded-none'
+          : 'h-[min(800px,calc(100vh-48px))] w-[min(1120px,calc(100vw-48px))] rounded-xl'
+      }`}
       style={terminalStyle}
     >
-      <header className="flex w-full flex-shrink-0 items-center justify-between border-b border-primary/20 bg-slate-950/60 px-6 py-3 shadow-[0_4px_30px_rgba(0,0,0,0.15)] backdrop-blur-xl">
+      <header className="relative z-[120] flex w-full flex-shrink-0 items-center justify-between border-b border-primary/20 bg-slate-950/60 px-6 py-3 shadow-[0_4px_30px_rgba(0,0,0,0.15)] backdrop-blur-xl">
         <div className="flex items-center gap-3">
           <Icon
             name="terminal"
@@ -167,8 +173,8 @@ export function FloatingTerminal() {
               type="button"
               onClick={handleMaximize}
               className="flex h-5 w-5 items-center justify-center rounded-full bg-surface-container-high/70 text-on-surface-variant/70 transition-colors hover:text-on-surface"
-              title="Maximize"
-              aria-label="Maximize"
+              title={expanded ? 'Restore' : 'Maximize'}
+              aria-label={expanded ? 'Restore floating terminal' : 'Maximize'}
             >
               <Icon name="maximize" className="h-3.5 w-3.5" />
             </button>

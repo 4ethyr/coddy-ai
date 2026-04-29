@@ -18,6 +18,19 @@ export type {
 } from './events'
 
 export type {
+  ModelCatalogEntry,
+  ModelProviderId,
+  ModelProviderOption,
+  ProviderConnectionKind,
+} from './models'
+
+export {
+  MODEL_PROVIDER_CATALOG,
+  getModelCatalogEntry,
+  getModelProvider,
+} from './models'
+
+export type {
   SessionStatus,
   AssessmentPolicy as SessionAssessmentPolicy,
   VoiceState,
