@@ -366,9 +366,13 @@ impl CoddyRuntime {
         };
 
         match self.chat_client.complete(request) {
-            Ok(response) => {
-                self.assistant_response_from_model(session_id, run_id, user_text, response)
-            }
+            Ok(response) => self.assistant_response_from_model(
+                session_id,
+                run_id,
+                selected_model,
+                user_text,
+                response,
+            ),
             Err(error) => AssistantResponse::from_text(model_error_message(
                 &error,
                 selected_model,
@@ -381,6 +385,7 @@ impl CoddyRuntime {
         &self,
         session_id: Uuid,
         run_id: Uuid,
+        selected_model: &ModelRef,
         goal: String,
         response: ChatResponse,
     ) -> AssistantResponse {
@@ -388,13 +393,14 @@ impl CoddyRuntime {
             return AssistantResponse::from_chat_response(response);
         }
 
-        self.execute_model_tool_calls(session_id, run_id, goal, response)
+        self.execute_model_tool_calls(session_id, run_id, selected_model, goal, response)
     }
 
     fn execute_model_tool_calls(
         &self,
         session_id: Uuid,
         run_id: Uuid,
+        selected_model: &ModelRef,
         goal: String,
         response: ChatResponse,
     ) -> AssistantResponse {
@@ -402,9 +408,10 @@ impl CoddyRuntime {
             return AssistantResponse::from_chat_response(response);
         };
 
-        let mut state = agent_runtime.start_run(session_id, goal);
+        let mut state = agent_runtime.start_run(session_id, goal.clone());
         state.run_id = run_id;
         let mut observations = Vec::new();
+        let mut executed_tool_calls = 0_usize;
 
         for tool_call in response.tool_calls.iter().take(3) {
             let tool_name = match ToolName::new(&tool_call.name) {
@@ -447,6 +454,7 @@ impl CoddyRuntime {
                 unix_ms_now(),
             );
             let outcome = agent_runtime.execute_tool_call(&mut state, &call);
+            executed_tool_calls += 1;
             for event in outcome.events {
                 self.publish_event_with_run_now(event, run_id);
             }
@@ -499,7 +507,43 @@ impl CoddyRuntime {
         text.push_str("Tool observations:\n");
         text.push_str(&observations.join("\n"));
 
-        AssistantResponse::from_text(text)
+        let observation_response = AssistantResponse::from_text(text);
+        if executed_tool_calls == 0 {
+            return observation_response;
+        }
+
+        self.complete_after_tool_observations(
+            selected_model,
+            &goal,
+            &response.text,
+            &observation_response.text,
+        )
+        .unwrap_or(observation_response)
+    }
+
+    fn complete_after_tool_observations(
+        &self,
+        selected_model: &ModelRef,
+        user_text: &str,
+        assistant_text: &str,
+        observation_text: &str,
+    ) -> Option<AssistantResponse> {
+        let mut messages = vec![
+            ChatMessage::system(
+                "You are Coddy, a secure coding agent. Use tool observations to produce the final answer.",
+            ),
+            ChatMessage::user(user_text.to_string()),
+        ];
+        if !assistant_text.trim().is_empty() {
+            messages.push(ChatMessage::assistant(assistant_text.to_string()));
+        }
+        messages.push(ChatMessage::tool(observation_text.to_string()));
+
+        let request = ChatRequest::new(selected_model.clone(), messages).ok()?;
+        match self.chat_client.complete(request) {
+            Ok(response) => Some(AssistantResponse::from_chat_response(response)),
+            Err(_) => None,
+        }
     }
 
     fn chat_tool_specs(&self) -> Vec<ChatToolSpec> {
@@ -906,7 +950,7 @@ mod tests {
     use coddy_ipc::{
         ReplCommandJob, ReplEventStreamJob, ReplEventsJob, ReplSessionSnapshotJob, ReplToolsJob,
     };
-    use std::{env, fs, path::PathBuf};
+    use std::{collections::VecDeque, env, fs, path::PathBuf};
     use uuid::Uuid;
 
     struct TempWorkspace {
@@ -965,6 +1009,43 @@ mod tests {
                 .expect("requests mutex poisoned")
                 .push(request);
             Ok(self.response.clone())
+        }
+    }
+
+    #[derive(Debug)]
+    struct QueuedChatClient {
+        requests: Arc<Mutex<Vec<ChatRequest>>>,
+        responses: Mutex<VecDeque<ChatResponse>>,
+    }
+
+    impl QueuedChatClient {
+        fn new(responses: Vec<ChatResponse>) -> (Self, Arc<Mutex<Vec<ChatRequest>>>) {
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    requests: Arc::clone(&requests),
+                    responses: Mutex::new(responses.into()),
+                },
+                requests,
+            )
+        }
+    }
+
+    impl ChatModelClient for QueuedChatClient {
+        fn complete(&self, request: ChatRequest) -> coddy_agent::ChatModelResult {
+            self.requests
+                .lock()
+                .expect("requests mutex poisoned")
+                .push(request);
+            self.responses
+                .lock()
+                .expect("responses mutex poisoned")
+                .pop_front()
+                .ok_or_else(|| {
+                    coddy_agent::ChatModelError::InvalidRequest(
+                        "missing queued response".to_string(),
+                    )
+                })
         }
     }
 
@@ -1347,16 +1428,19 @@ mod tests {
         let request_id = Uuid::new_v4();
         let workspace = TempWorkspace::new();
         workspace.write("src/main.rs", "fn main() {}\n");
-        let (chat_client, _requests) = RecordingChatClient::new(ChatResponse {
-            text: "I will inspect the workspace.".to_string(),
-            deltas: vec!["I will inspect the workspace.".to_string()],
-            finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
-            tool_calls: vec![ChatToolCall {
-                id: Some("call-1".to_string()),
-                name: LIST_FILES_TOOL.to_string(),
-                arguments: json!({ "path": ".", "max_entries": 20 }),
-            }],
-        });
+        let (chat_client, requests) = QueuedChatClient::new(vec![
+            ChatResponse {
+                text: "I will inspect the workspace.".to_string(),
+                deltas: vec!["I will inspect the workspace.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-1".to_string()),
+                    name: LIST_FILES_TOOL.to_string(),
+                    arguments: json!({ "path": ".", "max_entries": 20 }),
+                }],
+            },
+            ChatResponse::from_text("The workspace contains a Rust source directory."),
+        ]);
         let runtime = CoddyRuntime::with_workspace_and_chat_client(
             AgentToolRegistry::default(),
             &workspace.path,
@@ -1389,10 +1473,16 @@ mod tests {
             panic!("expected text result");
         };
         let events = runtime.events_after(2).0;
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
 
-        assert!(text.contains("Tool observations"));
-        assert!(text.contains("filesystem.list_files"));
-        assert!(text.contains("src"));
+        assert_eq!(text, "The workspace contains a Rust source directory.");
+        assert_eq!(captured_requests.len(), 2);
+        assert!(captured_requests[1].tools.is_empty());
+        assert!(captured_requests[1].messages.iter().any(|message| {
+            message.role == coddy_agent::ChatMessageRole::Tool
+                && message.content.contains("filesystem.list_files")
+                && message.content.contains("src")
+        }));
         assert!(events.iter().any(|event| matches!(
             &event.event,
             ReplEvent::ToolStarted { name } if name == LIST_FILES_TOOL
