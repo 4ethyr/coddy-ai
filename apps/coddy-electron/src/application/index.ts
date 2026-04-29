@@ -14,6 +14,7 @@ export {
   selectModel,
   openUi,
   captureVoice,
+  cancelVoiceCapture,
   captureAndExplain,
   dismissConfirmation,
 } from './CommandSender'

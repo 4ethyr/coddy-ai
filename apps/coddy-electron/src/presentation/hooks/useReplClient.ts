@@ -27,6 +27,7 @@ function createClient(): ReplIpcClient {
     captureAndExplain: () => Promise.resolve({}),
     dismissConfirmation: () => Promise.resolve({}),
     captureVoice: () => Promise.resolve({}),
+    cancelVoiceCapture: () => Promise.resolve(),
   }
 }
 

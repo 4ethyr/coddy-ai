@@ -54,6 +54,7 @@ describe('EventStreamer', () => {
       captureAndExplain: vi.fn(),
       dismissConfirmation: vi.fn(),
       captureVoice: vi.fn(),
+      cancelVoiceCapture: vi.fn(),
     }
 
     const abort = startEventStream(
@@ -106,6 +107,7 @@ describe('EventStreamer', () => {
       captureAndExplain: vi.fn(),
       dismissConfirmation: vi.fn(),
       captureVoice: vi.fn(),
+      cancelVoiceCapture: vi.fn(),
     }
 
     const abort = startEventStream(

@@ -167,6 +167,10 @@ function createSimBridge(daemon: SimDaemon) {
             text: 'comando de voz simulado',
           })
 
+        case 'voice:capture-cancel':
+          daemon.commands.push('voice-capture-cancel')
+          return Promise.resolve({ ok: true })
+
         case 'repl:stop-speaking':
           daemon.commands.push('stop-speaking')
           return Promise.resolve({ ok: true })
@@ -416,6 +420,10 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
     async captureVoice() {
       return (await sim.invoke('voice:capture')) as ReplCommandResult
     },
+
+    async cancelVoiceCapture() {
+      await sim.invoke('voice:capture-cancel')
+    },
   }
 }
 
@@ -497,6 +505,12 @@ describe('IPC integration', () => {
     it('captures and returns transcript', async () => {
       const result = await client.captureVoice()
       expect(result.text).toBe('comando de voz simulado')
+    })
+
+    it('routes voice capture cancellation to the capture channel', async () => {
+      await client.cancelVoiceCapture()
+
+      expect(daemon.commands).toEqual(['voice-capture-cancel'])
     })
   })
 

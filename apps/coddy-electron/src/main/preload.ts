@@ -23,7 +23,11 @@ const replApi = {
       'window:close',
       'window:minimize',
       'window:maximize',
+      'window:resize-start',
+      'window:resize-drag',
+      'window:resize-end',
       'voice:capture',
+      'voice:capture-cancel',
     ]
     if (validChannels.includes(channel)) {
       return ipcRenderer.invoke(channel, ...args)

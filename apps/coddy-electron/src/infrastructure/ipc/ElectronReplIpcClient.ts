@@ -222,4 +222,8 @@ export class ElectronReplIpcClient implements ReplIpcClient {
       'voice:capture',
     )) as ReplCommandResult
   }
+
+  async cancelVoiceCapture(): Promise<void> {
+    await window.replApi.invoke('voice:capture-cancel')
+  }
 }

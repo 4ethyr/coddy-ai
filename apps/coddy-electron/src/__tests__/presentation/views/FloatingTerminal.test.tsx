@@ -25,6 +25,7 @@ const sessionContext = {
   selectModel: vi.fn(),
   openUi: vi.fn(),
   captureVoice: vi.fn(),
+  cancelVoiceCapture: vi.fn(),
   captureAndExplain: vi.fn(),
   dismissConfirmation: vi.fn(),
 }
@@ -49,7 +50,7 @@ describe('FloatingTerminal', () => {
     render(<FloatingTerminal />)
 
     const terminal = screen.getByRole('main')
-    expect(terminal).toHaveClass('w-[min(1120px,calc(100vw-48px))]')
+    expect(terminal).toHaveClass('w-[calc(100vw-48px)]')
 
     await userEvent.click(screen.getByRole('button', { name: 'Maximize' }))
 

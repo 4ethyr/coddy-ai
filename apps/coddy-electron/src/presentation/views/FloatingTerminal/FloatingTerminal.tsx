@@ -17,6 +17,7 @@ import { StreamingText } from '@/presentation/components/StreamingText'
 import { AssessmentConfirmModal } from '@/presentation/components/AssessmentConfirmModal'
 import { FloatingSettingsModal } from '@/presentation/components/FloatingSettingsModal'
 import { Icon } from '@/presentation/components/Icon'
+import { WindowResizeHandles } from '@/presentation/components/WindowResizeHandles'
 
 export function FloatingTerminal() {
   const {
@@ -29,6 +30,7 @@ export function FloatingTerminal() {
     selectModel,
     openUi,
     captureVoice,
+    cancelVoiceCapture,
     captureAndExplain,
     dismissConfirmation,
   } =
@@ -91,13 +93,14 @@ export function FloatingTerminal() {
 
   return (
     <main
-      className={`floating-terminal-shell aurora-gradient flex flex-col overflow-hidden border border-primary/20 transition-[width,height,border-radius] duration-200 ease-out ${
+      className={`floating-terminal-shell aurora-gradient relative flex flex-col overflow-hidden border border-primary/20 transition-[width,height,border-radius,margin] duration-200 ease-out ${
         expanded
           ? 'h-screen w-screen rounded-none'
-          : 'h-[min(800px,calc(100vh-48px))] w-[min(1120px,calc(100vw-48px))] rounded-xl'
+          : 'm-6 h-[calc(100vh-48px)] w-[calc(100vw-48px)] rounded-xl'
       }`}
       style={terminalStyle}
     >
+      <WindowResizeHandles />
       <header className="relative z-[120] flex w-full flex-shrink-0 items-center justify-between border-b border-primary/20 bg-slate-950/60 px-6 py-3 shadow-[0_4px_30px_rgba(0,0,0,0.15)] backdrop-blur-xl">
         <div className="flex items-center gap-3">
           <Icon
@@ -246,7 +249,11 @@ export function FloatingTerminal() {
             placeholder="Enter command or prompt..."
           />
         </div>
-        <VoiceButton onCapture={captureVoice} disabled={connecting} />
+        <VoiceButton
+          onCapture={captureVoice}
+          onCancel={cancelVoiceCapture}
+          disabled={connecting}
+        />
       </div>
 
       {session.status === 'AwaitingConfirmation' && !confirmationDismissed && (

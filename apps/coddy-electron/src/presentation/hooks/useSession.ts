@@ -24,6 +24,7 @@ import {
   selectModel,
   openUi,
   captureVoice,
+  cancelVoiceCapture,
   captureAndExplain,
   dismissConfirmation,
 } from '@/application'
@@ -56,6 +57,9 @@ export interface UseSessionReturn {
 
   /** Capture one voice turn; the backend dispatches the transcript itself */
   captureVoice: () => Promise<ReplCommandResult>
+
+  /** Cancel the active microphone capture */
+  cancelVoiceCapture: () => Promise<void>
 
   /** Start a policy-aware screen assistance flow */
   captureAndExplain: (
@@ -189,6 +193,14 @@ export function useSession(): UseSessionReturn {
     }
   }, [client])
 
+  const handleCancelVoiceCapture = useCallback(async () => {
+    try {
+      await cancelVoiceCapture(client)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [client])
+
   const handleCaptureAndExplain = useCallback(
     async (
       mode: ScreenAssistMode,
@@ -224,6 +236,7 @@ export function useSession(): UseSessionReturn {
     selectModel: handleSelectModel,
     openUi: handleOpenUi,
     captureVoice: handleCaptureVoice,
+    cancelVoiceCapture: handleCancelVoiceCapture,
     captureAndExplain: handleCaptureAndExplain,
     dismissConfirmation: handleDismissConfirmation,
     reconnect: init,

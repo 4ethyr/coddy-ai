@@ -8,22 +8,34 @@ import { Icon } from './Icon'
 
 interface Props {
   onCapture: () => Promise<ReplCommandResult>
+  onCancel?: () => Promise<void>
   disabled?: boolean
 }
 
-export function VoiceButton({ onCapture, disabled = false }: Props) {
+export function VoiceButton({ onCapture, onCancel, disabled = false }: Props) {
   const [capturing, setCapturing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const handleCapture = useCallback(async () => {
-    if (capturing || disabled) return
+    if (disabled && !capturing) return
+
+    if (capturing) {
+      try {
+        await onCancel?.()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setCapturing(false)
+      }
+      return
+    }
 
     setCapturing(true)
     setError(null)
 
     try {
       const result = await onCapture()
-      if (result.error) {
+      if (result.error && result.error.code !== 'VOICE_CAPTURE_CANCELLED') {
         setError(result.error.message)
       }
     } catch (err) {
@@ -31,7 +43,7 @@ export function VoiceButton({ onCapture, disabled = false }: Props) {
     } finally {
       setCapturing(false)
     }
-  }, [capturing, disabled, onCapture])
+  }, [capturing, disabled, onCancel, onCapture])
 
   useEffect(() => {
     if (!error) return undefined
@@ -47,16 +59,16 @@ export function VoiceButton({ onCapture, disabled = false }: Props) {
     <button
       type="button"
       onClick={handleCapture}
-      disabled={disabled || capturing}
+      disabled={disabled && !capturing}
       className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full border transition-colors ${
         capturing
-          ? 'animate-pulse border-red-400/40 bg-red-500/15 text-red-300'
+          ? 'animate-pulse cursor-pointer border-red-400/40 bg-red-500/15 text-red-300 hover:border-red-300/70 hover:bg-red-500/25'
           : error
-            ? 'border-yellow-400/40 bg-yellow-500/15 text-yellow-300'
-            : 'border-outline-variant/70 bg-surface-container/60 text-on-surface-variant hover:border-primary/50 hover:text-primary'
+            ? 'cursor-pointer border-yellow-400/40 bg-yellow-500/15 text-yellow-300'
+            : 'cursor-pointer border-outline-variant/70 bg-surface-container/60 text-on-surface-variant hover:border-primary/50 hover:text-primary'
       } disabled:opacity-30`}
-      title={capturing ? 'Recording...' : error ?? 'Voice input'}
-      aria-label={capturing ? 'Recording voice' : 'Voice input'}
+      title={capturing ? 'Stop recording' : error ?? 'Voice input'}
+      aria-label={capturing ? 'Stop voice recording' : 'Voice input'}
     >
       <Icon name={error ? 'alert' : 'mic'} className="h-4 w-4" />
     </button>

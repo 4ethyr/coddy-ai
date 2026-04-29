@@ -4,6 +4,7 @@
 import { spawn, ChildProcess } from 'child_process'
 import { createInterface } from 'readline'
 import { ipcMain, BrowserWindow } from 'electron'
+import type { Rectangle } from 'electron'
 
 const CODDY_BIN = process.env.CODDY_BIN || 'coddy'
 
@@ -26,6 +27,18 @@ type AssessmentPolicy =
   | 'SyntaxOnly'
   | 'RestrictedAssessment'
   | 'UnknownAssessment'
+type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+
+type ResizeStartPayload = {
+  edge: ResizeEdge
+  screenX: number
+  screenY: number
+}
+
+type ResizeDragPayload = {
+  screenX: number
+  screenY: number
+}
 
 type ReplCommandResult = {
   text?: string
@@ -81,6 +94,19 @@ async function readJson(child: ChildProcess): Promise<unknown> {
 // ---------------------------------------------------------------------------
 
 const activeStreams = new Map<string, ChildProcess>()
+let activeVoiceCapture: ChildProcess | null = null
+let voiceCaptureCancelRequested = false
+const resizeSessions = new Map<
+  number,
+  {
+    edge: ResizeEdge
+    startX: number
+    startY: number
+    bounds: Rectangle
+    minWidth: number
+    minHeight: number
+  }
+>()
 
 function reapStream(streamId: string): void {
   const child = activeStreams.get(streamId)
@@ -112,6 +138,43 @@ export function registerIpcHandlers(): void {
       return
     }
     targetWindow.maximize()
+  })
+
+  ipcMain.handle(
+    'window:resize-start',
+    (event, payload: ResizeStartPayload) => {
+      const targetWindow = BrowserWindow.fromWebContents(event.sender)
+      if (!targetWindow) return { ok: false }
+
+      const [minWidth, minHeight] = targetWindow.getMinimumSize()
+      resizeSessions.set(event.sender.id, {
+        edge: payload.edge,
+        startX: payload.screenX,
+        startY: payload.screenY,
+        bounds: targetWindow.getBounds(),
+        minWidth: minWidth ?? 680,
+        minHeight: minHeight ?? 400,
+      })
+      return { ok: true }
+    },
+  )
+
+  ipcMain.handle('window:resize-drag', (event, payload: ResizeDragPayload) => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender)
+    const session = resizeSessions.get(event.sender.id)
+    if (!targetWindow || !session) return { ok: false }
+
+    const dx = payload.screenX - session.startX
+    const dy = payload.screenY - session.startY
+    const next = resizeBounds(session, dx, dy)
+
+    targetWindow.setBounds(next, false)
+    return { ok: true }
+  })
+
+  ipcMain.handle('window:resize-end', (event) => {
+    resizeSessions.delete(event.sender.id)
+    return { ok: true }
   })
 
   // ---- Snapshot ----
@@ -155,13 +218,46 @@ export function registerIpcHandlers(): void {
 
   // ---- Voice: capture + transcribe via coddy CLI ----
   ipcMain.handle('voice:capture', async () => {
+    if (activeVoiceCapture) {
+      return {
+        error: {
+          code: 'VOICE_CAPTURE_IN_PROGRESS',
+          message: 'voice capture is already running',
+        },
+      }
+    }
+
+    const child = coddySpawn(['voice', '--overlay'])
+    activeVoiceCapture = child
+    voiceCaptureCancelRequested = false
+
     try {
-      const child = coddySpawn(['voice', '--overlay'])
       const raw = await readJson(child)
       return normalizeCommandResult(raw)
     } catch (err) {
+      if (voiceCaptureCancelRequested) {
+        return {
+          error: {
+            code: 'VOICE_CAPTURE_CANCELLED',
+            message: 'voice capture cancelled',
+          },
+        }
+      }
       return { error: { code: 'VOICE_CAPTURE_FAILED', message: String(err) } }
+    } finally {
+      if (activeVoiceCapture === child) {
+        activeVoiceCapture = null
+      }
+      voiceCaptureCancelRequested = false
     }
+  })
+
+  ipcMain.handle('voice:capture-cancel', async () => {
+    if (activeVoiceCapture && !activeVoiceCapture.killed) {
+      voiceCaptureCancelRequested = true
+      activeVoiceCapture.kill()
+    }
+    return { ok: true }
   })
 
   ipcMain.handle('repl:voice-turn', async (_event, transcript: string) => {
@@ -230,6 +326,12 @@ export function cleanupStreams(): void {
     child.kill()
   }
   activeStreams.clear()
+  if (activeVoiceCapture && !activeVoiceCapture.killed) {
+    activeVoiceCapture.kill()
+  }
+  activeVoiceCapture = null
+  voiceCaptureCancelRequested = false
+  resizeSessions.clear()
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +379,56 @@ function normalizeCommandResult(raw: unknown): ReplCommandResult {
 
 async function runCoddyCommand(args: string[]): Promise<ReplCommandResult> {
   return runCoddyCommandFromChild(coddySpawn(args))
+}
+
+function resizeBounds(
+  session: {
+    edge: ResizeEdge
+    bounds: Rectangle
+    minWidth: number
+    minHeight: number
+  },
+  dx: number,
+  dy: number,
+): Rectangle {
+  const next = { ...session.bounds }
+  const edge = session.edge
+
+  if (edge.includes('e')) {
+    next.width = session.bounds.width + dx
+  }
+  if (edge.includes('s')) {
+    next.height = session.bounds.height + dy
+  }
+  if (edge.includes('w')) {
+    next.x = session.bounds.x + dx
+    next.width = session.bounds.width - dx
+  }
+  if (edge.includes('n')) {
+    next.y = session.bounds.y + dy
+    next.height = session.bounds.height - dy
+  }
+
+  if (next.width < session.minWidth) {
+    if (edge.includes('w')) {
+      next.x = session.bounds.x + session.bounds.width - session.minWidth
+    }
+    next.width = session.minWidth
+  }
+
+  if (next.height < session.minHeight) {
+    if (edge.includes('n')) {
+      next.y = session.bounds.y + session.bounds.height - session.minHeight
+    }
+    next.height = session.minHeight
+  }
+
+  return {
+    x: Math.round(next.x),
+    y: Math.round(next.y),
+    width: Math.round(next.width),
+    height: Math.round(next.height),
+  }
 }
 
 async function runCoddyCommandFromChild(child: ChildProcess): Promise<ReplCommandResult> {

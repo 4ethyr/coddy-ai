@@ -13,6 +13,7 @@ import { ModelSelector } from '@/presentation/components/ModelSelector'
 import { StatusIndicator } from '@/presentation/components/StatusIndicator'
 import { FloatingSettingsModal } from '@/presentation/components/FloatingSettingsModal'
 import { Icon } from '@/presentation/components/Icon'
+import { WindowResizeHandles } from '@/presentation/components/WindowResizeHandles'
 
 export function DesktopApp() {
   const { session, toolCatalog, connecting, error, ask, selectModel, openUi } =
@@ -50,7 +51,8 @@ export function DesktopApp() {
   )
 
   return (
-    <div className="desktop-shell flex h-screen overflow-hidden bg-background text-on-surface">
+    <div className="desktop-shell relative flex h-screen overflow-hidden bg-background text-on-surface">
+      <WindowResizeHandles />
       <Sidebar
         activeTab={activeTab}
         onTabChange={setActiveTab}

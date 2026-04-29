@@ -80,6 +80,15 @@ export async function captureVoice(
 }
 
 /**
+ * Cancels the current microphone capture process, if one exists.
+ */
+export async function cancelVoiceCapture(
+  client: ReplIpcClient,
+): Promise<void> {
+  await client.cancelVoiceCapture()
+}
+
+/**
  * Requests a policy-aware screen assistance flow.
  */
 export async function captureAndExplain(

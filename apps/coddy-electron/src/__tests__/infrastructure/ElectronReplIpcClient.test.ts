@@ -109,6 +109,7 @@ describe('ElectronReplIpcClient', () => {
     await client.openUi('DesktopApp')
     await client.captureAndExplain('MultipleChoice', 'RestrictedAssessment')
     await client.dismissConfirmation()
+    await client.cancelVoiceCapture()
 
     expect(invoke).toHaveBeenCalledWith(
       'repl:select-model',
@@ -123,5 +124,6 @@ describe('ElectronReplIpcClient', () => {
       'RestrictedAssessment',
     )
     expect(invoke).toHaveBeenCalledWith('repl:dismiss-confirmation')
+    expect(invoke).toHaveBeenCalledWith('voice:capture-cancel')
   })
 })

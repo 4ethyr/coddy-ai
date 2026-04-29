@@ -32,4 +32,25 @@ describe('VoiceButton', () => {
       await screen.findByRole('button', { name: 'Voice input' }),
     ).toHaveAttribute('title', 'microfone indisponível')
   })
+
+  it('keeps recording state clickable so the user can stop listening', async () => {
+    const onCapture = vi.fn(
+      () => new Promise<never>(() => {}),
+    )
+    const onCancel = vi.fn().mockResolvedValue(undefined)
+
+    render(<VoiceButton onCapture={onCapture} onCancel={onCancel} />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Voice input' }))
+
+    const stopButton = screen.getByRole('button', {
+      name: 'Stop voice recording',
+    })
+    expect(stopButton).toBeEnabled()
+    expect(stopButton).toHaveClass('cursor-pointer')
+
+    await userEvent.click(stopButton)
+
+    expect(onCancel).toHaveBeenCalledOnce()
+  })
 })

@@ -82,4 +82,7 @@ export interface ReplIpcClient {
    * Returns the text result or an error.
    */
   captureVoice(): Promise<ReplCommandResult>
+
+  /** Cancel the active microphone capture, if one is running */
+  cancelVoiceCapture(): Promise<void>
 }

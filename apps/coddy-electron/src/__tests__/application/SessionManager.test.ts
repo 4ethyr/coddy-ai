@@ -46,6 +46,7 @@ describe('SessionManager', () => {
       captureAndExplain: vi.fn(),
       dismissConfirmation: vi.fn(),
       captureVoice: vi.fn(),
+      cancelVoiceCapture: vi.fn(),
     }
 
     const state = await initializeSession(client)
