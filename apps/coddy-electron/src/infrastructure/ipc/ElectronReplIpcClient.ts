@@ -10,6 +10,7 @@ import type {
   ReplEventEnvelope,
   ReplMode,
   ReplSessionSnapshot,
+  ReplToolCatalogItem,
   ScreenAssistMode,
 } from '@/domain'
 
@@ -152,6 +153,10 @@ export class ElectronReplIpcClient implements ReplIpcClient {
       events: raw.events,
       lastSequence: raw.last_sequence,
     }
+  }
+
+  async getToolCatalog(): Promise<ReplToolCatalogItem[]> {
+    return (await window.replApi.invoke('repl:tools')) as ReplToolCatalogItem[]
   }
 
   watchEvents(afterSequence: number): AsyncIterable<ReplEventEnvelope> {

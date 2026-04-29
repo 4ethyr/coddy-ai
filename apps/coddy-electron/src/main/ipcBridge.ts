@@ -126,6 +126,11 @@ export function registerIpcHandlers(): void {
     )
   })
 
+  // ---- Tool catalog ----
+  ipcMain.handle('repl:tools', async () => {
+    return readJson(coddySpawn(['session', 'tools']))
+  })
+
   // ---- Watch (streaming) ----
   ipcMain.handle('repl:watch-start', async (_event, afterSequence: number) => {
     const streamId = String(Math.random()).slice(2, 10)

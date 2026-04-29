@@ -9,6 +9,7 @@ import type {
   ReplSessionSnapshot,
   ScreenAssistMode,
   AssessmentPolicy,
+  ReplToolCatalogItem,
 } from '../types'
 
 /** Result of sending a command to the REPL backend */
@@ -41,6 +42,9 @@ export interface ReplIpcClient {
 
   /** Get incremental events after a given sequence number */
   getEventsAfter(afterSequence: number): Promise<ReplEventsBatch>
+
+  /** Get the backend tool catalog exposed by the active Coddy runtime */
+  getToolCatalog(): Promise<ReplToolCatalogItem[]>
 
   /** Open a persistent stream of live events. Returns an AsyncIterable. */
   watchEvents(afterSequence: number): AsyncIterable<ReplEventEnvelope>

@@ -27,6 +27,14 @@ export type {
 export { createInitialSession } from './session'
 
 export type {
+  ApprovalPolicy,
+  ReplToolCatalogItem,
+  ToolCategory,
+  ToolPermission,
+  ToolRiskLevel,
+} from './tools'
+
+export type {
   AssessmentPolicy,
   RequestedHelp,
   ScreenAssistMode,

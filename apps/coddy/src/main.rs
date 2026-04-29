@@ -206,6 +206,7 @@ impl From<CliReplMode> for ReplMode {
 #[derive(Debug, Subcommand)]
 enum SessionCommand {
     Snapshot,
+    Tools,
     Events {
         #[arg(long, default_value_t = 0)]
         after: u64,
@@ -369,6 +370,9 @@ async fn main() -> Result<()> {
         Some(Command::Session {
             command: SessionCommand::Snapshot,
         }) => run_session_snapshot(&config).await,
+        Some(Command::Session {
+            command: SessionCommand::Tools,
+        }) => run_session_tools(&config).await,
         Some(Command::Session {
             command: SessionCommand::Events { after },
         }) => run_session_events(&config, after).await,
@@ -549,6 +553,12 @@ async fn run_shortcuts_test(config: &CoddyRuntimeConfig) -> Result<()> {
 async fn run_session_snapshot(config: &CoddyRuntimeConfig) -> Result<()> {
     let snapshot = coddy_client(config)?.snapshot().await?;
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    Ok(())
+}
+
+async fn run_session_tools(config: &CoddyRuntimeConfig) -> Result<()> {
+    let tools = coddy_client(config)?.tool_catalog().await?;
+    println!("{}", serde_json::to_string_pretty(&tools)?);
     Ok(())
 }
 
@@ -786,6 +796,18 @@ mod tests {
         assert!(matches!(
             stop_active_run.command,
             Some(Command::StopActiveRun)
+        ));
+    }
+
+    #[test]
+    fn parses_session_tools_command() {
+        let cli = Cli::try_parse_from(["coddy", "session", "tools"]).expect("parse session tools");
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Session {
+                command: SessionCommand::Tools
+            })
         ));
     }
 

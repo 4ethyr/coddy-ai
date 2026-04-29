@@ -113,6 +113,17 @@ Retorna eventos com `sequence > 10` e o `last_sequence` atual:
 }
 ```
 
+### Catálogo de tools
+
+```bash
+coddy session tools
+```
+
+Retorna o catálogo público de tools que o runtime Coddy expõe para o REPL e
+para a UI. A resposta usa `ReplToolCatalogItem`, com nome, descrição,
+categoria, risco, permissões, timeout e approval policy. O Electron consome
+esse contrato pelo canal `repl:tools`.
+
 ### Stream de eventos
 
 ```bash
@@ -137,6 +148,7 @@ O CLI usa `crates/coddy-client` para acessar o daemon. Esse client centraliza so
 | `CoddyRequest::SessionSnapshot` | Retorna estado reduzido da sessão. | `CoddyResult::ReplSessionSnapshot`. |
 | `CoddyRequest::Events` | Retorna eventos incrementais depois de uma sequence. | `CoddyResult::ReplEvents`. |
 | `CoddyRequest::EventStream` | Mantém uma conexão persistente e publica eventos depois de uma sequence. | Múltiplos `CoddyResult::ReplEvents`, um por frame emitido. |
+| `CoddyRequest::Tools` | Retorna catálogo público de tools do runtime. | `CoddyResult::ReplToolCatalog`, com `ReplTools` aceito como legado. |
 
 Requests legados ainda aceitos pelo daemon:
 

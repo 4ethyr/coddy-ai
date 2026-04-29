@@ -11,6 +11,7 @@ import type {
   ModelRef,
   ModelRole,
   AssessmentPolicy,
+  ReplToolCatalogItem,
   ReplEvent,
   ReplEventEnvelope,
   ReplMode,
@@ -28,6 +29,7 @@ interface SimDaemon {
   currentSequence: number
   events: ReplEventEnvelope[]
   snapshotSession: ReplSessionSnapshotSession
+  toolCatalog: ReplToolCatalogItem[]
   commands: string[]
 }
 
@@ -36,6 +38,26 @@ function createSimDaemon(): SimDaemon {
     currentSequence: 0,
     events: [],
     commands: [],
+    toolCatalog: [
+      {
+        name: 'filesystem.read_file',
+        description: 'Read a UTF-8 text file inside the active workspace',
+        category: 'Filesystem',
+        risk_level: 'Low',
+        permissions: ['ReadWorkspace'],
+        timeout_ms: 5_000,
+        approval_policy: 'AutoApprove',
+      },
+      {
+        name: 'shell.run',
+        description: 'Execute a workspace-scoped shell command',
+        category: 'Shell',
+        risk_level: 'Medium',
+        permissions: ['ExecuteCommand'],
+        timeout_ms: 30_000,
+        approval_policy: 'AskOnUse',
+      },
+    ],
     snapshotSession: {
       id: 'sim-session-uuid',
       mode: 'FloatingTerminal',
@@ -77,6 +99,10 @@ function createSimBridge(daemon: SimDaemon) {
             last_sequence: daemon.currentSequence,
           })
         }
+
+        // ---- Tool catalog ----
+        case 'repl:tools':
+          return Promise.resolve(daemon.toolCatalog)
 
         // ---- Watch start ----
         case 'repl:watch-start': {
@@ -282,6 +308,10 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
       return { events: raw.events, lastSequence: raw.last_sequence }
     },
 
+    async getToolCatalog() {
+      return (await sim.invoke('repl:tools')) as ReplToolCatalogItem[]
+    },
+
     watchEvents(afterSequence: number): AsyncIterable<ReplEventEnvelope> {
       const stream: AsyncIterable<ReplEventEnvelope> = {
         [Symbol.asyncIterator]() {
@@ -430,6 +460,29 @@ describe('IPC integration', () => {
       sim.pushLiveEvent({ VoiceListeningStarted: {} })
       const batch = await client.getEventsAfter(1)
       expect(batch.events).toHaveLength(0)
+    })
+  })
+
+  describe('tool catalog', () => {
+    it('returns backend tool metadata through the frontend client port', async () => {
+      const tools = await client.getToolCatalog()
+
+      expect(tools.map((tool) => tool.name)).toEqual([
+        'filesystem.read_file',
+        'shell.run',
+      ])
+      expect(tools[0]).toMatchObject({
+        category: 'Filesystem',
+        risk_level: 'Low',
+        permissions: ['ReadWorkspace'],
+        approval_policy: 'AutoApprove',
+      })
+      expect(tools[1]).toMatchObject({
+        category: 'Shell',
+        risk_level: 'Medium',
+        permissions: ['ExecuteCommand'],
+        approval_policy: 'AskOnUse',
+      })
     })
   })
 

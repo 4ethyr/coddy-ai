@@ -32,6 +32,7 @@ describe('EventStreamer', () => {
     const client: ReplIpcClient = {
       getSnapshot: vi.fn().mockResolvedValue(snapshot(0)),
       getEventsAfter: vi.fn(),
+      getToolCatalog: vi.fn(),
       watchEvents(afterSequence: number): AsyncIterable<ReplEventEnvelope> {
         watchedAfter.push(afterSequence)
         const call = watchedAfter.length
@@ -81,6 +82,7 @@ describe('EventStreamer', () => {
     const client: ReplIpcClient = {
       getSnapshot: vi.fn().mockResolvedValue(snapshot(0)),
       getEventsAfter: vi.fn(),
+      getToolCatalog: vi.fn(),
       watchEvents(): AsyncIterable<ReplEventEnvelope> {
         watchStarted = true
         return {

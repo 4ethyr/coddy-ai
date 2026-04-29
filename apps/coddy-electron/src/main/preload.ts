@@ -9,6 +9,7 @@ const replApi = {
     const validChannels = [
       'repl:snapshot',
       'repl:events-after',
+      'repl:tools',
       'repl:ask',
       'repl:voice-turn',
       'repl:stop-speaking',

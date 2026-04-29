@@ -105,6 +105,7 @@ describe('ElectronReplIpcClient', () => {
       { provider: 'ollama', name: 'qwen2.5:0.5b' },
       'Chat',
     )
+    await client.getToolCatalog()
     await client.openUi('DesktopApp')
     await client.captureAndExplain('MultipleChoice', 'RestrictedAssessment')
     await client.dismissConfirmation()
@@ -114,6 +115,7 @@ describe('ElectronReplIpcClient', () => {
       { provider: 'ollama', name: 'qwen2.5:0.5b' },
       'Chat',
     )
+    expect(invoke).toHaveBeenCalledWith('repl:tools')
     expect(invoke).toHaveBeenCalledWith('repl:open-ui', 'DesktopApp')
     expect(invoke).toHaveBeenCalledWith(
       'repl:capture-and-explain',

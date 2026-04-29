@@ -16,6 +16,7 @@ function createClient(): ReplIpcClient {
   return {
     getSnapshot: () => new Promise(() => {}),
     getEventsAfter: () => new Promise(() => {}),
+    getToolCatalog: () => Promise.resolve([]),
     watchEvents: () => ({ [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => {}) }) }),
     ask: () => new Promise(() => {}),
     voiceTurn: () => new Promise(() => {}),

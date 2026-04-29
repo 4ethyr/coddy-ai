@@ -27,6 +27,8 @@ CoddyClient::stop_speaking()
 CoddyClient::stop_active_run()
 CoddyClient::snapshot()
 CoddyClient::events_after(after_sequence)
+CoddyClient::tool_catalog()
+CoddyClient::tools()
 CoddyClient::event_stream(after_sequence)
 CoddyClient::event_watcher(after_sequence)
 ```
@@ -104,9 +106,10 @@ O próximo passo de desacoplamento é mover `apps/coddy`, `crates/coddy-core`, `
 1. Criar client com o socket configurado.
 2. Chamar `snapshot()`.
 3. Renderizar a sessão inicial.
-4. Abrir `event_watcher(snapshot.last_sequence)`.
-5. Aplicar cada `ReplEventEnvelope` no reducer da UI.
-6. Em queda de conexão, deixar o watcher reabrir o stream com o último `last_sequence`.
+4. Chamar `tool_catalog()` quando a UI precisar renderizar tools, permissões ou riscos.
+5. Abrir `event_watcher(snapshot.last_sequence)`.
+6. Aplicar cada `ReplEventEnvelope` no reducer da UI.
+7. Em queda de conexão, deixar o watcher reabrir o stream com o último `last_sequence`.
 
 ## Próximas Melhorias
 
