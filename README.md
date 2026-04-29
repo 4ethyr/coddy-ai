@@ -15,11 +15,11 @@ glassmorphism.
 ## Status
 
 Coddy is under active development. The current implementation includes the CLI,
-runtime IPC, Electron UI, model discovery, secure credential storage, session
-events, tool metadata, permission primitives and early runtime streaming. Some
-advanced capabilities, such as a complete production LLM execution loop,
-subagents and MCP, are planned or partially scaffolded and should be evolved
-incrementally with tests.
+runtime IPC, Electron UI, model discovery, secure credential storage, local
+Ollama chat completion, session events, tool metadata, permission primitives and
+early runtime streaming. Some advanced capabilities, such as complete
+multi-provider LLM execution, subagents and MCP, are planned or partially
+scaffolded and should be evolved incrementally with tests.
 
 ## Main Features
 
@@ -30,6 +30,8 @@ incrementally with tests.
   watch streams.
 - Model selector with provider search, responsive dropdown, secure credential
   persistence and provider-specific notices.
+- Runtime-backed chat responses for selected local Ollama models through the
+  `/api/chat` endpoint.
 - Provider model listing for:
   - Local Ollama.
   - OpenAI models.
@@ -251,6 +253,11 @@ Supported model discovery paths:
 Do not commit `.env` files or API keys. The repository ignores common `.env`
 variants.
 
+Runtime chat completion currently supports local Ollama models. By default Coddy
+connects to `http://127.0.0.1:11434/api/chat`; set `OLLAMA_HOST` to override the
+host, for example `OLLAMA_HOST=127.0.0.1:11434` or
+`OLLAMA_HOST=http://localhost:11434`.
+
 ## Development Workflow
 
 Prefer small, reversible changes with tests first.
@@ -340,7 +347,8 @@ See the split manifest:
 
 Near-term priorities:
 
-- connect the runtime to production model clients for real chat completion;
+- connect the runtime to production cloud model clients for real chat
+  completion;
 - expand provider authentication support for Vertex ADC/service accounts;
 - add durable agent memory with sensitive-data policy;
 - evolve the tool loop from primitives to full action/observation/validation;

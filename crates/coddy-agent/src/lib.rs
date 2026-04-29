@@ -25,7 +25,8 @@ pub use context::{ContextObservation, ContextPlanItem, ContextSnapshot, ContextT
 pub use eval::{EvalCase, EvalExpectations, EvalReport, EvalRunner, EvalStatus, EvalSuiteReport};
 pub use model::{
     ChatFinishReason, ChatMessage, ChatMessageRole, ChatModelClient, ChatModelError,
-    ChatModelResult, ChatRequest, ChatResponse, ChatToolSpec, UnavailableChatModelClient,
+    ChatModelResult, ChatRequest, ChatResponse, ChatToolSpec, DefaultChatModelClient,
+    OllamaChatModelClient, UnavailableChatModelClient,
 };
 pub use plan_executor::{
     DeterministicPlanExecutor, DeterministicPlanItem, DeterministicPlanReport,

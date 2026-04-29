@@ -1,3 +1,10 @@
+use std::{
+    io::{Read, Write},
+    net::{SocketAddr, TcpStream, ToSocketAddrs},
+    sync::Arc,
+    time::Duration,
+};
+
 use coddy_core::{ApprovalPolicy, ModelRef, ToolDefinition, ToolRiskLevel};
 use serde_json::Value;
 use thiserror::Error;
@@ -63,6 +70,23 @@ pub enum ChatModelError {
 
     #[error("invalid chat request: {0}")]
     InvalidRequest(String),
+
+    #[error("chat provider returned an error from {provider}: {message}")]
+    ProviderError {
+        provider: String,
+        message: String,
+        retryable: bool,
+    },
+
+    #[error("chat provider transport failed for {provider}: {message}")]
+    Transport {
+        provider: String,
+        message: String,
+        retryable: bool,
+    },
+
+    #[error("invalid chat provider response from {provider}: {message}")]
+    InvalidProviderResponse { provider: String, message: String },
 }
 
 pub type ChatModelResult = Result<ChatResponse, ChatModelError>;
@@ -73,6 +97,27 @@ pub trait ChatModelClient: std::fmt::Debug + Send + Sync {
 
 #[derive(Debug, Default)]
 pub struct UnavailableChatModelClient;
+
+#[derive(Debug, Default)]
+pub struct DefaultChatModelClient {
+    ollama: OllamaChatModelClient,
+    unavailable: UnavailableChatModelClient,
+}
+
+#[derive(Debug, Clone)]
+pub struct OllamaChatModelClient {
+    transport: Arc<dyn OllamaTransport>,
+}
+
+#[derive(Debug, Clone)]
+struct HttpOllamaTransport {
+    base_url: String,
+    timeout: Duration,
+}
+
+trait OllamaTransport: std::fmt::Debug + Send + Sync {
+    fn chat(&self, body: &Value) -> ChatModelResult;
+}
 
 impl ChatMessage {
     pub fn system(content: impl Into<String>) -> Self {
@@ -169,11 +214,68 @@ impl ChatModelError {
             Self::ProviderUnavailable { .. } => "provider_unavailable",
             Self::UnsupportedModel { .. } => "unsupported_model",
             Self::InvalidRequest(_) => "invalid_request",
+            Self::ProviderError { .. } => "provider_error",
+            Self::Transport { .. } => "transport_error",
+            Self::InvalidProviderResponse { .. } => "invalid_provider_response",
         }
     }
 
     pub fn retryable(&self) -> bool {
-        matches!(self, Self::ProviderUnavailable { .. })
+        match self {
+            Self::ProviderUnavailable { .. } => true,
+            Self::ProviderError { retryable, .. } | Self::Transport { retryable, .. } => *retryable,
+            _ => false,
+        }
+    }
+}
+
+impl Default for OllamaChatModelClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OllamaChatModelClient {
+    pub fn new() -> Self {
+        Self {
+            transport: Arc::new(HttpOllamaTransport::new(default_ollama_base_url())),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_transport(transport: Arc<dyn OllamaTransport>) -> Self {
+        Self { transport }
+    }
+}
+
+impl HttpOllamaTransport {
+    fn new(base_url: String) -> Self {
+        Self {
+            base_url,
+            timeout: Duration::from_secs(120),
+        }
+    }
+}
+
+impl ChatModelClient for DefaultChatModelClient {
+    fn complete(&self, request: ChatRequest) -> ChatModelResult {
+        if request.model.provider == "ollama" {
+            return self.ollama.complete(request);
+        }
+        self.unavailable.complete(request)
+    }
+}
+
+impl ChatModelClient for OllamaChatModelClient {
+    fn complete(&self, request: ChatRequest) -> ChatModelResult {
+        if request.model.provider != "ollama" {
+            return Err(ChatModelError::UnsupportedModel {
+                provider: request.model.provider,
+                model: request.model.name,
+            });
+        }
+
+        self.transport.chat(&ollama_chat_body(&request))
     }
 }
 
@@ -189,6 +291,311 @@ impl ChatModelClient for UnavailableChatModelClient {
     }
 }
 
+impl OllamaTransport for HttpOllamaTransport {
+    fn chat(&self, body: &Value) -> ChatModelResult {
+        let target = OllamaHttpTarget::parse(&self.base_url)?;
+        let address = resolve_socket_addr(&target.host, target.port)?;
+        let mut stream = TcpStream::connect_timeout(&address, self.timeout).map_err(|error| {
+            ChatModelError::Transport {
+                provider: "ollama".to_string(),
+                message: error.to_string(),
+                retryable: true,
+            }
+        })?;
+        stream
+            .set_read_timeout(Some(self.timeout))
+            .map_err(ollama_transport_error)?;
+        stream
+            .set_write_timeout(Some(self.timeout))
+            .map_err(ollama_transport_error)?;
+
+        let body = serde_json::to_string(body).map_err(|error| {
+            ChatModelError::InvalidRequest(format!("failed to encode Ollama request: {error}"))
+        })?;
+        let request = format!(
+            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nAccept: application/x-ndjson, application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+            target.path,
+            target.host_header(),
+            body.len(),
+            body
+        );
+        stream
+            .write_all(request.as_bytes())
+            .map_err(ollama_transport_error)?;
+
+        let mut response = Vec::new();
+        stream
+            .read_to_end(&mut response)
+            .map_err(ollama_transport_error)?;
+        parse_http_ollama_response(&response)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OllamaHttpTarget {
+    host: String,
+    port: u16,
+    path: String,
+}
+
+impl OllamaHttpTarget {
+    fn parse(base_url: &str) -> Result<Self, ChatModelError> {
+        let trimmed = base_url.trim();
+        if trimmed.contains("://") && !trimmed.starts_with("http://") {
+            return Err(ChatModelError::InvalidRequest(
+                "Ollama base URL must use http:// or host:port".to_string(),
+            ));
+        }
+        let without_scheme = trimmed
+            .strip_prefix("http://")
+            .unwrap_or(trimmed)
+            .trim_end_matches('/');
+        let (authority, path) = without_scheme
+            .split_once('/')
+            .map(|(authority, path)| {
+                let path = format!("/{path}");
+                let path = if path == "/" {
+                    "/api/chat".to_string()
+                } else {
+                    path
+                };
+                (authority, path)
+            })
+            .unwrap_or((without_scheme, "/api/chat".to_string()));
+        let (host, port) = authority
+            .rsplit_once(':')
+            .and_then(|(host, port)| Some((host.to_string(), port.parse::<u16>().ok()?)))
+            .unwrap_or_else(|| (authority.to_string(), 11434));
+
+        if host.trim().is_empty() {
+            return Err(ChatModelError::InvalidRequest(
+                "Ollama host cannot be empty".to_string(),
+            ));
+        }
+
+        Ok(Self { host, port, path })
+    }
+
+    fn host_header(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+}
+
+fn default_ollama_base_url() -> String {
+    std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://127.0.0.1:11434".to_string())
+}
+
+fn resolve_socket_addr(host: &str, port: u16) -> Result<SocketAddr, ChatModelError> {
+    (host, port)
+        .to_socket_addrs()
+        .map_err(ollama_transport_error)?
+        .next()
+        .ok_or_else(|| ChatModelError::Transport {
+            provider: "ollama".to_string(),
+            message: format!("could not resolve {host}:{port}"),
+            retryable: true,
+        })
+}
+
+fn ollama_transport_error(error: std::io::Error) -> ChatModelError {
+    ChatModelError::Transport {
+        provider: "ollama".to_string(),
+        message: error.to_string(),
+        retryable: true,
+    }
+}
+
+fn ollama_chat_body(request: &ChatRequest) -> Value {
+    let messages = request
+        .messages
+        .iter()
+        .map(|message| {
+            serde_json::json!({
+                "role": chat_role_name(message.role),
+                "content": message.content,
+            })
+        })
+        .collect::<Vec<_>>();
+    let tools = request
+        .tools
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut body = serde_json::json!({
+        "model": request.model.name,
+        "messages": messages,
+        "stream": true,
+    });
+    if !tools.is_empty() {
+        body["tools"] = Value::Array(tools);
+    }
+    if request.temperature.is_some() || request.max_output_tokens.is_some() {
+        let mut options = serde_json::Map::new();
+        if let Some(temperature) = request.temperature {
+            options.insert("temperature".to_string(), serde_json::json!(temperature));
+        }
+        if let Some(max_output_tokens) = request.max_output_tokens {
+            options.insert(
+                "num_predict".to_string(),
+                serde_json::json!(max_output_tokens),
+            );
+        }
+        body["options"] = Value::Object(options);
+    }
+    body
+}
+
+fn chat_role_name(role: ChatMessageRole) -> &'static str {
+    match role {
+        ChatMessageRole::System => "system",
+        ChatMessageRole::User => "user",
+        ChatMessageRole::Assistant => "assistant",
+        ChatMessageRole::Tool => "tool",
+    }
+}
+
+fn parse_http_ollama_response(response: &[u8]) -> ChatModelResult {
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| ChatModelError::InvalidProviderResponse {
+            provider: "ollama".to_string(),
+            message: "HTTP response is missing header terminator".to_string(),
+        })?;
+    let head = String::from_utf8_lossy(&response[..header_end]);
+    let body = &response[header_end + 4..];
+    let status = parse_http_status(&head)?;
+    let body = if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        decode_chunked_body(body)?
+    } else {
+        String::from_utf8_lossy(body).to_string()
+    };
+
+    if !(200..300).contains(&status) {
+        return Err(ChatModelError::ProviderError {
+            provider: "ollama".to_string(),
+            message: provider_error_message(&body, status),
+            retryable: status == 429 || status >= 500,
+        });
+    }
+
+    parse_ollama_chat_body(&body)
+}
+
+fn parse_http_status(head: &str) -> Result<u16, ChatModelError> {
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|status| status.parse::<u16>().ok())
+        .ok_or_else(|| ChatModelError::InvalidProviderResponse {
+            provider: "ollama".to_string(),
+            message: "HTTP status line is invalid".to_string(),
+        })?;
+    Ok(status)
+}
+
+fn decode_chunked_body(body: &[u8]) -> Result<String, ChatModelError> {
+    let mut cursor = 0_usize;
+    let mut decoded = Vec::new();
+    loop {
+        let line_end =
+            find_crlf(&body[cursor..]).ok_or_else(|| ChatModelError::InvalidProviderResponse {
+                provider: "ollama".to_string(),
+                message: "chunked response is missing chunk size".to_string(),
+            })?;
+        let size_line = String::from_utf8_lossy(&body[cursor..cursor + line_end]);
+        let size_text = size_line.split(';').next().unwrap_or(&size_line);
+        let size = usize::from_str_radix(size_text.trim(), 16).map_err(|error| {
+            ChatModelError::InvalidProviderResponse {
+                provider: "ollama".to_string(),
+                message: format!("invalid chunk size: {error}"),
+            }
+        })?;
+        cursor += line_end + 2;
+        if size == 0 {
+            return Ok(String::from_utf8_lossy(&decoded).to_string());
+        }
+        if body.len() < cursor + size + 2 {
+            return Err(ChatModelError::InvalidProviderResponse {
+                provider: "ollama".to_string(),
+                message: "chunked response ended before chunk payload".to_string(),
+            });
+        }
+        decoded.extend_from_slice(&body[cursor..cursor + size]);
+        cursor += size + 2;
+    }
+}
+
+fn find_crlf(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(2).position(|window| window == b"\r\n")
+}
+
+fn provider_error_message(body: &str, status: u16) -> String {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| value["error"].as_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| format!("Ollama returned HTTP {status}"))
+}
+
+fn parse_ollama_chat_body(body: &str) -> ChatModelResult {
+    let mut deltas = Vec::new();
+    let mut finish_reason = ChatFinishReason::Stop;
+
+    for line in body.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let value: Value = serde_json::from_str(line).map_err(|error| {
+            ChatModelError::InvalidProviderResponse {
+                provider: "ollama".to_string(),
+                message: format!("invalid JSON line: {error}"),
+            }
+        })?;
+        if let Some(error) = value["error"].as_str() {
+            return Err(ChatModelError::ProviderError {
+                provider: "ollama".to_string(),
+                message: error.to_string(),
+                retryable: false,
+            });
+        }
+        if let Some(content) = value["message"]["content"].as_str() {
+            if !content.is_empty() {
+                deltas.push(content.to_string());
+            }
+        }
+        if value["done"].as_bool() == Some(true) {
+            finish_reason = match value["done_reason"].as_str() {
+                Some("length") => ChatFinishReason::Length,
+                _ => ChatFinishReason::Stop,
+            };
+        }
+    }
+
+    if deltas.is_empty() {
+        return Err(ChatModelError::InvalidProviderResponse {
+            provider: "ollama".to_string(),
+            message: "Ollama response did not include assistant content".to_string(),
+        });
+    }
+
+    Ok(ChatResponse {
+        text: deltas.concat(),
+        deltas,
+        finish_reason,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use coddy_core::{
@@ -197,6 +604,19 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[derive(Debug)]
+    struct StaticOllamaTransport {
+        body: Value,
+        response: ChatModelResult,
+    }
+
+    impl OllamaTransport for StaticOllamaTransport {
+        fn chat(&self, body: &Value) -> ChatModelResult {
+            assert_eq!(body, &self.body);
+            self.response.clone()
+        }
+    }
 
     #[test]
     fn chat_response_builds_streaming_text_from_deltas() {
@@ -277,6 +697,148 @@ mod tests {
             Err(ChatModelError::ProviderUnavailable {
                 provider: "openai".to_string()
             })
+        );
+    }
+
+    #[test]
+    fn default_client_routes_ollama_requests_to_ollama_adapter() {
+        let request = ChatRequest::new(
+            ModelRef {
+                provider: "ollama".to_string(),
+                name: "qwen2.5:0.5b".to_string(),
+            },
+            vec![ChatMessage::user("hello")],
+        )
+        .expect("request");
+        let expected_body = serde_json::json!({
+            "model": "qwen2.5:0.5b",
+            "messages": [
+                { "role": "user", "content": "hello" }
+            ],
+            "stream": true
+        });
+        let client = OllamaChatModelClient::with_transport(Arc::new(StaticOllamaTransport {
+            body: expected_body,
+            response: Ok(ChatResponse::from_text("hi")),
+        }));
+
+        assert_eq!(client.complete(request), Ok(ChatResponse::from_text("hi")));
+    }
+
+    #[test]
+    fn ollama_request_projects_tools_and_options() {
+        let request = ChatRequest {
+            model: ModelRef {
+                provider: "ollama".to_string(),
+                name: "coder".to_string(),
+            },
+            messages: vec![
+                ChatMessage::system("system"),
+                ChatMessage::user("user"),
+                ChatMessage::assistant("assistant"),
+            ],
+            tools: vec![ChatToolSpec {
+                name: "filesystem.list_files".to_string(),
+                description: "List files".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" }
+                    }
+                }),
+                risk_level: ToolRiskLevel::Low,
+                approval_policy: ApprovalPolicy::AutoApprove,
+            }],
+            temperature: Some(0.2),
+            max_output_tokens: Some(128),
+        };
+
+        let body = ollama_chat_body(&request);
+
+        assert_eq!(body["model"], "coder");
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][1]["content"], "user");
+        assert_eq!(
+            body["tools"][0]["function"]["name"],
+            "filesystem.list_files"
+        );
+        let temperature = body["options"]["temperature"]
+            .as_f64()
+            .expect("temperature");
+        assert!((temperature - 0.2).abs() < 0.000_001);
+        assert_eq!(body["options"]["num_predict"], 128);
+    }
+
+    #[test]
+    fn ollama_target_accepts_common_local_host_forms() {
+        assert_eq!(
+            OllamaHttpTarget::parse("127.0.0.1:11434").expect("host without scheme"),
+            OllamaHttpTarget {
+                host: "127.0.0.1".to_string(),
+                port: 11434,
+                path: "/api/chat".to_string(),
+            }
+        );
+        assert_eq!(
+            OllamaHttpTarget::parse("http://localhost:11434/").expect("trailing slash"),
+            OllamaHttpTarget {
+                host: "localhost".to_string(),
+                port: 11434,
+                path: "/api/chat".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn ollama_target_rejects_unsupported_schemes() {
+        let error = OllamaHttpTarget::parse("https://localhost:11434")
+            .expect_err("https is not supported by local transport");
+
+        assert_eq!(error.code(), "invalid_request");
+    }
+
+    #[test]
+    fn parses_ollama_streaming_ndjson_into_deltas() {
+        let body = r#"{"message":{"role":"assistant","content":"hello"},"done":false}
+{"message":{"role":"assistant","content":" world"},"done":false}
+{"done":true,"done_reason":"stop"}"#;
+
+        let response = parse_ollama_chat_body(body).expect("response");
+
+        assert_eq!(response.text, "hello world");
+        assert_eq!(response.deltas, vec!["hello", " world"]);
+        assert_eq!(response.finish_reason, ChatFinishReason::Stop);
+    }
+
+    #[test]
+    fn parses_chunked_ollama_http_response() {
+        let chunk = r#"{"message":{"role":"assistant","content":"hi"},"done":false}
+"#;
+        let raw = format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+            chunk.len(),
+            chunk
+        );
+
+        let response = parse_http_ollama_response(raw.as_bytes()).expect("response");
+
+        assert_eq!(response.text, "hi");
+        assert_eq!(response.deltas, vec!["hi"]);
+    }
+
+    #[test]
+    fn maps_ollama_http_errors_to_provider_errors() {
+        let raw = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 26\r\n\r\n{\"error\":\"model missing\"}";
+
+        let error = parse_http_ollama_response(raw.as_bytes()).expect_err("provider error");
+
+        assert_eq!(
+            error,
+            ChatModelError::ProviderError {
+                provider: "ollama".to_string(),
+                message: "model missing".to_string(),
+                retryable: true,
+            }
         );
     }
 }

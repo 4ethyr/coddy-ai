@@ -1,6 +1,6 @@
 use coddy_agent::{
     AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError, ChatRequest, ChatResponse,
-    ChatToolSpec, LocalAgentRuntime, UnavailableChatModelClient, LIST_FILES_TOOL,
+    ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, LIST_FILES_TOOL,
 };
 use coddy_core::{
     ModelRef, ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage,
@@ -58,7 +58,7 @@ impl CoddyRuntime {
         Self::new_with_agent_runtime_and_chat_client(
             tool_registry,
             agent_runtime,
-            Arc::new(UnavailableChatModelClient),
+            Arc::new(DefaultChatModelClient::default()),
         )
     }
 
@@ -718,6 +718,16 @@ fn model_error_message(
         ChatModelError::InvalidRequest(message) => {
             format!("Coddy could not build a valid chat request: {message}")
         }
+        ChatModelError::ProviderError {
+            provider, message, ..
+        }
+        | ChatModelError::Transport {
+            provider, message, ..
+        }
+        | ChatModelError::InvalidProviderResponse { provider, message } => format!(
+            "Coddy could not get a response from {provider} for {}/{}: {message}",
+            selected_model.provider, selected_model.name
+        ),
     }
 }
 
