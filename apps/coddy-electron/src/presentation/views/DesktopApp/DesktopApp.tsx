@@ -74,7 +74,7 @@ export function DesktopApp() {
         <header className="desktop-topbar flex h-12 flex-shrink-0 items-center justify-between border-b border-white/10 bg-zinc-950/60 px-4 backdrop-blur-lg sm:px-6">
           <div className="flex min-w-0 items-center gap-4">
             <span className="font-display text-lg font-bold uppercase tracking-tight text-primary drop-shadow-[0_0_8px_rgba(0,240,255,0.5)]">
-              AETHER_CORE
+              Coddy Core
             </span>
             <div className="hidden items-center gap-2 rounded border border-white/5 bg-surface-container/50 px-3 py-1 md:flex">
               <span className="h-2 w-2 rounded-full bg-primary shadow-[0_0_8px_rgba(0,219,233,0.8)]" />

@@ -112,7 +112,7 @@ export function FloatingTerminal() {
             className="h-5 w-5 text-primary drop-shadow-[0_0_8px_rgba(0,240,255,0.55)]"
           />
           <span className="font-display text-xl font-semibold uppercase tracking-[0.18em] text-primary drop-shadow-[0_0_10px_rgba(0,240,255,0.55)]">
-            CODDY_TERMINAL
+            CODDY;
           </span>
         </div>
 

@@ -40,7 +40,7 @@ export function Sidebar({
           </span>
           <div className="min-w-0">
             <h1 className="font-display text-sm font-black uppercase tracking-tight text-primary">
-              SYSTEM_REPL
+              Coddy
             </h1>
             <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.2em] text-on-surface-variant/60">
               V_4.0.2_ACTIVE

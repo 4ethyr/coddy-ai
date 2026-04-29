@@ -16,7 +16,7 @@ describe('Sidebar', () => {
       />,
     )
 
-    expect(screen.getByText('SYSTEM_REPL')).toBeInTheDocument()
+    expect(screen.getByText('Coddy')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Terminal/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Workspace/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Neural_Link/ })).toBeInTheDocument()
