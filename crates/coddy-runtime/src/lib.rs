@@ -160,6 +160,13 @@ impl CoddyRuntime {
         );
         self.publish_event_with_run_now(ReplEvent::RunStarted { run_id }, run_id);
         self.publish_event_with_run_now(
+            ReplEvent::TokenDelta {
+                run_id,
+                text: assistant_text.clone(),
+            },
+            run_id,
+        );
+        self.publish_event_with_run_now(
             ReplEvent::MessageAppended {
                 message: repl_message("assistant", assistant_text.clone()),
             },
@@ -568,6 +575,48 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| matches!(event.event, ReplEvent::RunCompleted { .. })));
+    }
+
+    #[test]
+    fn ask_command_streams_assistant_text_before_final_message() {
+        let request_id = Uuid::new_v4();
+        let runtime = CoddyRuntime::default();
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "explain streaming".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+
+        let events = runtime.events_after(1).0;
+        let delta_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    &event.event,
+                    ReplEvent::TokenDelta { text, .. }
+                        if text == "Coddy runtime received: explain streaming"
+                )
+            })
+            .expect("assistant token delta");
+        let assistant_message_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    &event.event,
+                    ReplEvent::MessageAppended { message }
+                        if message.role == "assistant"
+                            && message.text == "Coddy runtime received: explain streaming"
+                )
+            })
+            .expect("final assistant message");
+
+        assert!(delta_index < assistant_message_index);
     }
 
     #[test]
