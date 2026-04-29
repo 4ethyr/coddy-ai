@@ -262,6 +262,7 @@ dependencies = [
  "coddy-agent",
  "coddy-core",
  "coddy-ipc",
+ "tokio",
  "uuid",
 ]
 

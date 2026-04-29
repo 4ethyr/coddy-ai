@@ -1,5 +1,9 @@
 use coddy_agent::AgentToolRegistry;
-use coddy_ipc::{CoddyRequest, CoddyResult, ReplToolCatalogItem};
+use coddy_ipc::{
+    read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
+    CoddyWireResult, ReplToolCatalogItem,
+};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 #[derive(Debug, Clone, Default)]
 pub struct CoddyRuntime {
@@ -23,6 +27,16 @@ impl CoddyRuntime {
                 message: "Coddy runtime does not handle this request yet".to_string(),
             },
         }
+    }
+
+    pub async fn handle_connection<IO>(&self, stream: &mut IO) -> CoddyIpcResult<()>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin,
+    {
+        let request: CoddyWireRequest = read_frame(stream).await?;
+        request.ensure_compatible()?;
+        let response = CoddyWireResult::new(self.handle_request(request.request));
+        write_frame(stream, &response).await
     }
 
     pub fn tool_catalog(&self) -> Vec<ReplToolCatalogItem> {
@@ -113,5 +127,66 @@ mod tests {
         assert_eq!(actual_request_id, request_id);
         assert_eq!(code, "unsupported_request");
         assert!(message.contains("does not handle"));
+    }
+
+    #[tokio::test]
+    async fn connection_roundtrips_wire_tools_request() {
+        let request_id = Uuid::new_v4();
+        let runtime = CoddyRuntime::default();
+        let (mut client_stream, mut server_stream) = tokio::io::duplex(64 * 1024);
+
+        let server = tokio::spawn(async move {
+            runtime
+                .handle_connection(&mut server_stream)
+                .await
+                .expect("serve request");
+        });
+
+        write_frame(
+            &mut client_stream,
+            &CoddyWireRequest::new(CoddyRequest::Tools(ReplToolsJob { request_id })),
+        )
+        .await
+        .expect("write request");
+
+        let response: CoddyWireResult =
+            read_frame(&mut client_stream).await.expect("read response");
+        response.ensure_compatible().expect("compatible response");
+
+        let CoddyResult::ReplToolCatalog {
+            request_id: actual_request_id,
+            tools,
+        } = response.result
+        else {
+            panic!("expected tool catalog response");
+        };
+
+        assert_eq!(actual_request_id, request_id);
+        assert!(tools.iter().any(|tool| tool.name == "shell.run"));
+        server.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn connection_rejects_incompatible_wire_request() {
+        let runtime = CoddyRuntime::default();
+        let (mut client_stream, mut server_stream) = tokio::io::duplex(64 * 1024);
+        let mut request = CoddyWireRequest::new(CoddyRequest::Tools(ReplToolsJob {
+            request_id: Uuid::new_v4(),
+        }));
+        request.protocol_version += 1;
+
+        write_frame(&mut client_stream, &request)
+            .await
+            .expect("write request");
+
+        let error = runtime
+            .handle_connection(&mut server_stream)
+            .await
+            .expect_err("incompatible request must fail");
+
+        assert!(matches!(
+            error,
+            coddy_ipc::CoddyIpcError::IncompatibleProtocolVersion { .. }
+        ));
     }
 }

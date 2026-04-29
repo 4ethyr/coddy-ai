@@ -10,6 +10,8 @@ O backend já possui:
 - contratos REPL iniciais em `crates/coddy-ipc`;
 - cliente de transporte inicial em `crates/coddy-client`;
 - handler runtime inicial em `crates/coddy-runtime` para requests IPC do Coddy;
+- adaptador de conexão em `coddy-runtime` que lê `CoddyWireRequest`, valida
+  magic/versão e escreve `CoddyWireResult`;
 - configuração mínima do CLI em `CoddyRuntimeConfig`;
 - configuração neutra de microfone em `coddy_voice_input::VoiceInputConfig`;
 - protocolo direto `CoddyWireRequest`/`CoddyWireResult` aceito pelo daemon;
@@ -87,6 +89,8 @@ Critérios de aceite:
 
 - `apps/coddy` não importa `visionclip-common`;
 - `coddy-ipc` não importa crates VisionClip;
+- `coddy-runtime` consegue atender uma conexão wire isolada em teste sem
+  depender do daemon VisionClip;
 - testes de serialização permanecem estáveis;
 - daemon rejeita versão incompatível com mensagem clara.
 
