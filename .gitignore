@@ -11,3 +11,4 @@ dist/
 apps/*/node_modules/
 apps/*/dist/
 prints/
+.agent/
