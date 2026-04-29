@@ -4,6 +4,7 @@ import tseslint from 'typescript-eslint';
 const browserGlobals = {
   Blob: 'readonly',
   CSSStyleDeclaration: 'readonly',
+  DOMRect: 'readonly',
   Event: 'readonly',
   HTMLButtonElement: 'readonly',
   HTMLDivElement: 'readonly',
@@ -76,6 +77,7 @@ export default tseslint.config(
     languageOptions: {
       globals: {
         ...browserGlobals,
+        Buffer: 'readonly',
         afterEach: 'readonly',
         beforeEach: 'readonly',
         describe: 'readonly',

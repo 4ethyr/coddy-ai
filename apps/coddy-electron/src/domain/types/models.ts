@@ -24,6 +24,7 @@ export interface ModelProviderListRequest {
   provider: ModelProviderId
   apiKey?: string
   endpoint?: string
+  rememberCredential?: boolean
 }
 
 export interface ModelProviderListResult {
@@ -33,6 +34,10 @@ export interface ModelProviderListResult {
   fetchedAtUnixMs: number
   error?: {
     code: string
+    message: string
+  }
+  credentialStorage?: {
+    persisted: boolean
     message: string
   }
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ModelSelector } from '@/presentation/components/ModelSelector'
@@ -45,6 +45,17 @@ function providerGroup(provider: string): HTMLElement {
 }
 
 describe('ModelSelector', () => {
+  afterEach(() => {
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1024,
+    })
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: 768,
+    })
+  })
+
   it('renders the active model', () => {
     render(
       <ModelSelector model={{ provider: 'ollama', name: 'gemma4-E2B' }} />,
@@ -131,6 +142,158 @@ describe('ModelSelector', () => {
     expect(onSelect).toHaveBeenCalledWith({
       provider: 'openai',
       name: 'gpt-4.1',
+    })
+  })
+
+  it('can request secure credential persistence without keeping the token in the form', async () => {
+    const onLoadModels = vi.fn(async (request: ModelProviderListRequest) => {
+      const result = await modelLoader(request)
+      if (request.provider !== 'openai') return result
+
+      return {
+        ...result,
+        credentialStorage: {
+          persisted: true,
+          message: 'Credential saved with secure OS encryption.',
+        },
+      }
+    })
+    render(
+      <ModelSelector
+        model={{ provider: 'ollama', name: 'gemma4-E2B' }}
+        onLoadModels={onLoadModels}
+      />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Active model ollama/gemma4-E2B' }),
+    )
+
+    const openAiGroup = providerGroup('OpenAI')
+    const apiKeyInput = within(openAiGroup).getByPlaceholderText('sk-...')
+    await userEvent.type(apiKeyInput, 'sk-test')
+    await userEvent.click(within(openAiGroup).getByLabelText(/Remember securely/))
+    await userEvent.click(within(openAiGroup).getByRole('button', { name: 'Load' }))
+
+    expect(onLoadModels).toHaveBeenCalledWith({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      endpoint: undefined,
+      rememberCredential: true,
+    })
+    expect(apiKeyInput).toHaveValue('')
+    expect(await screen.findByText(/saved securely/)).toBeInTheDocument()
+  })
+
+  it('clears API key drafts even when provider loading fails', async () => {
+    const onLoadModels = vi.fn((request: ModelProviderListRequest) => {
+      if (request.provider === 'ollama') return modelLoader(request)
+
+      return Promise.resolve({
+        provider: request.provider,
+        models: [],
+        source: 'api' as const,
+        fetchedAtUnixMs: 1,
+        error: { code: 'MODEL_LIST_FAILED', message: 'Provider unavailable.' },
+      })
+    })
+    render(
+      <ModelSelector
+        model={{ provider: 'ollama', name: 'gemma4-E2B' }}
+        onLoadModels={onLoadModels}
+      />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Active model ollama/gemma4-E2B' }),
+    )
+
+    const openAiGroup = providerGroup('OpenAI')
+    const apiKeyInput = within(openAiGroup).getByPlaceholderText('sk-...')
+    await userEvent.type(apiKeyInput, 'sk-test')
+    await userEvent.click(within(openAiGroup).getByRole('button', { name: 'Load' }))
+
+    expect(
+      await within(openAiGroup).findByText('Provider unavailable.'),
+    ).toBeInTheDocument()
+    expect(apiKeyInput).toHaveValue('')
+  })
+
+  it('keeps the dropdown frame inside narrow floating windows', async () => {
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 480,
+    })
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: 420,
+    })
+
+    render(
+      <ModelSelector model={{ provider: 'ollama', name: 'gemma4-E2B' }} />,
+    )
+
+    const trigger = screen.getByRole('button', {
+      name: 'Active model ollama/gemma4-E2B',
+    })
+    trigger.getBoundingClientRect = () =>
+      ({
+        bottom: 48,
+        height: 28,
+        left: 300,
+        right: 468,
+        top: 20,
+        width: 168,
+        x: 300,
+        y: 20,
+        toJSON: () => ({}),
+      }) as DOMRect
+
+    await userEvent.click(trigger)
+
+    const popover = screen.getByTestId('model-selector-popover')
+    expect(popover).toHaveStyle({ left: '12px', width: '456px' })
+    expect(screen.getByTestId('model-selector-menu')).toHaveStyle({
+      maxHeight: '352px',
+    })
+  })
+
+  it('keeps the dropdown compact when the floating terminal is not fullscreen', async () => {
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1383,
+    })
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: 969,
+    })
+
+    render(
+      <ModelSelector model={{ provider: 'vertex', name: 'gemini-2.5-flash' }} />,
+    )
+
+    const trigger = screen.getByRole('button', {
+      name: 'Active model vertex/gemini-2.5-flash',
+    })
+    trigger.getBoundingClientRect = () =>
+      ({
+        bottom: 58,
+        height: 32,
+        left: 442,
+        right: 895,
+        top: 26,
+        width: 453,
+        x: 442,
+        y: 26,
+        toJSON: () => ({}),
+      }) as DOMRect
+
+    await userEvent.click(trigger)
+
+    const popover = screen.getByTestId('model-selector-popover')
+    expect(popover).toHaveStyle({ left: '335px', width: '560px' })
+    expect(screen.getByTestId('model-selector-menu')).toHaveStyle({
+      maxHeight: '620px',
     })
   })
 

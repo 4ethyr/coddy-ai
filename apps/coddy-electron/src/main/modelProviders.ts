@@ -1,4 +1,4 @@
-type ModelProviderId =
+export type ModelProviderId =
   | 'ollama'
   | 'openai'
   | 'openrouter'
@@ -32,6 +32,7 @@ export interface ModelProviderListPayload {
   provider: ModelProviderId
   apiKey?: string
   endpoint?: string
+  rememberCredential?: boolean
 }
 
 export interface ModelProviderListPayloadResult {
@@ -41,6 +42,10 @@ export interface ModelProviderListPayloadResult {
   fetchedAtUnixMs: number
   error?: {
     code: string
+    message: string
+  }
+  credentialStorage?: {
+    persisted: boolean
     message: string
   }
 }

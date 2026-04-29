@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -44,13 +45,30 @@ type ProviderCredentialDraftMap = Partial<
     {
       apiKey: string
       endpoint: string
+      rememberCredential: boolean
     }
   >
 >
+type CredentialDraftField = 'apiKey' | 'endpoint' | 'rememberCredential'
+type CredentialDraftValue = string | boolean
+type MenuFrame = {
+  top: number
+  left: number
+  width: number
+  maxHeight: number
+}
+
+const DEFAULT_MENU_FRAME: MenuFrame = {
+  top: 64,
+  left: 16,
+  width: 420,
+  maxHeight: 520,
+}
 
 export function ModelSelector({ model, onSelect, onLoadModels }: Props) {
   const [isOpen, setIsOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [menuFrame, setMenuFrame] = useState<MenuFrame>(DEFAULT_MENU_FRAME)
   const [providerModels, setProviderModels] = useState<ProviderModelMap>(() =>
     getInitialProviderModels(),
   )
@@ -59,11 +77,16 @@ export function ModelSelector({ model, onSelect, onLoadModels }: Props) {
   const [credentialDrafts, setCredentialDrafts] =
     useState<ProviderCredentialDraftMap>({})
   const rootRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
   const activeProvider = getModelProvider(model.provider)
   const activeModel =
     findModelEntry(model, providerModels) ?? getModelCatalogEntry(model)
   const activeLabel = `${model.provider}/${model.name}`
   const activeProviderLabel = activeProvider?.shortLabel ?? model.provider
+
+  const updateMenuFrame = useCallback(() => {
+    setMenuFrame(calculateMenuFrame(triggerRef.current?.getBoundingClientRect()))
+  }, [])
 
   const handleMenuWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     const menu = event.currentTarget
@@ -89,38 +112,33 @@ export function ModelSelector({ model, onSelect, onLoadModels }: Props) {
       return
     }
 
-    const draft = getCredentialDraft(credentialDrafts, provider.id)
-    if (provider.requiresCredential && !draft.apiKey.trim()) {
-      setProviderLoadState((current) => ({
-        ...current,
-        [provider.id]: {
-          status: 'error',
-          message: 'Insert provider credential to load models.',
-        },
-      }))
-      return
-    }
-    if (provider.requiresEndpoint && !draft.endpoint.trim()) {
-      setProviderLoadState((current) => ({
-        ...current,
-        [provider.id]: {
-          status: 'error',
-          message: 'Insert provider endpoint to load models.',
-        },
-      }))
-      return
-    }
-
     setProviderLoadState((current) => ({
       ...current,
       [provider.id]: { status: 'loading' },
     }))
 
-    const result = await onLoadModels({
-      provider: provider.id,
-      apiKey: draft.apiKey.trim() || undefined,
-      endpoint: draft.endpoint.trim() || undefined,
-    })
+    const draft = getCredentialDraft(credentialDrafts, provider.id)
+    let result: ModelProviderListResult
+    try {
+      result = await onLoadModels({
+        provider: provider.id,
+        apiKey: draft.apiKey.trim() || undefined,
+        endpoint: draft.endpoint.trim() || undefined,
+        ...(draft.rememberCredential ? { rememberCredential: true } : {}),
+      })
+    } catch {
+      clearCredentialDraft(provider.id)
+      setProviderLoadState((current) => ({
+        ...current,
+        [provider.id]: {
+          status: 'error',
+          message: 'Unable to load provider models.',
+        },
+      }))
+      return
+    }
+
+    clearCredentialDraft(provider.id)
 
     if (result.error) {
       setProviderLoadState((current) => ({
@@ -137,19 +155,22 @@ export function ModelSelector({ model, onSelect, onLoadModels }: Props) {
       ...current,
       [provider.id]: result.models,
     }))
-    setCredentialDrafts((current) => ({
-      ...current,
-      [provider.id]: {
-        ...getCredentialDraft(current, provider.id),
-        apiKey: '',
-      },
-    }))
     setProviderLoadState((current) => ({
       ...current,
       [provider.id]: {
         status: 'ready',
-        message: `${result.models.length} models loaded`,
+        message: getLoadedStatusMessage(result),
         fetchedAtUnixMs: result.fetchedAtUnixMs,
+      },
+    }))
+  }
+
+  const clearCredentialDraft = (provider: ModelProviderId) => {
+    setCredentialDrafts((current) => ({
+      ...current,
+      [provider]: {
+        ...getCredentialDraft(current, provider),
+        apiKey: '',
       },
     }))
   }
@@ -171,6 +192,8 @@ export function ModelSelector({ model, onSelect, onLoadModels }: Props) {
   useEffect(() => {
     if (!isOpen) return
 
+    updateMenuFrame()
+
     const handlePointerDown = (event: PointerEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) {
         setIsOpen(false)
@@ -183,12 +206,16 @@ export function ModelSelector({ model, onSelect, onLoadModels }: Props) {
 
     document.addEventListener('pointerdown', handlePointerDown)
     document.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('resize', updateMenuFrame)
+    window.addEventListener('scroll', updateMenuFrame, true)
 
     return () => {
       document.removeEventListener('pointerdown', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('resize', updateMenuFrame)
+      window.removeEventListener('scroll', updateMenuFrame, true)
     }
-  }, [isOpen])
+  }, [isOpen, updateMenuFrame])
 
   const filteredProviders = getFilteredProviderGroups(
     providerModels,
@@ -198,6 +225,7 @@ export function ModelSelector({ model, onSelect, onLoadModels }: Props) {
   return (
     <div ref={rootRef} className="relative">
       <button
+        ref={triggerRef}
         type="button"
         aria-expanded={isOpen}
         aria-haspopup="menu"
@@ -215,17 +243,25 @@ export function ModelSelector({ model, onSelect, onLoadModels }: Props) {
       </button>
 
       <div
-        className={`absolute right-0 top-full z-[140] pt-2 transition duration-150 ease-out ${
+        data-testid="model-selector-popover"
+        className={`model-selector-popover fixed z-[220] transition duration-150 ease-out ${
           isOpen
             ? 'translate-y-0 opacity-100'
             : 'pointer-events-none -translate-y-1 opacity-0'
         }`}
+        style={{
+          left: `${menuFrame.left}px`,
+          top: `${menuFrame.top}px`,
+          width: `${menuFrame.width}px`,
+          maxWidth: 'calc(100vw - 24px)',
+        }}
       >
         <div
           data-testid="model-selector-menu"
-          className="model-selector-menu flex min-w-[420px] max-w-[calc(100vw-32px)] flex-col gap-2 rounded-lg border border-outline-variant/80 p-2 pr-3 shadow-[0_24px_56px_rgba(0,0,0,0.72)]"
+          className="model-selector-menu flex w-full min-w-0 flex-col gap-2 rounded-lg border border-outline-variant/80 p-2 pr-3 shadow-[0_24px_56px_rgba(0,0,0,0.72)]"
           aria-label="Model provider catalog"
           onWheelCapture={handleMenuWheel}
+          style={{ maxHeight: `${menuFrame.maxHeight}px` }}
         >
           <div className="model-selector-search sticky top-0 z-10 rounded-md border border-white/[0.08] bg-surface-container-high/95 p-2 backdrop-blur-xl">
             <label className="flex items-center gap-2 rounded border border-outline-variant/60 bg-surface-dim/70 px-3 py-2 text-on-surface-variant focus-within:border-primary/50">
@@ -292,8 +328,8 @@ function ProviderGroup({
   models: readonly ModelCatalogEntry[]
   activeModel: ModelRef
   loadState?: ProviderLoadMap[ModelProviderId]
-  draft: { apiKey: string; endpoint: string }
-  onDraftChange: (field: 'apiKey' | 'endpoint', value: string) => void
+  draft: { apiKey: string; endpoint: string; rememberCredential: boolean }
+  onDraftChange: (field: CredentialDraftField, value: CredentialDraftValue) => void
   onLoad: () => void
   onSelect: (model: ModelRef) => void
 }) {
@@ -359,6 +395,20 @@ function ProviderGroup({
               onChange={(event) => onDraftChange('endpoint', event.target.value)}
               className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-on-surface outline-none placeholder:text-on-surface-variant/45"
             />
+          </label>
+        )}
+
+        {provider.requiresCredential && (
+          <label className="flex items-center gap-2 px-1 font-mono text-[10px] uppercase tracking-[0.12em] text-on-surface-variant/60">
+            <input
+              type="checkbox"
+              checked={draft.rememberCredential}
+              onChange={(event) =>
+                onDraftChange('rememberCredential', event.target.checked)
+              }
+              className="h-3 w-3 accent-primary"
+            />
+            <span>Remember securely</span>
           </label>
         )}
 
@@ -464,6 +514,37 @@ function getInitialProviderModels(): ProviderModelMap {
   }, {})
 }
 
+function calculateMenuFrame(rect: DOMRect | undefined): MenuFrame {
+  const viewportWidth = window.innerWidth || 800
+  const viewportHeight = window.innerHeight || 600
+  const margin = 12
+  const availableWidth = Math.max(0, viewportWidth - margin * 2)
+  const width = Math.min(560, availableWidth)
+  const anchorRect = getUsableAnchorRect(rect)
+  const anchorRight = anchorRect?.right ?? viewportWidth - margin
+  const maxLeft = viewportWidth - width - margin
+  const left = clampNumber(anchorRight - width, margin, Math.max(margin, maxLeft))
+  const idealTop = (anchorRect?.bottom ?? 56) + 8
+  const top = clampNumber(idealTop, margin, Math.max(margin, viewportHeight - 280))
+  const availableHeight = Math.max(160, viewportHeight - top - margin)
+  const maxHeight = Math.min(620, availableHeight)
+
+  return {
+    top: Math.round(top),
+    left: Math.round(left),
+    width: Math.round(width),
+    maxHeight: Math.round(maxHeight),
+  }
+}
+
+function getUsableAnchorRect(rect: DOMRect | undefined): DOMRect | undefined {
+  if (!rect) return undefined
+  const values = [rect.top, rect.right, rect.bottom, rect.left]
+  const hasFiniteValues = values.every(Number.isFinite)
+  const hasVisibleBox = rect.width > 0 || rect.height > 0
+  return hasFiniteValues && hasVisibleBox ? rect : undefined
+}
+
 function getFilteredProviderGroups(
   providerModels: ProviderModelMap,
   query: string,
@@ -532,8 +613,23 @@ function findModelEntry(
 function getCredentialDraft(
   drafts: ProviderCredentialDraftMap,
   provider: ModelProviderId,
-): { apiKey: string; endpoint: string } {
-  return drafts[provider] ?? { apiKey: '', endpoint: '' }
+): { apiKey: string; endpoint: string; rememberCredential: boolean } {
+  return (
+    drafts[provider] ?? {
+      apiKey: '',
+      endpoint: '',
+      rememberCredential: false,
+    }
+  )
+}
+
+function getLoadedStatusMessage(result: ModelProviderListResult): string {
+  if (result.credentialStorage) {
+    return result.credentialStorage.persisted
+      ? `${result.models.length} models loaded - saved securely`
+      : `${result.models.length} models loaded - credential not saved`
+  }
+  return `${result.models.length} models loaded`
 }
 
 function getStatusLabel(
@@ -561,4 +657,8 @@ function getWheelDeltaPixels(
   }
 
   return event.deltaY
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
 }

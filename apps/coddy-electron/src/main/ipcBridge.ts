@@ -3,9 +3,19 @@
 
 import { spawn, ChildProcess } from 'child_process'
 import { createInterface } from 'readline'
-import { ipcMain, BrowserWindow, screen } from 'electron'
+import * as path from 'path'
+import { app, ipcMain, BrowserWindow, screen, safeStorage } from 'electron'
 import type { Rectangle } from 'electron'
-import { listProviderModels, type ModelProviderListPayload } from './modelProviders'
+import {
+  listProviderModels,
+  type ModelProviderListPayload,
+  type ModelProviderListPayloadResult,
+} from './modelProviders'
+import {
+  SecureCredentialStore,
+  type CredentialStorageResult,
+  type ProviderCredentialRecord,
+} from './secureCredentialStore'
 
 const CODDY_BIN = process.env.CODDY_BIN || 'coddy'
 
@@ -129,6 +139,8 @@ function reapStream(streamId: string): void {
 // ---------------------------------------------------------------------------
 
 export function registerIpcHandlers(): void {
+  const credentialStore = createCredentialStore()
+
   // ---- Window controls ----
   ipcMain.handle('window:close', (event) => {
     BrowserWindow.fromWebContents(event.sender)?.close()
@@ -216,7 +228,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     'models:list',
     async (_event, payload: ModelProviderListPayload) => {
-      return listProviderModels(payload)
+      return listProviderModelsWithSecureCredentials(payload, credentialStore)
     },
   )
 
@@ -388,6 +400,72 @@ async function pumpWatchStream(streamId: string, child: ChildProcess): Promise<v
       win.webContents.send('repl:watch-event', { streamId, done: true })
     }
     activeStreams.delete(streamId)
+  }
+}
+
+function createCredentialStore(): SecureCredentialStore {
+  return new SecureCredentialStore({
+    filePath: path.join(app.getPath('userData'), 'secure-model-credentials.json'),
+    isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+    encryptString: (value) => safeStorage.encryptString(value),
+    decryptString: (value) => safeStorage.decryptString(value),
+  })
+}
+
+async function listProviderModelsWithSecureCredentials(
+  payload: ModelProviderListPayload,
+  credentialStore: SecureCredentialStore,
+): Promise<ModelProviderListPayloadResult> {
+  const stored = await credentialStore.get(payload.provider)
+  const apiKey = payload.apiKey?.trim() || stored?.apiKey
+  const endpoint = payload.endpoint?.trim() || stored?.endpoint
+  const request: ModelProviderListPayload = {
+    provider: payload.provider,
+    ...(apiKey ? { apiKey } : {}),
+    ...(endpoint ? { endpoint } : {}),
+  }
+
+  const result = await listProviderModels(request)
+  if (result.error) return result
+
+  const storageRecord = getCredentialRecordToPersist(payload, stored, endpoint)
+  if (!payload.rememberCredential || !storageRecord) return result
+
+  return {
+    ...result,
+    credentialStorage: await saveCredentialRecord(
+      credentialStore,
+      payload.provider,
+      storageRecord,
+    ),
+  }
+}
+
+function getCredentialRecordToPersist(
+  payload: ModelProviderListPayload,
+  stored: ProviderCredentialRecord | null,
+  endpoint: string | undefined,
+): ProviderCredentialRecord | null {
+  const apiKey = payload.apiKey?.trim() || stored?.apiKey
+  if (!apiKey) return null
+  return {
+    apiKey,
+    ...(endpoint ? { endpoint } : {}),
+  }
+}
+
+async function saveCredentialRecord(
+  credentialStore: SecureCredentialStore,
+  provider: ModelProviderListPayload['provider'],
+  record: ProviderCredentialRecord,
+): Promise<CredentialStorageResult> {
+  try {
+    return await credentialStore.save(provider, record)
+  } catch {
+    return {
+      persisted: false,
+      message: 'Secure credential storage failed; token was not saved.',
+    }
   }
 }
 
