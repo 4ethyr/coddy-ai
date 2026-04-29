@@ -1,13 +1,15 @@
-use coddy_agent::AgentToolRegistry;
+use coddy_agent::{AgentToolRegistry, LocalAgentRuntime, LIST_FILES_TOOL};
 use coddy_core::{
-    ModelRef, ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplMessage, ReplMode,
-    ReplSession, ReplSessionSnapshot,
+    ModelRef, ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage,
+    ReplMode, ReplSession, ReplSessionSnapshot, ToolCall, ToolName, ToolResultStatus,
 };
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
     CoddyWireResult, ReplCommandJob, ReplEventStreamJob, ReplToolCatalogItem,
 };
+use serde_json::json;
 use std::{
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -18,6 +20,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct CoddyRuntime {
     tool_registry: AgentToolRegistry,
+    agent_runtime: Option<LocalAgentRuntime>,
     state: Arc<Mutex<RuntimeState>>,
 }
 
@@ -29,8 +32,28 @@ struct RuntimeState {
 
 impl CoddyRuntime {
     pub fn new(tool_registry: AgentToolRegistry) -> Self {
+        let agent_runtime =
+            default_workspace_root().and_then(|workspace| LocalAgentRuntime::new(workspace).ok());
+        Self::new_with_agent_runtime(tool_registry, agent_runtime)
+    }
+
+    pub fn with_workspace(
+        tool_registry: AgentToolRegistry,
+        workspace_root: impl AsRef<Path>,
+    ) -> Result<Self, coddy_agent::AgentError> {
+        Ok(Self::new_with_agent_runtime(
+            tool_registry,
+            Some(LocalAgentRuntime::new(workspace_root)?),
+        ))
+    }
+
+    fn new_with_agent_runtime(
+        tool_registry: AgentToolRegistry,
+        agent_runtime: Option<LocalAgentRuntime>,
+    ) -> Self {
         Self {
             tool_registry,
+            agent_runtime,
             state: Arc::new(Mutex::new(RuntimeState::new(default_session()))),
         }
     }
@@ -149,16 +172,31 @@ impl CoddyRuntime {
             return invalid_command(request_id, "ask text is required");
         };
 
+        let session_id = self.session_id();
+        let selected_model = self.snapshot().session.selected_model;
+        let action = plan_ask_action(&text);
         let run_id = Uuid::new_v4();
-        let assistant_text = format!("Coddy runtime received: {text}");
+        let (intent, confidence) = classify_ask_intent(&text, &action);
 
         self.publish_event_with_run_now(
             ReplEvent::MessageAppended {
-                message: repl_message("user", text),
+                message: repl_message("user", text.clone()),
             },
             run_id,
         );
         self.publish_event_with_run_now(ReplEvent::RunStarted { run_id }, run_id);
+        self.publish_event_with_run_now(ReplEvent::IntentDetected { intent, confidence }, run_id);
+
+        let assistant_text = match action {
+            AskAction::ListWorkspace { path } => {
+                self.execute_workspace_listing(session_id, run_id, &text, &path, selected_model)
+            }
+            AskAction::ModelBackedResponse => model_backed_response_placeholder(
+                &selected_model,
+                self.tool_registry.definitions().len(),
+            ),
+        };
+
         self.publish_event_with_run_now(
             ReplEvent::TokenDelta {
                 run_id,
@@ -181,8 +219,83 @@ impl CoddyRuntime {
         }
     }
 
+    fn execute_workspace_listing(
+        &self,
+        session_id: Uuid,
+        run_id: Uuid,
+        goal: &str,
+        path: &str,
+        selected_model: ModelRef,
+    ) -> String {
+        let Some(agent_runtime) = &self.agent_runtime else {
+            return "Coddy cannot access the workspace from this runtime process yet.".to_string();
+        };
+
+        let mut state = agent_runtime.start_run(session_id, goal.to_string());
+        state.run_id = run_id;
+        agent_runtime.add_plan_item(
+            &mut state,
+            format!("List workspace files in {path}"),
+            Some(ToolName::new(LIST_FILES_TOOL).expect("built-in tool name")),
+        );
+        let call = ToolCall::new(
+            session_id,
+            run_id,
+            ToolName::new(LIST_FILES_TOOL).expect("built-in tool name"),
+            json!({
+                "path": path,
+                "max_entries": 80,
+            }),
+            unix_ms_now(),
+        );
+        let outcome = agent_runtime.execute_tool_call(&mut state, &call);
+        for event in outcome.events {
+            self.publish_event_with_run_now(event, run_id);
+        }
+
+        let Some(result) = outcome.result else {
+            return "Coddy started a workspace listing but did not receive a tool result."
+                .to_string();
+        };
+
+        match result.status {
+            ToolResultStatus::Succeeded => {
+                let Some(output) = result.output else {
+                    return format!("Workspace entries under `{path}`: no structured output.");
+                };
+                let entries = output.text.trim();
+                let scope = if path == "." { "workspace" } else { path };
+                let mut response = if entries.is_empty() {
+                    format!("No entries found under `{scope}`.")
+                } else {
+                    format!("Workspace entries under `{scope}`:\n{entries}")
+                };
+                if output.truncated {
+                    response.push_str("\n\nResult truncated. Narrow the path to inspect more.");
+                }
+                if selected_model.name == "unselected" {
+                    response.push_str(
+                        "\n\nNo chat model is selected yet; this answer used only the safe local filesystem tool.",
+                    );
+                }
+                response
+            }
+            ToolResultStatus::Failed | ToolResultStatus::Cancelled | ToolResultStatus::Denied => {
+                let message = result
+                    .error
+                    .map(|error| error.message)
+                    .unwrap_or_else(|| "unknown tool failure".to_string());
+                format!("I could not list workspace entries under `{path}`: {message}")
+            }
+        }
+    }
+
     pub fn snapshot(&self) -> ReplSessionSnapshot {
         self.with_state(|state| state.broker.snapshot(state.session.clone()))
+    }
+
+    fn session_id(&self) -> Uuid {
+        self.with_state(|state| state.session.id)
     }
 
     pub fn events_after(&self, sequence: u64) -> (Vec<ReplEventEnvelope>, u64) {
@@ -358,6 +471,134 @@ fn invalid_command(request_id: Uuid, message: &str) -> CoddyResult {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AskAction {
+    ListWorkspace { path: String },
+    ModelBackedResponse,
+}
+
+fn plan_ask_action(text: &str) -> AskAction {
+    let normalized = text.trim();
+    let normalized_ascii = normalized.to_ascii_lowercase();
+
+    if normalized_ascii == "ls" {
+        return AskAction::ListWorkspace {
+            path: ".".to_string(),
+        };
+    }
+
+    if normalized_ascii.starts_with("ls ") {
+        let rest = &normalized[3..];
+        return AskAction::ListWorkspace {
+            path: normalize_workspace_path(rest),
+        };
+    }
+
+    let list_triggers = [
+        "list files",
+        "list workspace",
+        "show files",
+        "listar arquivos",
+        "liste arquivos",
+        "mostrar arquivos",
+        "mostre arquivos",
+    ];
+    if list_triggers
+        .iter()
+        .any(|trigger| normalized_ascii.contains(trigger))
+    {
+        return AskAction::ListWorkspace {
+            path: extract_requested_workspace_path(normalized),
+        };
+    }
+
+    AskAction::ModelBackedResponse
+}
+
+fn extract_requested_workspace_path(text: &str) -> String {
+    let ascii_lowercase = text.to_ascii_lowercase();
+    for marker in [" in ", " under ", " from ", " at ", " em ", " dentro de "] {
+        if let Some(index) = ascii_lowercase.rfind(marker) {
+            let start = index + marker.len();
+            return normalize_workspace_path(&text[start..]);
+        }
+    }
+    ".".to_string()
+}
+
+fn normalize_workspace_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed == "." {
+        return ".".to_string();
+    }
+    let trimmed = trimmed.trim_matches(|character: char| {
+        character.is_whitespace()
+            || matches!(character, '"' | '\'' | '`' | ',' | ';' | ':' | '?' | '!')
+    });
+    if trimmed.is_empty() {
+        ".".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn classify_ask_intent(text: &str, action: &AskAction) -> (ReplIntent, f32) {
+    if matches!(action, AskAction::ListWorkspace { .. }) {
+        return (ReplIntent::ManageContext, 0.88);
+    }
+
+    let normalized = text.to_ascii_lowercase();
+    if contains_any(
+        &normalized,
+        &["debug", "erro", "error", "stack trace", "falha"],
+    ) {
+        return (ReplIntent::DebugCode, 0.72);
+    }
+    if contains_any(&normalized, &["test", "teste", "spec", "coverage"]) {
+        return (ReplIntent::GenerateTestCases, 0.68);
+    }
+    if contains_any(
+        &normalized,
+        &[
+            "implement",
+            "implemente",
+            "fix",
+            "corrija",
+            "refactor",
+            "refatore",
+            "revise",
+            "continue",
+            "commit",
+        ],
+    ) {
+        return (ReplIntent::AgenticCodeChange, 0.7);
+    }
+    (ReplIntent::AskTechnicalQuestion, 0.55)
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn model_backed_response_placeholder(selected_model: &ModelRef, tool_count: usize) -> String {
+    if selected_model.name == "unselected" {
+        return format!(
+            "Coddy received the request, but no chat model is selected yet. Select a provider/model to enable model-backed coding responses. {tool_count} local tools are available for safe workspace actions."
+        );
+    }
+
+    format!(
+        "Coddy received the request for {}/{}. Model-backed streaming is not wired into this runtime path yet; the current runtime can synchronize sessions, stream events and execute safe local tools.",
+        selected_model.provider, selected_model.name
+    )
+}
+
+fn default_workspace_root() -> Option<PathBuf> {
+    std::env::var_os("CODDY_WORKSPACE")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,8 +609,38 @@ mod tests {
     use coddy_ipc::{
         ReplCommandJob, ReplEventStreamJob, ReplEventsJob, ReplSessionSnapshotJob, ReplToolsJob,
     };
-    use std::{env, path::PathBuf};
+    use std::{env, fs, path::PathBuf};
     use uuid::Uuid;
+
+    struct TempWorkspace {
+        path: PathBuf,
+    }
+
+    impl TempWorkspace {
+        fn new() -> Self {
+            let path = env::temp_dir().join(format!("coddy-runtime-workspace-{}", Uuid::new_v4()));
+            fs::create_dir_all(&path).expect("create temp workspace");
+            Self { path }
+        }
+
+        fn write(&self, relative_path: &str, content: &str) {
+            let path = self.path.join(relative_path);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create parent");
+            }
+            fs::write(path, content).expect("write fixture");
+        }
+
+        fn mkdir(&self, relative_path: &str) {
+            fs::create_dir_all(self.path.join(relative_path)).expect("create fixture dir");
+        }
+    }
+
+    impl Drop for TempWorkspace {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 
     #[test]
     fn tools_request_returns_sorted_rich_catalog_from_agent_registry() {
@@ -562,16 +833,24 @@ mod tests {
         let events = runtime.events_after(1).0;
 
         assert_eq!(actual_request_id, request_id);
-        assert_eq!(text, "Coddy runtime received: explain this module");
+        assert!(text.contains("no chat model is selected yet"));
         assert!(spoken);
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[0].text, "explain this module");
         assert_eq!(messages[1].role, "assistant");
+        assert!(messages[1].text.contains("model-backed coding responses"));
         assert_eq!(snapshot.session.active_run, None);
         assert!(events
             .iter()
             .any(|event| matches!(event.event, ReplEvent::RunStarted { .. })));
+        assert!(events.iter().any(|event| matches!(
+            event.event,
+            ReplEvent::IntentDetected {
+                intent: coddy_core::ReplIntent::AskTechnicalQuestion,
+                ..
+            }
+        )));
         assert!(events
             .iter()
             .any(|event| matches!(event.event, ReplEvent::RunCompleted { .. })));
@@ -600,7 +879,7 @@ mod tests {
                 matches!(
                     &event.event,
                     ReplEvent::TokenDelta { text, .. }
-                        if text == "Coddy runtime received: explain streaming"
+                        if text.contains("model-backed coding responses")
                 )
             })
             .expect("assistant token delta");
@@ -611,12 +890,91 @@ mod tests {
                     &event.event,
                     ReplEvent::MessageAppended { message }
                         if message.role == "assistant"
-                            && message.text == "Coddy runtime received: explain streaming"
+                            && message.text.contains("model-backed coding responses")
                 )
             })
             .expect("final assistant message");
 
         assert!(delta_index < assistant_message_index);
+    }
+
+    #[test]
+    fn ask_command_routes_workspace_listing_through_read_only_tool() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("README.md", "# Coddy\n");
+        workspace.mkdir("crates");
+        let runtime = CoddyRuntime::with_workspace(AgentToolRegistry::default(), &workspace.path)
+            .expect("runtime");
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "list files".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let events = runtime.events_after(1).0;
+        let snapshot = runtime.snapshot();
+
+        assert!(text.contains("Workspace entries under `workspace`"));
+        assert!(text.contains("README.md"));
+        assert!(text.contains("crates"));
+        assert!(events.iter().any(|event| matches!(
+            event.event,
+            ReplEvent::IntentDetected {
+                intent: coddy_core::ReplIntent::ManageContext,
+                ..
+            }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolStarted { name } if name == LIST_FILES_TOOL
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolCompleted { name, status: coddy_core::ToolStatus::Succeeded }
+                if name == LIST_FILES_TOOL
+        )));
+        assert!(snapshot
+            .session
+            .messages
+            .last()
+            .is_some_and(|message| message.text.contains("README.md")));
+    }
+
+    #[test]
+    fn workspace_listing_does_not_allow_path_traversal() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        let runtime = CoddyRuntime::with_workspace(AgentToolRegistry::default(), &workspace.path)
+            .expect("runtime");
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "list files in ..".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let events = runtime.events_after(1).0;
+
+        assert!(text.contains("path traversal is not allowed"));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolCompleted { name, status: coddy_core::ToolStatus::Failed }
+                if name == LIST_FILES_TOOL
+        )));
     }
 
     #[test]

@@ -44,6 +44,7 @@ export function FloatingTerminal() {
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
     () => loadSettings().floatingAppearance,
   )
+  const toolActivity = session.tool_activity ?? []
 
   // Auto-scroll to bottom on new messages or streaming tokens
   useEffect(() => {
@@ -207,6 +208,35 @@ export function FloatingTerminal() {
           <SystemLine text="system.initialize(context='coddy_floating');" />
           <SystemLine text={`daemon.status=${connecting ? 'connecting' : 'ready'}; model='${session.selected_model.name}';`} />
           <SystemLine text="awaiting user command." />
+
+          {toolActivity.length > 0 && (
+            <div className="rounded-lg border border-primary/15 bg-surface-container/35 px-4 py-3 font-mono text-xs text-on-surface-variant backdrop-blur-md">
+              <div className="mb-2 uppercase tracking-[0.2em] text-primary/80">
+                agent.tools
+              </div>
+              <div className="flex flex-col gap-1">
+                {toolActivity.map((activity) => (
+                  <div
+                    key={activity.id}
+                    className="flex min-w-0 items-center justify-between gap-3"
+                  >
+                    <span className="truncate">{activity.name}</span>
+                    <span
+                      className={
+                        activity.status === 'Running'
+                          ? 'text-primary'
+                          : activity.status === 'Succeeded'
+                            ? 'text-emerald-300'
+                            : 'text-red-300'
+                      }
+                    >
+                      {activity.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {error && (
             <div className="flex items-center gap-3 rounded-lg border border-red-400/25 bg-red-500/10 px-4 py-3 font-mono text-sm text-red-300">

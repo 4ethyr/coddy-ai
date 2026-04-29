@@ -16,6 +16,7 @@ function testSession(overrides?: Partial<ReplSession>): ReplSession {
     workspace_context: [],
     messages: [],
     active_run: null,
+    tool_activity: [],
     streaming_text: '',
     ...overrides,
   }
@@ -58,6 +59,7 @@ describe('sessionReducer', () => {
       expect(result.active_run).toBe('run-001')
       expect(result.status).toBe('Thinking')
       expect(result.streaming_text).toBe('')
+      expect(result.tool_activity).toEqual([])
     })
   })
 
@@ -387,17 +389,25 @@ describe('sessionReducer', () => {
       expect(result.status).toBe('Thinking')
     })
 
-    it('ToolStarted keeps current status', () => {
+    it('ToolStarted records running tool activity', () => {
       const session = testSession({ status: 'Thinking' })
       const event: ReplEvent = { ToolStarted: { name: 'search_web' } }
 
       const result = sessionReducer(session, event)
 
       expect(result.status).toBe('Thinking')
+      expect(result.tool_activity).toEqual([
+        { id: 'search_web-1', name: 'search_web', status: 'Running' },
+      ])
     })
 
-    it('ToolCompleted keeps current status', () => {
-      const session = testSession({ status: 'Thinking' })
+    it('ToolCompleted updates the last running tool activity', () => {
+      const session = testSession({
+        status: 'Thinking',
+        tool_activity: [
+          { id: 'search_web-1', name: 'search_web', status: 'Running' },
+        ],
+      })
       const event: ReplEvent = {
         ToolCompleted: { name: 'search_web', status: 'Denied' },
       }
@@ -405,6 +415,26 @@ describe('sessionReducer', () => {
       const result = sessionReducer(session, event)
 
       expect(result.status).toBe('Thinking')
+      expect(result.tool_activity).toEqual([
+        { id: 'search_web-1', name: 'search_web', status: 'Denied' },
+      ])
+    })
+
+    it('ToolCompleted records orphan completion events', () => {
+      const session = testSession({ status: 'Thinking' })
+      const event: ReplEvent = {
+        ToolCompleted: { name: 'filesystem.list_files', status: 'Succeeded' },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result.tool_activity).toEqual([
+        {
+          id: 'filesystem.list_files-1',
+          name: 'filesystem.list_files',
+          status: 'Succeeded',
+        },
+      ])
     })
 
     it('PermissionRequested transitions to AwaitingToolApproval', () => {

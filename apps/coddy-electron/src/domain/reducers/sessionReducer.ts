@@ -3,7 +3,7 @@
 // Mirrors: crates/coddy-core/src/session.rs — ReplSession::apply_event()
 
 import type { ReplSession } from '@/domain/types/session'
-import type { ReplEvent } from '@/domain/types/events'
+import type { ReplEvent, ToolStatus } from '@/domain/types/events'
 
 export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSession {
   const tag = Object.keys(event)[0] as keyof ReplEvent
@@ -16,7 +16,13 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
 
     case 'RunStarted': {
       const { run_id } = (event as { RunStarted: { run_id: string } }).RunStarted
-      return { ...session, active_run: run_id, status: 'Thinking', streaming_text: '' }
+      return {
+        ...session,
+        active_run: run_id,
+        status: 'Thinking',
+        streaming_text: '',
+        tool_activity: [],
+      }
     }
 
     case 'VoiceListeningStarted':
@@ -48,10 +54,48 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
       return { ...session, messages: [...session.messages, msg], streaming_text: '' }
     }
 
-    case 'ToolStarted':
-    case 'ToolCompleted':
-      // Tool events do not change status — the backend manages tool lifecycle
-      return session
+    case 'ToolStarted': {
+      const { name } = (event as { ToolStarted: { name: string } }).ToolStarted
+      const tool_activity = session.tool_activity ?? []
+      return {
+        ...session,
+        status: 'Thinking',
+        tool_activity: [
+          ...tool_activity,
+          {
+            id: `${name}-${tool_activity.length + 1}`,
+            name,
+            status: 'Running',
+          },
+        ],
+      }
+    }
+
+    case 'ToolCompleted': {
+      const { name, status } = (
+        event as { ToolCompleted: { name: string; status: ToolStatus } }
+      ).ToolCompleted
+      const tool_activity = [...(session.tool_activity ?? [])]
+      const runningIndex = findLastRunningToolIndex(tool_activity, name)
+
+      if (runningIndex >= 0) {
+        const activity = tool_activity[runningIndex]
+        if (!activity) return { ...session, status: 'Thinking', tool_activity }
+        tool_activity[runningIndex] = {
+          id: activity.id,
+          name: activity.name,
+          status,
+        }
+      } else {
+        tool_activity.push({
+          id: `${name}-${tool_activity.length + 1}`,
+          name,
+          status,
+        })
+      }
+
+      return { ...session, status: 'Thinking', tool_activity }
+    }
 
     case 'PermissionRequested':
       return { ...session, status: 'AwaitingToolApproval' }
@@ -125,4 +169,17 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
     default:
       return session
   }
+}
+
+function findLastRunningToolIndex(
+  activities: ReplSession['tool_activity'],
+  name: string,
+): number {
+  for (let index = activities.length - 1; index >= 0; index--) {
+    const activity = activities[index]
+    if (activity?.name === name && activity.status === 'Running') {
+      return index
+    }
+  }
+  return -1
 }

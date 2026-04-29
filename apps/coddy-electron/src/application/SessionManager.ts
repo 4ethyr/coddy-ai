@@ -31,6 +31,9 @@ export async function initializeSession(
   if (!session.streaming_text) {
     session.streaming_text = ''
   }
+  if (!session.tool_activity) {
+    session.tool_activity = []
+  }
 
   return {
     session,

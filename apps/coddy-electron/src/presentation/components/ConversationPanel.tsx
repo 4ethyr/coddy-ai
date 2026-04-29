@@ -31,7 +31,7 @@ export function ConversationPanel({ session, onSend }: Props) {
             </div>
           </div>
 
-          <PlanOfAttack />
+          <PlanOfAttack session={session} />
 
           {session.messages.map((msg) => (
             <MessageBubble key={msg.id} message={msg} />
@@ -77,18 +77,33 @@ export function ConversationPanel({ session, onSend }: Props) {
   )
 }
 
-function PlanOfAttack() {
+function PlanOfAttack({ session }: { session: ReplSession }) {
+  const toolActivity = session.tool_activity ?? []
+  const hasToolActivity = toolActivity.length > 0
+
   return (
     <section className="desktop-glass-panel overflow-hidden rounded-xl">
       <div className="border-b border-white/5 bg-gradient-to-br from-surface-container-high/80 to-transparent p-5">
         <h2 className="mb-4 flex items-center gap-2 font-display text-[11px] uppercase tracking-[0.2em] text-primary">
           <Icon name="sensors" className="h-4 w-4" />
-          Plan of attack
+          Agent activity
         </h2>
         <div className="flex flex-col gap-0 pl-1">
-          <TaskStep label="Read command context" state="done" />
-          <TaskStep label="Classify intent and risk" state="active" />
-          <TaskStep label="Execute safe tool or answer in REPL" state="pending" />
+          <TaskStep
+            label={session.active_run ? 'Run is active' : 'Waiting for run'}
+            state={session.active_run ? 'active' : 'pending'}
+          />
+          {hasToolActivity ? (
+            toolActivity.map((activity) => (
+              <TaskStep
+                key={activity.id}
+                label={`${activity.name} // ${activity.status}`}
+                state={activity.status === 'Running' ? 'active' : 'done'}
+              />
+            ))
+          ) : (
+            <TaskStep label="No tools used in this run" state="pending" />
+          )}
         </div>
       </div>
     </section>

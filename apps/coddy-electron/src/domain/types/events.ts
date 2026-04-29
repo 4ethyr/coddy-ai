@@ -112,5 +112,6 @@ export interface ReplSessionSnapshotSession {
   workspace_context: unknown[]
   messages: ReplMessage[]
   active_run: string | null
+  tool_activity?: unknown[]
   streaming_text?: string
 }

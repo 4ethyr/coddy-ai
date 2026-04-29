@@ -264,6 +264,7 @@ dependencies = [
  "coddy-client",
  "coddy-core",
  "coddy-ipc",
+ "serde_json",
  "tokio",
  "uuid",
 ]

@@ -1,7 +1,7 @@
 // domain/types/session.ts
 // Mirrors: crates/coddy-core/src/session.rs
 
-import type { ReplMode, ReplMessage, ModelRef } from './events'
+import type { ReplMode, ReplMessage, ModelRef, ToolStatus } from './events'
 
 export type SessionStatus =
   | 'Idle'
@@ -35,6 +35,14 @@ export interface ContextItem {
   sensitive: boolean
 }
 
+export type ToolActivityStatus = 'Running' | ToolStatus
+
+export interface ToolActivity {
+  id: string
+  name: string
+  status: ToolActivityStatus
+}
+
 export interface ScreenUnderstandingContext {
   source_app: string | null
   visible_text: string
@@ -53,6 +61,7 @@ export interface ReplSession {
   workspace_context: ContextItem[]
   messages: ReplMessage[]
   active_run: string | null
+  tool_activity: ToolActivity[]
   /** Frontend-only: text being accumulated from TokenDelta events */
   streaming_text: string
 }
@@ -69,6 +78,7 @@ export function createInitialSession(mode: ReplMode, model: ModelRef): ReplSessi
     workspace_context: [],
     messages: [],
     active_run: null,
+    tool_activity: [],
     streaming_text: '',
   }
 }
