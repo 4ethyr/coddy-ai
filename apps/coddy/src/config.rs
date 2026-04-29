@@ -52,6 +52,10 @@ impl CoddyRuntimeConfig {
         }
     }
 
+    pub fn repl_history_path() -> Result<PathBuf> {
+        Ok(coddy_data_dir()?.join("repl-history.txt"))
+    }
+
     pub fn socket_path(&self) -> Result<PathBuf> {
         if let Some(path) = env::var_os("CODDY_DAEMON_SOCKET").map(PathBuf::from) {
             return Ok(path);
@@ -99,6 +103,12 @@ fn project_config_path(qualifier: &str, organization: &str, application: &str) -
     let dirs = ProjectDirs::from(qualifier, organization, application)
         .context("failed to resolve Coddy config directory")?;
     Ok(dirs.config_dir().join("config.toml"))
+}
+
+fn coddy_data_dir() -> Result<PathBuf> {
+    let dirs = ProjectDirs::from("io", "4ethyr", "coddy")
+        .context("failed to resolve Coddy data directory")?;
+    Ok(dirs.data_local_dir().to_path_buf())
 }
 
 fn socket_path_from_runtime_dir(runtime_dir: PathBuf) -> Result<PathBuf> {
@@ -177,6 +187,15 @@ mod tests {
             ),
             Some(PathBuf::from("/home/demo/.config/coddy/config.toml"))
         );
+    }
+
+    #[test]
+    fn repl_history_path_uses_coddy_data_location() {
+        let path = CoddyRuntimeConfig::repl_history_path().expect("history path");
+        let rendered = path.to_string_lossy().to_ascii_lowercase();
+
+        assert!(rendered.contains("coddy"));
+        assert!(rendered.ends_with("repl-history.txt"));
     }
 
     fn unique_runtime_dir() -> PathBuf {

@@ -4,7 +4,7 @@ Coddy e o projeto de REPL/CLI agentic extraido do VisionClip para evoluir como r
 
 ## Workspace
 
-- `apps/coddy`: CLI do Coddy, incluindo `coddy repl` para abrir o terminal flutuante e `coddy repl --terminal` para o modo stdin/stdout.
+- `apps/coddy`: CLI do Coddy, incluindo `coddy repl` para abrir o terminal flutuante e `coddy repl --terminal` para o modo stdin/stdout com historico local.
 - `apps/coddy-electron`: interface desktop Electron.
 - `crates/coddy-agent`: runtime agentic Rust, registry de tools locais, router de tools, contexto local, executor deterministico de planos, eval runner local, run state minimo, tools read-only, read tracker, previews, aplicacao aprovada de edicao, command guard, shell planner e shell executor controlado.
 - `crates/coddy-core`: dominio, sessoes, politicas, eventos, contratos e parser/handler desacoplado de comandos do REPL shell.

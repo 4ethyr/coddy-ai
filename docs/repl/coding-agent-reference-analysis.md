@@ -641,7 +641,7 @@ Escopo entregue:
 
 ## Proximo bloco recomendado
 
-Adicionar historico local e refresh de contexto/tools no terminal REPL.
+Implementado: historico local persistente no terminal REPL.
 
 Motivo:
 
@@ -651,10 +651,31 @@ Motivo:
   alimentado por um registry real exposto sem acoplar `apps/coddy` ao runtime;
 - o proximo passo deve melhorar ergonomia sem alterar a UI Electron.
 
+Escopo entregue:
+
+- `TerminalHistory` com limite conservador, normalizacao e deduplicacao
+  consecutiva;
+- persistencia em arquivo no diretorio de dados proprio do Coddy;
+- `/exit`, `/quit` e entradas vazias nao sao gravados;
+- `Ctrl+C` encerra o modo terminal com mensagem limpa;
+- falhas de leitura/escrita do historico geram `warn` e nao quebram a sessao;
+- testes cobrindo normalizacao, limite, roundtrip e criacao de diretorio pai.
+
+## Proximo bloco recomendado
+
+Adicionar refresh de contexto/tools no terminal REPL.
+
+Motivo:
+
+- `/status` ja pode consultar snapshot do daemon, mas `/tools` ainda recebe
+  lista vazia no contexto local;
+- o caminho correto e expor um contrato read-only de tools pelo runtime/daemon,
+  sem acoplar `apps/coddy` diretamente ao `coddy-agent`;
+- essa etapa prepara UI Electron e terminal para exibirem as mesmas tools.
+
 Escopo recomendado:
 
-- persistir historico em local de estado do Coddy;
 - criar contrato read-only para listar tools registradas pelo daemon/runtime;
 - atualizar o contexto do shell antes de cada comando que renderiza status/tools;
-- tratar `Ctrl+C`/EOF com saida limpa;
+- adicionar teste de IPC/contrato para lista de tools;
 - manter fixtures versionadas de evals como bloco posterior.

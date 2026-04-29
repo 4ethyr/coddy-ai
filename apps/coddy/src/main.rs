@@ -408,6 +408,19 @@ async fn run_terminal_repl(config: &CoddyRuntimeConfig) -> Result<()> {
     let stdin = io::stdin();
     let mut reader = io::BufReader::new(stdin).lines();
     let mut stdout = io::stdout();
+    let history_path = CoddyRuntimeConfig::repl_history_path()?;
+    let mut history =
+        match repl_terminal::load_history(&history_path, repl_terminal::DEFAULT_HISTORY_LIMIT) {
+            Ok(history) => history,
+            Err(error) => {
+                warn!(
+                    path = %history_path.display(),
+                    ?error,
+                    "failed to load Coddy terminal REPL history"
+                );
+                repl_terminal::TerminalHistory::new(repl_terminal::DEFAULT_HISTORY_LIMIT)
+            }
+        };
 
     stdout
         .write_all(repl_terminal::WELCOME_MESSAGE.as_bytes())
@@ -417,33 +430,59 @@ async fn run_terminal_repl(config: &CoddyRuntimeConfig) -> Result<()> {
         .await?;
     stdout.flush().await?;
 
-    while let Some(line) = reader.next_line().await? {
-        let context = load_repl_shell_context(config).await;
-        match repl_terminal::decide_terminal_step(&line, &context) {
-            repl_terminal::TerminalReplDecision::Continue => {}
-            repl_terminal::TerminalReplDecision::Exit(message) => {
-                stdout.write_all(message.as_bytes()).await?;
+    loop {
+        tokio::select! {
+            line = reader.next_line() => {
+                let Some(line) = line? else {
+                    return Ok(());
+                };
+
+                let recorded = history.record(&line);
+                let context = load_repl_shell_context(config).await;
+                match repl_terminal::decide_terminal_step(&line, &context) {
+                    repl_terminal::TerminalReplDecision::Continue => {}
+                    repl_terminal::TerminalReplDecision::Exit(message) => {
+                        stdout.write_all(message.as_bytes()).await?;
+                        stdout.flush().await?;
+                        return Ok(());
+                    }
+                    repl_terminal::TerminalReplDecision::Render(output) => {
+                        stdout.write_all(output.as_bytes()).await?;
+                    }
+                    repl_terminal::TerminalReplDecision::DispatchCommand(command) => {
+                        let result = send_repl_command(config, command, false).await?;
+                        stdout
+                            .write_all(format_job_result(result)?.as_bytes())
+                            .await?;
+                    }
+                }
+
+                if recorded {
+                    if let Err(error) = repl_terminal::save_history(&history_path, &history) {
+                        warn!(
+                            path = %history_path.display(),
+                            ?error,
+                            "failed to save Coddy terminal REPL history"
+                        );
+                    }
+                }
+
+                stdout
+                    .write_all(repl_terminal::REPL_PROMPT.as_bytes())
+                    .await?;
+                stdout.flush().await?;
+            }
+            interrupt = tokio::signal::ctrl_c() => {
+                interrupt?;
+                stdout.write_all(b"\n").await?;
+                stdout
+                    .write_all(repl_terminal::EXIT_MESSAGE.as_bytes())
+                    .await?;
                 stdout.flush().await?;
                 return Ok(());
             }
-            repl_terminal::TerminalReplDecision::Render(output) => {
-                stdout.write_all(output.as_bytes()).await?;
-            }
-            repl_terminal::TerminalReplDecision::DispatchCommand(command) => {
-                let result = send_repl_command(config, command, false).await?;
-                stdout
-                    .write_all(format_job_result(result)?.as_bytes())
-                    .await?;
-            }
         }
-
-        stdout
-            .write_all(repl_terminal::REPL_PROMPT.as_bytes())
-            .await?;
-        stdout.flush().await?;
     }
-
-    Ok(())
 }
 
 async fn load_repl_shell_context(config: &CoddyRuntimeConfig) -> ReplShellContext {
