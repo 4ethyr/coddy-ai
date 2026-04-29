@@ -705,6 +705,9 @@ fn format_job_result(result: CoddyResult) -> Result<String> {
         CoddyResult::ReplTools { tools, .. } => {
             Ok(format!("{}\n", serde_json::to_string_pretty(&tools)?))
         }
+        CoddyResult::ReplToolCatalog { tools, .. } => {
+            Ok(format!("{}\n", serde_json::to_string_pretty(&tools)?))
+        }
     }
 }
 
@@ -873,6 +876,27 @@ mod tests {
 
         assert!(output.contains("filesystem.read_file"));
         assert!(output.contains("shell.run"));
+    }
+
+    #[test]
+    fn formats_repl_tool_catalog_results_for_cli_and_terminal() {
+        let output = format_job_result(CoddyResult::ReplToolCatalog {
+            request_id: uuid::Uuid::nil(),
+            tools: vec![coddy_ipc::ReplToolCatalogItem {
+                name: "filesystem.read_file".to_string(),
+                description: "Read a file".to_string(),
+                category: coddy_core::ToolCategory::Filesystem,
+                risk_level: coddy_core::ToolRiskLevel::Low,
+                permissions: vec![coddy_core::ToolPermission::ReadWorkspace],
+                timeout_ms: 5_000,
+                approval_policy: coddy_core::ApprovalPolicy::AutoApprove,
+            }],
+        })
+        .expect("format tool catalog");
+
+        assert!(output.contains("filesystem.read_file"));
+        assert!(output.contains("ReadWorkspace"));
+        assert!(output.contains("AutoApprove"));
     }
 
     #[test]

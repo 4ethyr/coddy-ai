@@ -8,7 +8,7 @@ use coddy_core::{ReplCommand, ReplEventEnvelope, ReplSessionSnapshot};
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcError, CoddyRequest, CoddyResult, CoddyWireRequest,
     CoddyWireResult, ReplCommandJob, ReplEventStreamJob, ReplEventsJob, ReplSessionSnapshotJob,
-    ReplToolsJob,
+    ReplToolCatalogItem, ReplToolsJob,
 };
 use tokio::net::UnixStream;
 use tokio::time::{sleep, timeout};
@@ -144,18 +144,31 @@ impl CoddyClient {
         }
     }
 
-    pub async fn tools(&self) -> Result<Vec<String>> {
+    pub async fn tool_catalog(&self) -> Result<Vec<ReplToolCatalogItem>> {
         let request_id = Uuid::new_v4();
         match self
             .roundtrip(CoddyRequest::Tools(ReplToolsJob { request_id }))
             .await?
         {
-            CoddyResult::ReplTools { tools, .. } => Ok(tools),
+            CoddyResult::ReplToolCatalog { tools, .. } => Ok(tools),
+            CoddyResult::ReplTools { tools, .. } => Ok(tools
+                .into_iter()
+                .map(ReplToolCatalogItem::legacy_name)
+                .collect()),
             CoddyResult::Error { code, message, .. } => {
                 bail!("daemon returned error {code}: {message}")
             }
             _ => bail!("daemon returned unexpected response for REPL tools"),
         }
+    }
+
+    pub async fn tools(&self) -> Result<Vec<String>> {
+        Ok(self
+            .tool_catalog()
+            .await?
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect())
     }
 
     pub async fn event_stream(&self, after_sequence: u64) -> Result<ReplEventStream> {
@@ -422,7 +435,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn client_reads_tool_names() {
+    async fn client_reads_tool_names_from_legacy_result() {
         let socket_path = test_socket_path("tools");
         let listener = UnixListener::bind(&socket_path).expect("bind test socket");
         let server = tokio::spawn(async move {
@@ -449,6 +462,50 @@ mod tests {
         assert_eq!(
             tools,
             vec!["shell.run".to_string(), "filesystem.read_file".to_string()]
+        );
+        server.await.expect("server task");
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    #[tokio::test]
+    async fn client_reads_rich_tool_catalog() {
+        let socket_path = test_socket_path("tool-catalog");
+        let listener = UnixListener::bind(&socket_path).expect("bind test socket");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept client");
+            let request: CoddyWireRequest = read_frame(&mut stream).await.expect("read request");
+            request.ensure_compatible().expect("compatible request");
+            let CoddyRequest::Tools(job) = request.request else {
+                panic!("unexpected request")
+            };
+            write_frame(
+                &mut stream,
+                &CoddyWireResult::new(CoddyResult::ReplToolCatalog {
+                    request_id: job.request_id,
+                    tools: vec![ReplToolCatalogItem {
+                        name: "filesystem.read_file".to_string(),
+                        description: "Read a file".to_string(),
+                        category: coddy_core::ToolCategory::Filesystem,
+                        risk_level: coddy_core::ToolRiskLevel::Low,
+                        permissions: vec![coddy_core::ToolPermission::ReadWorkspace],
+                        timeout_ms: 5_000,
+                        approval_policy: coddy_core::ApprovalPolicy::AutoApprove,
+                    }],
+                }),
+            )
+            .await
+            .expect("write response");
+        });
+
+        let client = CoddyClient::new(&socket_path);
+        let catalog = client.tool_catalog().await.expect("tool catalog");
+
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].name, "filesystem.read_file");
+        assert_eq!(catalog[0].risk_level, coddy_core::ToolRiskLevel::Low);
+        assert_eq!(
+            catalog[0].permissions,
+            vec![coddy_core::ToolPermission::ReadWorkspace]
         );
         server.await.expect("server task");
         let _ = std::fs::remove_file(socket_path);

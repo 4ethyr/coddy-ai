@@ -126,9 +126,12 @@ coddy settings                # abre configurações
 
 Todos esses comandos devem gerar `ReplCommand` estruturado e passar pelo daemon ou pelo core Rust, nunca por shell arbitrário.
 
-O modo terminal usa `CoddyRequest::Tools` para alimentar `/tools` quando o
-daemon expõe o catalogo read-only de tools; enquanto esse handler nao existe,
-o REPL preserva fallback vazio sem quebrar a sessao.
+O modo terminal usa `CoddyRequest::Tools` para alimentar `/tools`. O IPC aceita
+o resultado legado `ReplTools(Vec<String>)` e o resultado evolutivo
+`ReplToolCatalog(Vec<ReplToolCatalogItem>)`, que inclui nome, descricao,
+categoria, risco, permissoes, timeout e approval policy. Enquanto o handler do
+runtime ainda nao devolve o catalogo rico, o REPL preserva fallback vazio sem
+quebrar a sessao.
 
 ### `crates/coddy-core`
 

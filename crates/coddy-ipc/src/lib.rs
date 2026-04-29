@@ -238,6 +238,45 @@ pub struct ReplToolsJob {
     pub request_id: Uuid,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplToolCatalogItem {
+    pub name: String,
+    pub description: String,
+    pub category: coddy_core::ToolCategory,
+    pub risk_level: coddy_core::ToolRiskLevel,
+    pub permissions: Vec<coddy_core::ToolPermission>,
+    pub timeout_ms: u64,
+    pub approval_policy: coddy_core::ApprovalPolicy,
+}
+
+impl ReplToolCatalogItem {
+    pub fn legacy_name(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: "Legacy tool advertised by daemon without metadata".to_string(),
+            category: coddy_core::ToolCategory::Other,
+            risk_level: coddy_core::ToolRiskLevel::Medium,
+            permissions: Vec::new(),
+            timeout_ms: 1,
+            approval_policy: coddy_core::ApprovalPolicy::AskOnUse,
+        }
+    }
+}
+
+impl From<&coddy_core::ToolDefinition> for ReplToolCatalogItem {
+    fn from(definition: &coddy_core::ToolDefinition) -> Self {
+        Self {
+            name: definition.name.to_string(),
+            description: definition.description.clone(),
+            category: definition.category,
+            risk_level: definition.risk_level,
+            permissions: definition.permissions.clone(),
+            timeout_ms: definition.timeout_ms,
+            approval_policy: definition.approval_policy,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CoddyRequest {
     Command(ReplCommandJob),
@@ -295,6 +334,10 @@ pub enum CoddyResult {
         request_id: Uuid,
         tools: Vec<String>,
     },
+    ReplToolCatalog {
+        request_id: Uuid,
+        tools: Vec<ReplToolCatalogItem>,
+    },
 }
 
 impl CoddyResult {
@@ -306,7 +349,8 @@ impl CoddyResult {
             | Self::Error { request_id, .. }
             | Self::ReplSessionSnapshot { request_id, .. }
             | Self::ReplEvents { request_id, .. }
-            | Self::ReplTools { request_id, .. } => *request_id,
+            | Self::ReplTools { request_id, .. }
+            | Self::ReplToolCatalog { request_id, .. } => *request_id,
         }
     }
 }
@@ -620,11 +664,55 @@ mod tests {
                 request_id,
                 tools: vec!["filesystem.read_file".to_string()],
             },
+            CoddyResult::ReplToolCatalog {
+                request_id,
+                tools: vec![ReplToolCatalogItem {
+                    name: "filesystem.read_file".to_string(),
+                    description: "Read a file".to_string(),
+                    category: coddy_core::ToolCategory::Filesystem,
+                    risk_level: coddy_core::ToolRiskLevel::Low,
+                    permissions: vec![coddy_core::ToolPermission::ReadWorkspace],
+                    timeout_ms: 5_000,
+                    approval_policy: coddy_core::ApprovalPolicy::AutoApprove,
+                }],
+            },
         ];
 
         for result in results {
             assert_eq!(result.request_id(), request_id);
         }
+    }
+
+    #[test]
+    fn repl_tool_catalog_item_projects_public_tool_metadata() {
+        let definition = coddy_core::ToolDefinition::new(
+            coddy_core::ToolName::new("filesystem.read_file").expect("tool name"),
+            "Read a file",
+            coddy_core::ToolCategory::Filesystem,
+            coddy_core::ToolSchema::empty_object(),
+            coddy_core::ToolSchema::empty_object(),
+            coddy_core::ToolRiskLevel::Low,
+            vec![coddy_core::ToolPermission::ReadWorkspace],
+            5_000,
+            coddy_core::ApprovalPolicy::AutoApprove,
+        )
+        .expect("tool definition");
+
+        let item = ReplToolCatalogItem::from(&definition);
+
+        assert_eq!(item.name, "filesystem.read_file");
+        assert_eq!(item.description, "Read a file");
+        assert_eq!(item.category, coddy_core::ToolCategory::Filesystem);
+        assert_eq!(item.risk_level, coddy_core::ToolRiskLevel::Low);
+        assert_eq!(
+            item.permissions,
+            vec![coddy_core::ToolPermission::ReadWorkspace]
+        );
+        assert_eq!(item.timeout_ms, 5_000);
+        assert_eq!(
+            item.approval_policy,
+            coddy_core::ApprovalPolicy::AutoApprove
+        );
     }
 
     #[test]

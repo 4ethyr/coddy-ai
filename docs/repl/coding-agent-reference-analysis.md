@@ -676,11 +676,15 @@ Motivo:
 Escopo entregue:
 
 - `ReplToolsJob`, `CoddyRequest::Tools` e `CoddyResult::ReplTools` no IPC;
+- `ReplToolCatalogItem` e `CoddyResult::ReplToolCatalog` para transportar
+  metadata publica do registry sem quebrar o resultado legado;
 - `CoddyClient::tools()` com validacao de resposta e request id;
+- `CoddyClient::tool_catalog()` aceita tanto catalogo rico quanto resposta
+  legada de nomes;
 - `load_repl_shell_context` passa a consultar tools pelo cliente Coddy;
 - `/tools` continua com fallback vazio quando o daemon ainda nao suporta o
   contrato;
-- formatacao explicita de `ReplTools` no CLI;
+- formatacao explicita de `ReplTools` e `ReplToolCatalog` no CLI;
 - testes focados no IPC, client e CLI.
 
 ## Proximo bloco recomendado
@@ -699,6 +703,7 @@ Escopo recomendado:
 
 - adicionar handler de `CoddyRequest::Tools` no daemon que fala o protocolo
   Coddy;
-- retornar nomes ordenados vindos de `AgentToolRegistry`;
+- retornar catalogo ordenado vindo de `AgentToolRegistry`, preferindo
+  `ReplToolCatalog` e mantendo `ReplTools` apenas como compatibilidade;
 - adicionar teste de roundtrip servidor/cliente;
 - manter fixtures versionadas de evals como bloco posterior.
