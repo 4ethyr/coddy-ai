@@ -1,6 +1,6 @@
 use coddy_agent::{
     AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError, ChatRequest, ChatResponse,
-    ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, LIST_FILES_TOOL,
+    ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, LIST_FILES_TOOL,
 };
 use coddy_core::{
     ModelRef, ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage,
@@ -580,6 +580,24 @@ impl AssistantResponse {
     }
 
     fn from_chat_response(response: ChatResponse) -> Self {
+        if !response.tool_calls.is_empty() {
+            let tool_summary = summarize_chat_tool_calls(&response.tool_calls);
+            let text = if response.text.trim().is_empty() {
+                format!(
+                    "Coddy received tool calls from the model: {tool_summary}. Automatic model-initiated tool execution is not enabled yet."
+                )
+            } else {
+                format!(
+                    "{}\n\nModel requested tools: {tool_summary}. Automatic model-initiated tool execution is not enabled yet.",
+                    response.text
+                )
+            };
+            return Self {
+                deltas: vec![text.clone()],
+                text,
+            };
+        }
+
         Self {
             text: response.text,
             deltas: response.deltas,
@@ -593,6 +611,14 @@ impl AssistantResponse {
             self.deltas.iter().collect()
         }
     }
+}
+
+fn summarize_chat_tool_calls(tool_calls: &[ChatToolCall]) -> String {
+    tool_calls
+        .iter()
+        .map(|call| call.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn plan_ask_action(text: &str) -> AskAction {
@@ -1126,6 +1152,60 @@ mod tests {
             &event.event,
             ReplEvent::MessageAppended { message }
                 if message.role == "assistant" && message.text == "hello world"
+        )));
+    }
+
+    #[test]
+    fn ask_command_reports_model_tool_calls_without_auto_execution() {
+        let request_id = Uuid::new_v4();
+        let (chat_client, _requests) = RecordingChatClient::new(ChatResponse {
+            text: String::new(),
+            deltas: Vec::new(),
+            finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+            tool_calls: vec![ChatToolCall {
+                id: Some("call-1".to_string()),
+                name: LIST_FILES_TOOL.to_string(),
+                arguments: json!({ "path": "." }),
+            }],
+        });
+        let runtime =
+            CoddyRuntime::with_chat_client(AgentToolRegistry::default(), Arc::new(chat_client));
+        let model = ModelRef {
+            provider: "openai".to_string(),
+            name: "gpt-test".to_string(),
+        };
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model,
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect the workspace".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let events = runtime.events_after(2).0;
+
+        assert!(text.contains(LIST_FILES_TOOL));
+        assert!(text.contains("Automatic model-initiated tool execution is not enabled yet"));
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event.event, ReplEvent::ToolStarted { .. })));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::MessageAppended { message }
+                if message.role == "assistant" && message.text.contains(LIST_FILES_TOOL)
         )));
     }
 

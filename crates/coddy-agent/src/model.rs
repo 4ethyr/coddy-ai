@@ -41,6 +41,13 @@ pub struct ChatRequest {
     pub max_output_tokens: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatToolCall {
+    pub id: Option<String>,
+    pub name: String,
+    pub arguments: Value,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatFinishReason {
     Stop,
@@ -50,11 +57,12 @@ pub enum ChatFinishReason {
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChatResponse {
     pub text: String,
     pub deltas: Vec<String>,
     pub finish_reason: ChatFinishReason,
+    pub tool_calls: Vec<ChatToolCall>,
 }
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -190,6 +198,7 @@ impl ChatResponse {
             deltas: vec![text.clone()],
             text,
             finish_reason: ChatFinishReason::Stop,
+            tool_calls: Vec::new(),
         }
     }
 
@@ -203,6 +212,7 @@ impl ChatResponse {
             text: deltas.concat(),
             deltas,
             finish_reason: ChatFinishReason::Stop,
+            tool_calls: Vec::new(),
         })
     }
 }
@@ -553,6 +563,7 @@ fn provider_error_message(body: &str, status: u16) -> String {
 
 fn parse_ollama_chat_body(body: &str) -> ChatModelResult {
     let mut deltas = Vec::new();
+    let mut tool_calls = Vec::new();
     let mut finish_reason = ChatFinishReason::Stop;
 
     for line in body.lines().map(str::trim).filter(|line| !line.is_empty()) {
@@ -574,6 +585,7 @@ fn parse_ollama_chat_body(body: &str) -> ChatModelResult {
                 deltas.push(content.to_string());
             }
         }
+        tool_calls.extend(parse_ollama_tool_calls(&value["message"])?);
         if value["done"].as_bool() == Some(true) {
             finish_reason = match value["done_reason"].as_str() {
                 Some("length") => ChatFinishReason::Length,
@@ -582,10 +594,14 @@ fn parse_ollama_chat_body(body: &str) -> ChatModelResult {
         }
     }
 
-    if deltas.is_empty() {
+    if !tool_calls.is_empty() {
+        finish_reason = ChatFinishReason::ToolCalls;
+    }
+
+    if deltas.is_empty() && tool_calls.is_empty() {
         return Err(ChatModelError::InvalidProviderResponse {
             provider: "ollama".to_string(),
-            message: "Ollama response did not include assistant content".to_string(),
+            message: "Ollama response did not include assistant content or tool calls".to_string(),
         });
     }
 
@@ -593,7 +609,49 @@ fn parse_ollama_chat_body(body: &str) -> ChatModelResult {
         text: deltas.concat(),
         deltas,
         finish_reason,
+        tool_calls,
     })
+}
+
+fn parse_ollama_tool_calls(message: &Value) -> Result<Vec<ChatToolCall>, ChatModelError> {
+    let Some(calls) = message["tool_calls"].as_array() else {
+        return Ok(Vec::new());
+    };
+
+    calls
+        .iter()
+        .map(|call| {
+            let function = &call["function"];
+            let name = function["name"].as_str().ok_or_else(|| {
+                ChatModelError::InvalidProviderResponse {
+                    provider: "ollama".to_string(),
+                    message: "Ollama tool call is missing function.name".to_string(),
+                }
+            })?;
+            Ok(ChatToolCall {
+                id: call["id"].as_str().map(ToOwned::to_owned),
+                name: name.to_string(),
+                arguments: parse_tool_arguments(&function["arguments"])?,
+            })
+        })
+        .collect()
+}
+
+fn parse_tool_arguments(arguments: &Value) -> Result<Value, ChatModelError> {
+    if arguments.is_null() {
+        return Ok(serde_json::json!({}));
+    }
+
+    if let Some(text) = arguments.as_str() {
+        return serde_json::from_str(text).map_err(|error| {
+            ChatModelError::InvalidProviderResponse {
+                provider: "ollama".to_string(),
+                message: format!("Ollama tool call arguments are invalid JSON: {error}"),
+            }
+        });
+    }
+
+    Ok(arguments.clone())
 }
 
 #[cfg(test)]
@@ -808,6 +866,42 @@ mod tests {
         assert_eq!(response.text, "hello world");
         assert_eq!(response.deltas, vec!["hello", " world"]);
         assert_eq!(response.finish_reason, ChatFinishReason::Stop);
+    }
+
+    #[test]
+    fn parses_ollama_tool_calls_without_assistant_content() {
+        let body = r#"{"message":{"role":"assistant","content":"","tool_calls":[{"function":{"name":"filesystem.list_files","arguments":{"path":"."}}}]},"done":true,"done_reason":"stop"}"#;
+
+        let response = parse_ollama_chat_body(body).expect("response");
+
+        assert_eq!(response.text, "");
+        assert!(response.deltas.is_empty());
+        assert_eq!(response.finish_reason, ChatFinishReason::ToolCalls);
+        assert_eq!(
+            response.tool_calls,
+            vec![ChatToolCall {
+                id: None,
+                name: "filesystem.list_files".to_string(),
+                arguments: serde_json::json!({ "path": "." }),
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_ollama_tool_call_arguments_from_json_string() {
+        let body = r#"{"message":{"role":"assistant","tool_calls":[{"id":"call-1","function":{"name":"filesystem.read_file","arguments":"{\"path\":\"README.md\"}"}}]},"done":true}"#;
+
+        let response = parse_ollama_chat_body(body).expect("response");
+
+        assert_eq!(
+            response.tool_calls,
+            vec![ChatToolCall {
+                id: Some("call-1".to_string()),
+                name: "filesystem.read_file".to_string(),
+                arguments: serde_json::json!({ "path": "README.md" }),
+            }]
+        );
+        assert_eq!(response.finish_reason, ChatFinishReason::ToolCalls);
     }
 
     #[test]
