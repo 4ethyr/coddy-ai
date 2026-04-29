@@ -571,7 +571,7 @@ Escopo entregue:
 
 ## Proximo bloco recomendado
 
-Adicionar golden tests/evals locais em cima do executor deterministico.
+Implementado: golden tests/evals locais em cima do executor deterministico.
 
 Motivo:
 
@@ -580,10 +580,31 @@ Motivo:
 - golden tests vao proteger as garantias atuais de seguranca: read-before-edit,
   approval antes de shell/edit e parada em falha.
 
+Escopo entregue:
+
+- `EvalCase`, `EvalExpectations`, `EvalRunner`, `EvalReport` e
+  `EvalSuiteReport`;
+- evals locais para read-only, edit approval/reject, shell approval e shell
+  block;
+- reports com status final, approvals solicitados, failures e plan report;
+- suite com contagem de casos aprovados/reprovados;
+- manter tudo local/offline, sem chamadas de rede e sem provider real.
+
+## Proximo bloco recomendado
+
+Adicionar fixtures versionadas e serializacao estavel dos evals.
+
+Motivo:
+
+- o eval runner ja cobre read-only, shell e edit approval/reject em testes Rust;
+- fixtures versionadas deixam o baseline mais visivel e facilitam regressao no
+  futuro CI;
+- serializacao estavel permite rodar os mesmos casos por CLI, CI e UI sem
+  recompilar testes.
+
 Escopo recomendado:
 
-- criar fixtures de eval para read-only, edit approval/reject, shell approval e
-  shell block;
-- criar runner simples no `coddy-agent` ou crate dedicado depois;
-- produzir report estruturado com status, observations, approvals e erros;
-- manter tudo local/offline, sem chamadas de rede e sem provider real.
+- adicionar schema declarativo para `EvalCase`;
+- criar fixtures em `docs/repl/evals` ou `crates/coddy-agent/testdata`;
+- adicionar runner CLI depois que o formato estiver estavel;
+- manter execucao local/offline e sem provider real.

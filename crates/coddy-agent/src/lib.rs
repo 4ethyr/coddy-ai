@@ -1,5 +1,6 @@
 pub mod command_guard;
 pub mod context;
+pub mod eval;
 pub mod plan_executor;
 pub mod router;
 pub mod runtime;
@@ -20,6 +21,7 @@ pub use command_guard::{
     SHELL_RUN_TOOL,
 };
 pub use context::{ContextObservation, ContextPlanItem, ContextSnapshot, ContextTool};
+pub use eval::{EvalCase, EvalExpectations, EvalReport, EvalRunner, EvalStatus, EvalSuiteReport};
 pub use plan_executor::{
     DeterministicPlanExecutor, DeterministicPlanItem, DeterministicPlanReport,
     DeterministicPlanStatus,
