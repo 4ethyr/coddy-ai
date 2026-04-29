@@ -106,7 +106,7 @@ export const MODEL_PROVIDER_CATALOG: readonly ModelProviderOption[] = [
     routingLabel: 'project scoped',
     connectionKind: 'api_key',
     credentialLabel: 'Google API key or OAuth token',
-    credentialPlaceholder: 'AIza... ou Bearer token',
+    credentialPlaceholder: 'Google API key ou Bearer token',
     requiresCredential: true,
     models: [],
   },

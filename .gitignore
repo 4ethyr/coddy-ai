@@ -14,3 +14,7 @@ prints/
 .agent/
 AGENT.md
 coddy-architecture-diagram.html
+.env
+.env.local
+.env.development
+.env.production

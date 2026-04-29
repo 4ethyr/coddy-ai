@@ -173,10 +173,10 @@ async function listGoogleModels(
   fetcher: Fetcher,
 ): Promise<ModelProviderListPayloadResult> {
   const credential = requireCredential(request)
-  if (looksLikeGoogleApiKey(credential)) {
-    return listGeminiApiModels(credential, fetcher)
+  if (looksLikeGoogleOAuthCredential(credential)) {
+    return listVertexPublisherModels(stripBearerPrefix(credential), fetcher)
   }
-  return listVertexPublisherModels(stripBearerPrefix(credential), fetcher)
+  return listGeminiApiModels(credential, fetcher)
 }
 
 async function listGeminiApiModels(
@@ -427,8 +427,9 @@ function stripBearerPrefix(value: string): string {
   return value.replace(/^Bearer\s+/i, '').trim()
 }
 
-function looksLikeGoogleApiKey(value: string): boolean {
-  return value.startsWith('AIza')
+function looksLikeGoogleOAuthCredential(value: string): boolean {
+  const trimmed = value.trim()
+  return /^Bearer\s+/i.test(trimmed) || trimmed.startsWith('ya29.')
 }
 
 function isModelProviderId(value: string): value is ModelProviderId {

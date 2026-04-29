@@ -71,6 +71,50 @@ describe('modelProviders', () => {
     })
   })
 
+  it('treats non-bearer Google credentials as Gemini API keys', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      jsonResponse({
+        models: [{ name: 'models/gemini-test' }],
+      }),
+    )
+
+    await listProviderModels(
+      { provider: 'vertex', apiKey: 'google-key-without-aiza-prefix' },
+      fetcher,
+    )
+
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'x-goog-api-key': 'google-key-without-aiza-prefix',
+        }),
+      }),
+    )
+  })
+
+  it('uses Vertex AI OAuth only for explicit bearer credentials', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      jsonResponse({
+        publisherModels: [{ name: 'publishers/google/models/gemini-test' }],
+      }),
+    )
+
+    await listProviderModels(
+      { provider: 'vertex', apiKey: 'Bearer ya29.test-token' },
+      fetcher,
+    )
+
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://aiplatform.googleapis.com/v1beta1/publishers/google/models?pageSize=100&view=BASIC',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer ya29.test-token',
+        }),
+      }),
+    )
+  })
+
   it('requires Azure model endpoints to use HTTPS before sending API keys', async () => {
     const fetcher = vi.fn()
 
