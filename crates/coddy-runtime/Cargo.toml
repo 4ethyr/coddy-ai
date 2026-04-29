@@ -10,5 +10,6 @@ coddy-ipc.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+coddy-client.workspace = true
 coddy-core.workspace = true
 uuid.workspace = true

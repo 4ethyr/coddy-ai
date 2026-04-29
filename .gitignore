@@ -12,3 +12,5 @@ apps/*/node_modules/
 apps/*/dist/
 prints/
 .agent/
+AGENT.md
+coddy-architecture-diagram.html

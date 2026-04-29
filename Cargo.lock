@@ -260,6 +260,7 @@ name = "coddy-runtime"
 version = "0.1.0"
 dependencies = [
  "coddy-agent",
+ "coddy-client",
  "coddy-core",
  "coddy-ipc",
  "tokio",

@@ -4,6 +4,7 @@ use coddy_ipc::{
     CoddyWireResult, ReplToolCatalogItem,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::UnixListener;
 
 #[derive(Debug, Clone, Default)]
 pub struct CoddyRuntime {
@@ -39,6 +40,11 @@ impl CoddyRuntime {
         write_frame(stream, &response).await
     }
 
+    pub async fn serve_next_unix_connection(&self, listener: &UnixListener) -> CoddyIpcResult<()> {
+        let (mut stream, _) = listener.accept().await?;
+        self.handle_connection(&mut stream).await
+    }
+
     pub fn tool_catalog(&self) -> Vec<ReplToolCatalogItem> {
         let mut tools: Vec<_> = self
             .tool_registry
@@ -54,8 +60,10 @@ impl CoddyRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use coddy_client::CoddyClient;
     use coddy_core::{ApprovalPolicy, ToolCategory, ToolPermission, ToolRiskLevel};
     use coddy_ipc::{ReplEventsJob, ReplToolsJob};
+    use std::{env, path::PathBuf};
     use uuid::Uuid;
 
     #[test]
@@ -188,5 +196,31 @@ mod tests {
             error,
             coddy_ipc::CoddyIpcError::IncompatibleProtocolVersion { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn unix_listener_serves_coddy_client_tool_catalog() {
+        let socket_path = test_socket_path("runtime-tools");
+        let listener = UnixListener::bind(&socket_path).expect("bind runtime socket");
+        let runtime = CoddyRuntime::default();
+        let server = tokio::spawn(async move {
+            runtime
+                .serve_next_unix_connection(&listener)
+                .await
+                .expect("serve unix request");
+        });
+
+        let client = CoddyClient::new(&socket_path);
+        let tools = client.tool_catalog().await.expect("tool catalog");
+        let names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
+
+        assert!(names.contains(&"filesystem.read_file"));
+        assert!(names.contains(&"shell.run"));
+        server.await.expect("server task");
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    fn test_socket_path(label: &str) -> PathBuf {
+        env::temp_dir().join(format!("coddy-runtime-{label}-{}.sock", Uuid::new_v4()))
     }
 }
