@@ -188,6 +188,76 @@ describe('modelProviders', () => {
     )
   })
 
+  it('lists Vertex publisher models with Application Default Credentials', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          publisherModels: [{ name: 'publishers/google/models/gemini-test' }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          publisherModels: [
+            {
+              name: 'publishers/anthropic/models/claude-sonnet-4-5@20250929',
+              displayName: 'Claude Sonnet 4.5',
+              launchStage: 'GA',
+            },
+          ],
+        }),
+      )
+    const tokenProvider = vi.fn().mockResolvedValue('adc-access-token')
+
+    const result = await listProviderModels(
+      { provider: 'vertex' },
+      fetcher,
+      tokenProvider,
+    )
+
+    expect(tokenProvider).toHaveBeenCalledWith(fetcher)
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://us-east5-aiplatform.googleapis.com/v1beta1/publishers/anthropic/models?pageSize=100&view=BASIC',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer adc-access-token',
+        }),
+      }),
+    )
+    expect(result.notices).toEqual([
+      'Using Google Application Default Credentials for Vertex AI publisher models.',
+    ])
+    expect(result.models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          model: {
+            provider: 'vertex',
+            name: 'claude-sonnet-4-5@20250929',
+          },
+        }),
+      ]),
+    )
+  })
+
+  it('reports a helpful Vertex credential error when no API key or ADC exists', async () => {
+    const fetcher = vi.fn()
+    const tokenProvider = vi.fn().mockResolvedValue(null)
+
+    const result = await listProviderModels(
+      { provider: 'vertex' },
+      fetcher,
+      tokenProvider,
+    )
+
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(result.error).toEqual(
+      expect.objectContaining({
+        code: 'MODEL_LIST_FAILED',
+        message: expect.stringContaining('GOOGLE_APPLICATION_CREDENTIALS'),
+      }),
+    )
+  })
+
   it('keeps available Vertex publisher models when one partner publisher fails', async () => {
     const fetcher = vi
       .fn()

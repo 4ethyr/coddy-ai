@@ -1,3 +1,8 @@
+import { createSign } from 'crypto'
+import { promises as fs } from 'fs'
+import * as os from 'os'
+import * as path from 'path'
+
 export type ModelProviderId =
   | 'ollama'
   | 'openai'
@@ -9,6 +14,8 @@ type Fetcher = (
   url: string,
   init?: {
     headers?: Record<string, string>
+    method?: string
+    body?: string
     signal?: AbortSignal
   },
 ) => Promise<{
@@ -51,10 +58,17 @@ export interface ModelProviderListPayloadResult {
   }
 }
 
+type GoogleAccessTokenProvider = (fetcher: Fetcher) => Promise<string | null>
+
 const MODEL_LIST_TIMEOUT_MS = 12_000
 const MAX_MODELS_PER_PROVIDER = 500
+const GOOGLE_AUTH_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
+const GOOGLE_JWT_BEARER_GRANT =
+  'urn:ietf:params:oauth:grant-type:jwt-bearer'
 const GEMINI_API_KEY_NOTICE =
   'Gemini API keys list Gemini models only. Claude on Vertex requires a Google OAuth access token or Application Default Credentials.'
+const VERTEX_ADC_NOTICE =
+  'Using Google Application Default Credentials for Vertex AI publisher models.'
 const VERTEX_PUBLISHERS = [
   {
     id: 'google',
@@ -69,6 +83,8 @@ const VERTEX_PUBLISHERS = [
 export async function listProviderModels(
   request: ModelProviderListPayload,
   fetcher: Fetcher = fetch,
+  googleAccessTokenProvider: GoogleAccessTokenProvider =
+    resolveGoogleApplicationDefaultAccessToken,
 ): Promise<ModelProviderListPayloadResult> {
   if (!isModelProviderId(request.provider)) {
     return errorResult('ollama', 'INVALID_PROVIDER', 'Unsupported provider.')
@@ -83,7 +99,7 @@ export async function listProviderModels(
       case 'openrouter':
         return await listOpenRouterModels(request, fetcher)
       case 'vertex':
-        return await listGoogleModels(request, fetcher)
+        return await listGoogleModels(request, fetcher, googleAccessTokenProvider)
       case 'azure':
         return await listAzureModels(request, fetcher)
     }
@@ -184,10 +200,20 @@ async function listOpenRouterModels(
 async function listGoogleModels(
   request: ModelProviderListPayload,
   fetcher: Fetcher,
+  googleAccessTokenProvider: GoogleAccessTokenProvider,
 ): Promise<ModelProviderListPayloadResult> {
-  const credential = requireCredential(request)
+  const credential = request.apiKey?.trim()
   if (looksLikeGoogleOAuthCredential(credential)) {
     return listVertexPublisherModels(stripBearerPrefix(credential), fetcher)
+  }
+  if (!credential) {
+    const token = await googleAccessTokenProvider(fetcher)
+    if (token) {
+      return listVertexPublisherModels(token, fetcher, [VERTEX_ADC_NOTICE])
+    }
+    throw new Error(
+      'Provider credential is required. Use a Google API key for Gemini, paste a Vertex OAuth Bearer token for Claude, or set GOOGLE_APPLICATION_CREDENTIALS for Application Default Credentials.',
+    )
   }
   return listGeminiApiModels(credential, fetcher)
 }
@@ -229,6 +255,7 @@ async function listGeminiApiModels(
 async function listVertexPublisherModels(
   token: string,
   fetcher: Fetcher,
+  notices: string[] = [],
 ): Promise<ModelProviderListPayloadResult> {
   const modelGroups = await Promise.allSettled(
     VERTEX_PUBLISHERS.map((publisher) =>
@@ -246,7 +273,7 @@ async function listVertexPublisherModels(
       ? firstError.reason
       : new Error('Unable to list Vertex publisher models.')
   }
-  return successResult('vertex', 'api', models)
+  return successResult('vertex', 'api', models, notices)
 }
 
 async function listVertexPublisherModelGroup(
@@ -322,6 +349,7 @@ async function fetchJson(
   url: string,
   headers: Record<string, string>,
   fetcher: Fetcher,
+  init: { method?: string; body?: string } = {},
 ): Promise<unknown> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), MODEL_LIST_TIMEOUT_MS)
@@ -331,6 +359,7 @@ async function fetchJson(
         Accept: 'application/json',
         ...headers,
       },
+      ...init,
       signal: controller.signal,
     })
 
@@ -467,9 +496,143 @@ function stripBearerPrefix(value: string): string {
   return value.replace(/^Bearer\s+/i, '').trim()
 }
 
-function looksLikeGoogleOAuthCredential(value: string): boolean {
-  const trimmed = value.trim()
+function looksLikeGoogleOAuthCredential(value: string | undefined): value is string {
+  const trimmed = value?.trim() ?? ''
   return /^Bearer\s+/i.test(trimmed) || trimmed.startsWith('ya29.')
+}
+
+async function resolveGoogleApplicationDefaultAccessToken(
+  fetcher: Fetcher,
+): Promise<string | null> {
+  const credentialPath = googleApplicationCredentialsPath()
+  if (!credentialPath) return null
+
+  let raw = ''
+  try {
+    raw = await fs.readFile(credentialPath, 'utf8')
+  } catch {
+    return null
+  }
+
+  const credential = getObject(JSON.parse(raw) as unknown)
+  const type = getString(credential.type)
+  if (type === 'service_account') {
+    return serviceAccountAccessToken(credential, fetcher)
+  }
+  if (type === 'authorized_user') {
+    return authorizedUserAccessToken(credential, fetcher)
+  }
+  throw new Error('Unsupported Google ADC credential type.')
+}
+
+function googleApplicationCredentialsPath(): string | null {
+  const explicit = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()
+  if (explicit) return explicit
+
+  const home = os.homedir()
+  return home
+    ? path.join(home, '.config', 'gcloud', 'application_default_credentials.json')
+    : null
+}
+
+async function serviceAccountAccessToken(
+  credential: Record<string, unknown>,
+  fetcher: Fetcher,
+): Promise<string> {
+  const clientEmail = requiredCredentialField(credential, 'client_email')
+  const privateKey = requiredCredentialField(credential, 'private_key')
+  const tokenUri =
+    getString(credential.token_uri) || 'https://oauth2.googleapis.com/token'
+  const assertion = signGoogleServiceAccountJwt(
+    clientEmail,
+    privateKey,
+    tokenUri,
+  )
+  const data = await fetchJson(
+    tokenUri,
+    { 'Content-Type': 'application/x-www-form-urlencoded' },
+    fetcher,
+    {
+      method: 'POST',
+      body: new URLSearchParams({
+        grant_type: GOOGLE_JWT_BEARER_GRANT,
+        assertion,
+      }).toString(),
+    },
+  )
+  return accessTokenFromTokenResponse(data)
+}
+
+async function authorizedUserAccessToken(
+  credential: Record<string, unknown>,
+  fetcher: Fetcher,
+): Promise<string> {
+  const clientId = requiredCredentialField(credential, 'client_id')
+  const clientSecret = requiredCredentialField(credential, 'client_secret')
+  const refreshToken = requiredCredentialField(credential, 'refresh_token')
+  const tokenUri =
+    getString(credential.token_uri) || 'https://oauth2.googleapis.com/token'
+  const data = await fetchJson(
+    tokenUri,
+    { 'Content-Type': 'application/x-www-form-urlencoded' },
+    fetcher,
+    {
+      method: 'POST',
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+      }).toString(),
+    },
+  )
+  return accessTokenFromTokenResponse(data)
+}
+
+function signGoogleServiceAccountJwt(
+  clientEmail: string,
+  privateKey: string,
+  tokenUri: string,
+): string {
+  const now = Math.floor(Date.now() / 1000)
+  const header = base64UrlJson({ alg: 'RS256', typ: 'JWT' })
+  const claim = base64UrlJson({
+    iss: clientEmail,
+    scope: GOOGLE_AUTH_SCOPE,
+    aud: tokenUri,
+    iat: now,
+    exp: now + 3_600,
+  })
+  const unsigned = `${header}.${claim}`
+  const signature = createSign('RSA-SHA256')
+    .update(unsigned)
+    .end()
+    .sign(privateKey)
+    .toString('base64url')
+  return `${unsigned}.${signature}`
+}
+
+function base64UrlJson(value: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(value)).toString('base64url')
+}
+
+function accessTokenFromTokenResponse(data: unknown): string {
+  const token = getString(getObject(data).access_token)
+  if (!token) {
+    throw new Error('Google OAuth token response did not include access_token.')
+  }
+  return token
+}
+
+function requiredCredentialField(
+  credential: Record<string, unknown>,
+  field: string,
+): string {
+  const value = getString(credential[field])
+  if (!value) {
+    throw new Error(`Google ADC credential is missing ${field}.`)
+  }
+  return value
 }
 
 function isModelProviderId(value: string): value is ModelProviderId {

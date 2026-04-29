@@ -253,6 +253,11 @@ Supported model discovery paths:
 Do not commit `.env` files or API keys. The repository ignores common `.env`
 variants.
 
+For Vertex AI partner models such as Claude, paste a Google OAuth bearer token
+or configure Application Default Credentials with `GOOGLE_APPLICATION_CREDENTIALS`.
+Plain Google API keys intentionally use the Gemini API model list and do not
+return Anthropic publisher models.
+
 Runtime chat completion currently supports local Ollama models. By default Coddy
 connects to `http://127.0.0.1:11434/api/chat`; set `OLLAMA_HOST` to override the
 host, for example `OLLAMA_HOST=127.0.0.1:11434` or
@@ -349,7 +354,7 @@ Near-term priorities:
 
 - connect the runtime to production cloud model clients for real chat
   completion;
-- expand provider authentication support for Vertex ADC/service accounts;
+- expand Vertex region and project configuration for partner model execution;
 - add durable agent memory with sensitive-data policy;
 - evolve the tool loop from primitives to full action/observation/validation;
 - add MCP client/server registry support;

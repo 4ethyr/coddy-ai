@@ -254,7 +254,7 @@ describe('ModelSelector', () => {
 
     const vertexGroup = providerGroup('Google Vertex')
     await userEvent.type(
-      within(vertexGroup).getByPlaceholderText('Google API key ou Bearer token'),
+      within(vertexGroup).getByPlaceholderText('API key, Bearer token ou ADC env'),
       'google-api-key',
     )
     await userEvent.click(within(vertexGroup).getByRole('button', { name: 'Load' }))
