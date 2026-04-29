@@ -30,7 +30,29 @@ describe('Domain type contracts', () => {
         TokenDelta: { TokenDelta: { run_id: 'run-1', text: 'Hello' } },
         MessageAppended: { MessageAppended: { message: { id: 'm1', role: 'user', text: 'hi' } } },
         ToolStarted: { ToolStarted: { name: 'search_web' } },
-        ToolCompleted: { ToolCompleted: { name: 'search_web', status: 'Succeeded' as ToolStatus } },
+        ToolCompleted: { ToolCompleted: { name: 'search_web', status: 'Denied' as ToolStatus } },
+        PermissionRequested: {
+          PermissionRequested: {
+            request: {
+              id: 'perm-1',
+              session_id: 'session-1',
+              run_id: 'run-1',
+              tool_call_id: 'tool-call-1',
+              tool_name: 'filesystem.apply_edit',
+              permission: 'WriteWorkspace',
+              patterns: ['src/App.tsx'],
+              risk_level: 'High',
+              metadata: { path: 'src/App.tsx' },
+              requested_at_unix_ms: 1775000000000,
+            },
+          },
+        },
+        PermissionReplied: {
+          PermissionReplied: {
+            request_id: 'perm-1',
+            reply: 'Once',
+          },
+        },
         TtsQueued: { TtsQueued: {} },
         TtsStarted: { TtsStarted: {} },
         TtsCompleted: { TtsCompleted: {} },
@@ -38,7 +60,7 @@ describe('Domain type contracts', () => {
         Error: { Error: { code: 'E001', message: 'Something went wrong' } },
       }
 
-      expect(Object.keys(events)).toHaveLength(24)
+      expect(Object.keys(events)).toHaveLength(26)
 
       // Verify each event is correctly typed
       for (const [key, event] of Object.entries(events)) {
@@ -78,14 +100,14 @@ describe('Domain type contracts', () => {
   })
 
   describe('SessionStatus', () => {
-    it('has all 10 values', () => {
+    it('has all 11 values', () => {
       const statuses: SessionStatus[] = [
         'Idle', 'Listening', 'Transcribing', 'CapturingScreen',
         'BuildingContext', 'Thinking', 'Streaming', 'Speaking',
-        'AwaitingConfirmation', 'Error',
+        'AwaitingConfirmation', 'AwaitingToolApproval', 'Error',
       ]
-      expect(statuses).toHaveLength(10)
-      expect(new Set(statuses).size).toBe(10) // all unique
+      expect(statuses).toHaveLength(11)
+      expect(new Set(statuses).size).toBe(11) // all unique
     })
   })
 

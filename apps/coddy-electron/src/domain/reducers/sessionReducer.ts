@@ -53,6 +53,14 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
       // Tool events do not change status — the backend manages tool lifecycle
       return session
 
+    case 'PermissionRequested':
+      return { ...session, status: 'AwaitingToolApproval' }
+
+    case 'PermissionReplied':
+      return session.status === 'AwaitingToolApproval'
+        ? { ...session, status: session.active_run ? 'Thinking' : 'Idle' }
+        : session
+
     case 'TtsStarted':
       return {
         ...session,

@@ -13,6 +13,7 @@ const STATUS_LABELS: Record<SessionStatus, string> = {
   Streaming: 'Generating...',
   Speaking: 'Speaking...',
   AwaitingConfirmation: 'Confirm',
+  AwaitingToolApproval: 'Approve tool',
   Error: 'Error',
 }
 
@@ -26,6 +27,7 @@ const STATUS_COLORS: Record<SessionStatus, string> = {
   Streaming: 'bg-green-500/10 text-green-400 border-green-500/20',
   Speaking: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
   AwaitingConfirmation: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
+  AwaitingToolApproval: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
   Error: 'bg-red-500/10 text-red-400 border-red-500/20',
 }
 

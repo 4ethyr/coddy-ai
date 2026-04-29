@@ -34,7 +34,7 @@ describe('StatusIndicator', () => {
     const statuses = [
       'Idle', 'Listening', 'Transcribing', 'CapturingScreen',
       'BuildingContext', 'Thinking', 'Streaming', 'Speaking',
-      'AwaitingConfirmation', 'Error',
+      'AwaitingConfirmation', 'AwaitingToolApproval', 'Error',
     ] as const
 
     for (const s of statuses) {
@@ -49,6 +49,7 @@ describe('StatusIndicator', () => {
         s === 'Thinking' ? 'Thinking...' :
         s === 'Speaking' ? 'Speaking...' :
         s === 'AwaitingConfirmation' ? 'Confirm' :
+        s === 'AwaitingToolApproval' ? 'Approve tool' :
         'Error'
       )).toBeInTheDocument()
       unmount()

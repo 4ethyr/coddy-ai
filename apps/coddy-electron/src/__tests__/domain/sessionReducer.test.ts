@@ -399,12 +399,64 @@ describe('sessionReducer', () => {
     it('ToolCompleted keeps current status', () => {
       const session = testSession({ status: 'Thinking' })
       const event: ReplEvent = {
-        ToolCompleted: { name: 'search_web', status: 'Succeeded' },
+        ToolCompleted: { name: 'search_web', status: 'Denied' },
       }
 
       const result = sessionReducer(session, event)
 
       expect(result.status).toBe('Thinking')
+    })
+
+    it('PermissionRequested transitions to AwaitingToolApproval', () => {
+      const session = testSession({ status: 'Thinking', active_run: 'run-001' })
+      const event: ReplEvent = {
+        PermissionRequested: {
+          request: {
+            id: 'perm-1',
+            session_id: 'session-1',
+            run_id: 'run-001',
+            tool_call_id: 'call-1',
+            tool_name: 'filesystem.apply_edit',
+            permission: 'WriteWorkspace',
+            patterns: ['src/App.tsx'],
+            risk_level: 'High',
+            metadata: { path: 'src/App.tsx' },
+            requested_at_unix_ms: 1775000000000,
+          },
+        },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result.status).toBe('AwaitingToolApproval')
+    })
+
+    it('PermissionReplied returns to Thinking when an active run exists', () => {
+      const session = testSession({
+        status: 'AwaitingToolApproval',
+        active_run: 'run-001',
+      })
+      const event: ReplEvent = {
+        PermissionReplied: { request_id: 'perm-1', reply: 'Once' },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result.status).toBe('Thinking')
+    })
+
+    it('PermissionReplied returns to Idle when no active run exists', () => {
+      const session = testSession({
+        status: 'AwaitingToolApproval',
+        active_run: null,
+      })
+      const event: ReplEvent = {
+        PermissionReplied: { request_id: 'perm-1', reply: 'Reject' },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result.status).toBe('Idle')
     })
   })
 

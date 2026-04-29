@@ -1,6 +1,8 @@
 // domain/types/events.ts
 // Mirrors: crates/coddy-core/src/event.rs
 
+import type { ToolPermission, ToolRiskLevel } from './tools'
+
 export type ShortcutSource = 'GnomeMediaKeys' | 'TauriGlobalShortcut' | 'Cli' | 'SystemdUserService'
 
 export type ReplIntent =
@@ -20,7 +22,7 @@ export type ReplIntent =
   | 'AgenticCodeChange'
   | 'Unknown'
 
-export type ToolStatus = 'Succeeded' | 'Failed' | 'Cancelled'
+export type ToolStatus = 'Succeeded' | 'Failed' | 'Cancelled' | 'Denied'
 
 export type ReplMode = 'FloatingTerminal' | 'DesktopApp'
 
@@ -39,7 +41,22 @@ export interface ReplMessage {
   text: string
 }
 
-// 20 event variants — mirrors coddy-core ReplEvent enum
+export type PermissionReply = 'Once' | 'Always' | 'Reject'
+
+export interface PermissionRequest {
+  id: string
+  session_id: string
+  run_id: string
+  tool_call_id: string | null
+  tool_name: string
+  permission: ToolPermission
+  patterns: string[]
+  risk_level: ToolRiskLevel
+  metadata: unknown
+  requested_at_unix_ms: number
+}
+
+// Mirrors coddy-core ReplEvent enum
 export type ReplEvent =
   | { SessionStarted: { session_id: string } }
   | { RunStarted: { run_id: string } }
@@ -60,6 +77,8 @@ export type ReplEvent =
   | { MessageAppended: { message: ReplMessage } }
   | { ToolStarted: { name: string } }
   | { ToolCompleted: { name: string; status: ToolStatus } }
+  | { PermissionRequested: { request: PermissionRequest } }
+  | { PermissionReplied: { request_id: string; reply: PermissionReply } }
   | { TtsQueued: Record<string, never> }
   | { TtsStarted: Record<string, never> }
   | { TtsCompleted: Record<string, never> }

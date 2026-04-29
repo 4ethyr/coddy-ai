@@ -9,6 +9,8 @@ export type {
   ModelRole,
   ExtractionSource,
   ReplMessage,
+  PermissionReply,
+  PermissionRequest,
   ReplEvent,
   ReplEventEnvelope,
   ReplSessionSnapshot,

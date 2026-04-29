@@ -13,6 +13,7 @@ export type SessionStatus =
   | 'Streaming'
   | 'Speaking'
   | 'AwaitingConfirmation'
+  | 'AwaitingToolApproval'
   | 'Error'
 
 export type AssessmentPolicy =
