@@ -165,6 +165,7 @@ mod tests {
             TerminalReplDecision::DispatchCommand(ReplCommand::Ask {
                 text,
                 context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
             }) if text == "explain this module"
         ));
     }

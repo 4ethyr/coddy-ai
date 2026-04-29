@@ -71,6 +71,7 @@ pub fn handle_repl_shell_input(input: &str, context: &ReplShellContext) -> ReplS
         ReplShellInput::Ask(text) => ReplShellAction::SendCommand(crate::ReplCommand::Ask {
             text,
             context_policy: crate::ContextPolicy::WorkspaceOnly,
+            model_credential: None,
         }),
         ReplShellInput::UnknownSlash { command } => {
             ReplShellAction::Render(unknown_command_response(&command))
@@ -225,6 +226,7 @@ mod tests {
             ReplShellAction::SendCommand(crate::ReplCommand::Ask {
                 text,
                 context_policy: crate::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
             }) if text == "explain this error"
         ));
     }

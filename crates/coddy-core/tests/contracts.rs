@@ -1,9 +1,10 @@
 use coddy_core::{
     evaluate_assistance, evaluate_shortcut_conflict, AssessmentPolicy, ContextPolicy,
-    ExtractionSource, ModelRef, ModelRole, PermissionReply, PermissionRequest, ReplCommand,
-    ReplEvent, ReplEventEnvelope, ReplEventLog, ReplMessage, ReplMode, ReplSession, RequestedHelp,
-    ScreenRegion, ScreenRegionKind, SearchProvider, SearchResultContext, ShortcutConflictPolicy,
-    ShortcutDecision, ShortcutSource, SourceQuality, ToolName, ToolPermission, ToolRiskLevel,
+    ExtractionSource, ModelCredential, ModelRef, ModelRole, PermissionReply, PermissionRequest,
+    ReplCommand, ReplEvent, ReplEventEnvelope, ReplEventLog, ReplMessage, ReplMode, ReplSession,
+    RequestedHelp, ScreenRegion, ScreenRegionKind, SearchProvider, SearchResultContext,
+    ShortcutConflictPolicy, ShortcutDecision, ShortcutSource, SourceQuality, ToolName,
+    ToolPermission, ToolRiskLevel,
 };
 use uuid::Uuid;
 
@@ -24,11 +25,31 @@ fn ask_command_keeps_context_policy() {
     let command = ReplCommand::Ask {
         text: "explique esse erro".to_string(),
         context_policy: ContextPolicy::VisibleScreen,
+        model_credential: None,
     };
 
     let encoded = serde_json::to_string(&command).expect("serialize command");
 
     assert!(encoded.contains("VisibleScreen"));
+}
+
+#[test]
+fn ask_command_debug_redacts_ephemeral_model_credential() {
+    let command = ReplCommand::Ask {
+        text: "explique esse erro".to_string(),
+        context_policy: ContextPolicy::WorkspaceOnly,
+        model_credential: Some(ModelCredential {
+            provider: "openai".to_string(),
+            token: "sk-secret-token".to_string(),
+            endpoint: Some("https://api.openai.com/v1".to_string()),
+        }),
+    };
+
+    let rendered = format!("{command:?}");
+
+    assert!(rendered.contains("ModelCredential"));
+    assert!(rendered.contains("<redacted>"));
+    assert!(!rendered.contains("sk-secret-token"));
 }
 
 #[test]

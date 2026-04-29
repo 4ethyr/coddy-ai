@@ -3,9 +3,9 @@ use coddy_agent::{
     ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, LIST_FILES_TOOL,
 };
 use coddy_core::{
-    ApprovalPolicy, ModelRef, ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope,
-    ReplIntent, ReplMessage, ReplMode, ReplSession, ReplSessionSnapshot, ToolCall, ToolName,
-    ToolResultStatus, ToolRiskLevel,
+    ApprovalPolicy, ModelCredential, ModelRef, ReplCommand, ReplEvent, ReplEventBroker,
+    ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode, ReplSession, ReplSessionSnapshot,
+    ToolCall, ToolName, ToolResultStatus, ToolRiskLevel,
 };
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
@@ -132,7 +132,11 @@ impl CoddyRuntime {
         } = job;
 
         match command {
-            ReplCommand::Ask { text, .. } => self.handle_ask(request_id, text, speak),
+            ReplCommand::Ask {
+                text,
+                model_credential,
+                ..
+            } => self.handle_ask(request_id, text, model_credential, speak),
             ReplCommand::VoiceTurn {
                 transcript_override,
             } => match normalize_text(transcript_override.unwrap_or_default()) {
@@ -140,7 +144,7 @@ impl CoddyRuntime {
                     self.publish_event_now(ReplEvent::VoiceTranscriptFinal {
                         text: transcript.clone(),
                     });
-                    self.handle_ask(request_id, transcript, speak)
+                    self.handle_ask(request_id, transcript, None, speak)
                 }
                 None => invalid_command(request_id, "voice transcript is required"),
             },
@@ -206,7 +210,13 @@ impl CoddyRuntime {
         }
     }
 
-    fn handle_ask(&self, request_id: Uuid, text: String, speak: bool) -> CoddyResult {
+    fn handle_ask(
+        &self,
+        request_id: Uuid,
+        text: String,
+        model_credential: Option<ModelCredential>,
+        speak: bool,
+    ) -> CoddyResult {
         let Some(text) = normalize_text(text) else {
             return invalid_command(request_id, "ask text is required");
         };
@@ -234,6 +244,7 @@ impl CoddyRuntime {
                 session_id,
                 run_id,
                 &selected_model,
+                model_credential,
                 text.clone(),
             ),
         };
@@ -344,6 +355,7 @@ impl CoddyRuntime {
         session_id: Uuid,
         run_id: Uuid,
         selected_model: &ModelRef,
+        model_credential: Option<ModelCredential>,
         user_text: String,
     ) -> AssistantResponse {
         let request = match ChatRequest::new(
@@ -355,7 +367,16 @@ impl CoddyRuntime {
                 ChatMessage::user(user_text.clone()),
             ],
         ) {
-            Ok(request) => request.with_tools(self.chat_tool_specs()),
+            Ok(request) => match request.with_model_credential(model_credential.clone()) {
+                Ok(request) => request.with_tools(self.chat_tool_specs()),
+                Err(error) => {
+                    return AssistantResponse::from_text(model_error_message(
+                        &error,
+                        selected_model,
+                        self.tool_registry.definitions().len(),
+                    ));
+                }
+            },
             Err(error) => {
                 return AssistantResponse::from_text(model_error_message(
                     &error,
@@ -370,6 +391,7 @@ impl CoddyRuntime {
                 session_id,
                 run_id,
                 selected_model,
+                model_credential,
                 user_text,
                 response,
             ),
@@ -386,6 +408,7 @@ impl CoddyRuntime {
         session_id: Uuid,
         run_id: Uuid,
         selected_model: &ModelRef,
+        model_credential: Option<ModelCredential>,
         goal: String,
         response: ChatResponse,
     ) -> AssistantResponse {
@@ -393,7 +416,14 @@ impl CoddyRuntime {
             return AssistantResponse::from_chat_response(response);
         }
 
-        self.execute_model_tool_calls(session_id, run_id, selected_model, goal, response)
+        self.execute_model_tool_calls(
+            session_id,
+            run_id,
+            selected_model,
+            model_credential,
+            goal,
+            response,
+        )
     }
 
     fn execute_model_tool_calls(
@@ -401,6 +431,7 @@ impl CoddyRuntime {
         session_id: Uuid,
         run_id: Uuid,
         selected_model: &ModelRef,
+        model_credential: Option<ModelCredential>,
         goal: String,
         response: ChatResponse,
     ) -> AssistantResponse {
@@ -514,6 +545,7 @@ impl CoddyRuntime {
 
         self.complete_after_tool_observations(
             selected_model,
+            model_credential,
             &goal,
             &response.text,
             &observation_response.text,
@@ -524,6 +556,7 @@ impl CoddyRuntime {
     fn complete_after_tool_observations(
         &self,
         selected_model: &ModelRef,
+        model_credential: Option<ModelCredential>,
         user_text: &str,
         assistant_text: &str,
         observation_text: &str,
@@ -539,7 +572,10 @@ impl CoddyRuntime {
         }
         messages.push(ChatMessage::tool(observation_text.to_string()));
 
-        let request = ChatRequest::new(selected_model.clone(), messages).ok()?;
+        let request = ChatRequest::new(selected_model.clone(), messages)
+            .ok()?
+            .with_model_credential(model_credential)
+            .ok()?;
         match self.chat_client.complete(request) {
             Ok(response) => Some(AssistantResponse::from_chat_response(response)),
             Err(_) => None,
@@ -1223,6 +1259,7 @@ mod tests {
             command: ReplCommand::Ask {
                 text: "  explain this module  ".to_string(),
                 context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
             },
             speak: true,
         }));
@@ -1273,6 +1310,7 @@ mod tests {
             command: ReplCommand::Ask {
                 text: "explain streaming".to_string(),
                 context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
             },
             speak: false,
         }));
@@ -1332,6 +1370,7 @@ mod tests {
             command: ReplCommand::Ask {
                 text: "explain this module".to_string(),
                 context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
             },
             speak: false,
         }));
@@ -1370,6 +1409,47 @@ mod tests {
     }
 
     #[test]
+    fn ask_command_forwards_ephemeral_model_credential_to_chat_client() {
+        let request_id = Uuid::new_v4();
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("credential accepted"));
+        let runtime =
+            CoddyRuntime::with_chat_client(AgentToolRegistry::default(), Arc::new(chat_client));
+        let model = ModelRef {
+            provider: "openai".to_string(),
+            name: "gpt-test".to_string(),
+        };
+        let credential = coddy_core::ModelCredential {
+            provider: "openai".to_string(),
+            token: "sk-secret-token".to_string(),
+            endpoint: Some("https://api.openai.com/v1".to_string()),
+        };
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model,
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "explain this module".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: Some(credential.clone()),
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        assert_eq!(captured_requests.len(), 1);
+        assert_eq!(captured_requests[0].model_credential, Some(credential));
+    }
+
+    #[test]
     fn ask_command_does_not_auto_execute_unsafe_model_tool_calls() {
         let request_id = Uuid::new_v4();
         let (chat_client, _requests) = RecordingChatClient::new(ChatResponse {
@@ -1402,6 +1482,7 @@ mod tests {
             command: ReplCommand::Ask {
                 text: "inspect the workspace".to_string(),
                 context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
             },
             speak: false,
         }));
@@ -1465,6 +1546,7 @@ mod tests {
             command: ReplCommand::Ask {
                 text: "inspect the workspace".to_string(),
                 context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
             },
             speak: false,
         }));
@@ -1507,6 +1589,7 @@ mod tests {
             command: ReplCommand::Ask {
                 text: "list files".to_string(),
                 context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
             },
             speak: false,
         }));
@@ -1555,6 +1638,7 @@ mod tests {
             command: ReplCommand::Ask {
                 text: "list files in ..".to_string(),
                 context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
             },
             speak: false,
         }));
@@ -1582,6 +1666,7 @@ mod tests {
             command: ReplCommand::Ask {
                 text: "   ".to_string(),
                 context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
             },
             speak: false,
         }));

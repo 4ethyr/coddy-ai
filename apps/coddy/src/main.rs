@@ -4,16 +4,21 @@ mod shortcut;
 mod voice_overlay;
 
 use crate::config::CoddyRuntimeConfig;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use coddy_client::CoddyClient;
-use coddy_core::{AssessmentPolicy, ContextPolicy, ModelRef, ModelRole, ReplCommand, ReplMode};
+use coddy_core::{
+    AssessmentPolicy, ContextPolicy, ModelCredential, ModelRef, ModelRole, ReplCommand, ReplMode,
+};
 use coddy_core::{ReplShellContext, ScreenAssistMode, SessionStatus};
 use coddy_ipc::CoddyResult;
+use serde::Deserialize;
 use std::{env, ffi::OsString, fs, path::PathBuf, process::Stdio};
 use tokio::net::UnixListener;
 use tokio::process::Command as TokioCommand;
 use tracing::{info, warn};
+
+const CODDY_EPHEMERAL_MODEL_CREDENTIAL_ENV: &str = "CODDY_EPHEMERAL_MODEL_CREDENTIAL";
 
 #[derive(Debug, Parser)]
 #[command(name = "coddy")]
@@ -269,11 +274,13 @@ async fn main() -> Result<()> {
         }
         Some(Command::Ask { text }) => {
             let text = join_command_text(text);
+            let model_credential = load_ephemeral_model_credential_from_env()?;
             let result = send_repl_command(
                 &config,
                 ReplCommand::Ask {
                     text,
                     context_policy: ContextPolicy::NoScreen,
+                    model_credential,
                 },
                 cli.speak,
             )
@@ -403,6 +410,44 @@ async fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct EphemeralModelCredential {
+    provider: String,
+    token: String,
+    endpoint: Option<String>,
+}
+
+fn load_ephemeral_model_credential_from_env() -> Result<Option<ModelCredential>> {
+    let Some(raw) = env::var_os(CODDY_EPHEMERAL_MODEL_CREDENTIAL_ENV) else {
+        return Ok(None);
+    };
+    let raw = raw
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("ephemeral model credential is not valid UTF-8"))?;
+    let parsed: EphemeralModelCredential = serde_json::from_str(&raw)
+        .map_err(|_| anyhow::anyhow!("ephemeral model credential is not valid JSON"))?;
+
+    let provider = parsed.provider.trim().to_string();
+    let token = parsed.token.trim().to_string();
+    let endpoint = parsed
+        .endpoint
+        .map(|endpoint| endpoint.trim().to_string())
+        .filter(|endpoint| !endpoint.is_empty());
+
+    if provider.is_empty() {
+        bail!("ephemeral model credential provider is required");
+    }
+    if token.is_empty() {
+        bail!("ephemeral model credential token is required");
+    }
+
+    Ok(Some(ModelCredential {
+        provider,
+        token,
+        endpoint,
+    }))
 }
 
 async fn send_repl_command(

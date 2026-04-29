@@ -14,7 +14,9 @@ pub mod tool;
 pub mod voice_intent;
 
 pub use assessment::{AssessmentPolicy, AssistanceDecision, AssistanceFallback, RequestedHelp};
-pub use command::{ContextPolicy, ModelRef, ModelRole, ReplCommand, ScreenAssistMode};
+pub use command::{
+    ContextPolicy, ModelCredential, ModelRef, ModelRole, ReplCommand, ScreenAssistMode,
+};
 pub use context::{
     BoundingBox, CodeBlock, ExtractionSource, QuestionBlock, ScreenRegion, ScreenRegionKind,
     ScreenUnderstandingContext, TerminalBlock,

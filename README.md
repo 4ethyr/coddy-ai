@@ -99,6 +99,14 @@ account through `gcloud auth print-access-token`, but ADC is the recommended
 development setup. Claude models also need to be enabled in Vertex AI Model
 Garden for the selected project and region.
 
+When a non-local model is selected, the Electron main process can pass a
+short-lived credential to the Rust CLI through the internal
+`CODDY_EPHEMERAL_MODEL_CREDENTIAL` environment variable. The CLI validates this
+payload, forwards it to the runtime over Coddy IPC and redacts the token from
+debug output. This is a credential bridge for runtime adapters; providers that
+do not yet have a Rust chat adapter still remain marked as adapter pending in
+the UI.
+
 ## Repository Layout
 
 ```text

@@ -16,6 +16,7 @@ import {
   type CredentialStorageResult,
   type ProviderCredentialRecord,
 } from './secureCredentialStore'
+import { buildRuntimeCredentialEnvironment } from './runtimeCredentialBridge'
 
 const CODDY_BIN = process.env.CODDY_BIN || 'coddy'
 
@@ -66,8 +67,12 @@ type ReplCommandResult = {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function coddySpawn(args: string[]): ChildProcess {
+function coddySpawn(args: string[], env: Record<string, string> = {}): ChildProcess {
   const child = spawn(CODDY_BIN, args, {
+    env: {
+      ...process.env,
+      ...env,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
@@ -251,7 +256,10 @@ export function registerIpcHandlers(): void {
 
   // ---- Commands ----
   ipcMain.handle('repl:ask', async (_event, text: string) => {
-    return runCoddyCommand(['ask', text])
+    const credentialEnv = await runtimeCredentialEnvironmentForActiveModel(
+      credentialStore,
+    )
+    return runCoddyCommand(['ask', text], credentialEnv)
   })
 
   // ---- Voice: capture + transcribe via coddy CLI ----
@@ -484,8 +492,39 @@ function normalizeCommandResult(raw: unknown): ReplCommandResult {
   return { text: String(raw) }
 }
 
-async function runCoddyCommand(args: string[]): Promise<ReplCommandResult> {
-  return runCoddyCommandFromChild(coddySpawn(args))
+async function runCoddyCommand(
+  args: string[],
+  env: Record<string, string> = {},
+): Promise<ReplCommandResult> {
+  return runCoddyCommandFromChild(coddySpawn(args, env))
+}
+
+async function runtimeCredentialEnvironmentForActiveModel(
+  credentialStore: SecureCredentialStore,
+): Promise<Record<string, string>> {
+  const snapshot = await readJson(coddySpawn(['session', 'snapshot']))
+  const selectedModel = selectedModelFromSnapshot(snapshot)
+  if (!selectedModel) return {}
+  return buildRuntimeCredentialEnvironment(selectedModel, credentialStore)
+}
+
+function selectedModelFromSnapshot(snapshot: unknown): ModelRef | null {
+  if (!snapshot || typeof snapshot !== 'object') return null
+
+  const session = (snapshot as { session?: unknown }).session
+  if (!session || typeof session !== 'object') return null
+
+  const selectedModel = (session as { selected_model?: unknown }).selected_model
+  if (!selectedModel || typeof selectedModel !== 'object') return null
+
+  const model = selectedModel as Partial<ModelRef>
+  if (typeof model.provider !== 'string' || typeof model.name !== 'string') {
+    return null
+  }
+  return {
+    provider: model.provider,
+    name: model.name,
+  }
 }
 
 function toggleWindowMaximize(

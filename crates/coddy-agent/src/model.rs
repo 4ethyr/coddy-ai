@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use coddy_core::{ApprovalPolicy, ModelRef, ToolDefinition, ToolRiskLevel};
+use coddy_core::{ApprovalPolicy, ModelCredential, ModelRef, ToolDefinition, ToolRiskLevel};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -37,6 +37,7 @@ pub struct ChatRequest {
     pub model: ModelRef,
     pub messages: Vec<ChatMessage>,
     pub tools: Vec<ChatToolSpec>,
+    pub model_credential: Option<ModelCredential>,
     pub temperature: Option<f32>,
     pub max_output_tokens: Option<u32>,
 }
@@ -180,6 +181,7 @@ impl ChatRequest {
             model,
             messages,
             tools: Vec::new(),
+            model_credential: None,
             temperature: None,
             max_output_tokens: None,
         })
@@ -188,6 +190,21 @@ impl ChatRequest {
     pub fn with_tools(mut self, tools: Vec<ChatToolSpec>) -> Self {
         self.tools = tools;
         self
+    }
+
+    pub fn with_model_credential(
+        mut self,
+        credential: Option<ModelCredential>,
+    ) -> Result<Self, ChatModelError> {
+        if let Some(credential) = credential {
+            if credential.provider != self.model.provider {
+                return Err(ChatModelError::InvalidRequest(
+                    "model credential provider does not match selected model provider".to_string(),
+                ));
+            }
+            self.model_credential = Some(credential);
+        }
+        Ok(self)
     }
 }
 
@@ -701,6 +718,28 @@ mod tests {
     }
 
     #[test]
+    fn chat_request_rejects_mismatched_model_credential_provider() {
+        let request = ChatRequest::new(
+            ModelRef {
+                provider: "openai".to_string(),
+                name: "gpt-test".to_string(),
+            },
+            vec![ChatMessage::user("hello")],
+        )
+        .expect("request");
+
+        let error = request
+            .with_model_credential(Some(ModelCredential {
+                provider: "vertex".to_string(),
+                token: "secret-token".to_string(),
+                endpoint: None,
+            }))
+            .expect_err("mismatched credential rejected");
+
+        assert_eq!(error.code(), "invalid_request");
+    }
+
+    #[test]
     fn tool_spec_projects_public_tool_metadata_for_model_context() {
         let definition = ToolDefinition::new(
             ToolName::new("filesystem.read_file").expect("tool name"),
@@ -807,6 +846,7 @@ mod tests {
                 risk_level: ToolRiskLevel::Low,
                 approval_policy: ApprovalPolicy::AutoApprove,
             }],
+            model_credential: None,
             temperature: Some(0.2),
             max_output_tokens: Some(128),
         };
