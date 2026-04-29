@@ -1,11 +1,11 @@
 use coddy_agent::AgentToolRegistry;
 use coddy_core::{
-    ModelRef, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplMode, ReplSession,
-    ReplSessionSnapshot,
+    ModelRef, ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplMessage, ReplMode,
+    ReplSession, ReplSessionSnapshot,
 };
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
-    CoddyWireResult, ReplEventStreamJob, ReplToolCatalogItem,
+    CoddyWireResult, ReplCommandJob, ReplEventStreamJob, ReplToolCatalogItem,
 };
 use std::{
     sync::{Arc, Mutex},
@@ -37,6 +37,7 @@ impl CoddyRuntime {
 
     pub fn handle_request(&self, request: CoddyRequest) -> CoddyResult {
         match request {
+            CoddyRequest::Command(job) => self.handle_command(job),
             CoddyRequest::SessionSnapshot(job) => CoddyResult::ReplSessionSnapshot {
                 request_id: job.request_id,
                 snapshot: Box::new(self.snapshot()),
@@ -61,6 +62,118 @@ impl CoddyRuntime {
         }
     }
 
+    fn handle_command(&self, job: ReplCommandJob) -> CoddyResult {
+        let ReplCommandJob {
+            request_id,
+            command,
+            speak,
+        } = job;
+
+        match command {
+            ReplCommand::Ask { text, .. } => self.handle_ask(request_id, text, speak),
+            ReplCommand::VoiceTurn {
+                transcript_override,
+            } => match normalize_text(transcript_override.unwrap_or_default()) {
+                Some(transcript) => {
+                    self.publish_event_now(ReplEvent::VoiceTranscriptFinal {
+                        text: transcript.clone(),
+                    });
+                    self.handle_ask(request_id, transcript, speak)
+                }
+                None => invalid_command(request_id, "voice transcript is required"),
+            },
+            ReplCommand::OpenUi { mode } => {
+                self.publish_event_now(ReplEvent::OverlayShown { mode });
+                CoddyResult::ActionStatus {
+                    request_id,
+                    message: format!("UI mode opened: {mode:?}"),
+                    spoken: speak,
+                }
+            }
+            ReplCommand::SelectModel { model, role } => {
+                self.publish_event_now(ReplEvent::ModelSelected {
+                    model: model.clone(),
+                    role,
+                });
+                CoddyResult::ActionStatus {
+                    request_id,
+                    message: format!(
+                        "Model selected for {role:?}: {}/{}",
+                        model.provider, model.name
+                    ),
+                    spoken: speak,
+                }
+            }
+            ReplCommand::DismissConfirmation => {
+                self.publish_event_now(ReplEvent::ConfirmationDismissed);
+                CoddyResult::ActionStatus {
+                    request_id,
+                    message: "Confirmation dismissed".to_string(),
+                    spoken: speak,
+                }
+            }
+            ReplCommand::StopSpeaking => {
+                self.publish_event_now(ReplEvent::TtsCompleted);
+                CoddyResult::ActionStatus {
+                    request_id,
+                    message: "Speech stopped".to_string(),
+                    spoken: false,
+                }
+            }
+            ReplCommand::StopActiveRun => {
+                if let Some(run_id) = self.snapshot().session.active_run {
+                    self.publish_event_with_run_now(ReplEvent::RunCompleted { run_id }, run_id);
+                    CoddyResult::ActionStatus {
+                        request_id,
+                        message: "Active run stopped".to_string(),
+                        spoken: false,
+                    }
+                } else {
+                    CoddyResult::ActionStatus {
+                        request_id,
+                        message: "No active run".to_string(),
+                        spoken: false,
+                    }
+                }
+            }
+            ReplCommand::CaptureAndExplain { .. } => CoddyResult::Error {
+                request_id,
+                code: "unsupported_command".to_string(),
+                message: "Coddy runtime does not handle screen capture commands yet".to_string(),
+            },
+        }
+    }
+
+    fn handle_ask(&self, request_id: Uuid, text: String, speak: bool) -> CoddyResult {
+        let Some(text) = normalize_text(text) else {
+            return invalid_command(request_id, "ask text is required");
+        };
+
+        let run_id = Uuid::new_v4();
+        let assistant_text = format!("Coddy runtime received: {text}");
+
+        self.publish_event_with_run_now(
+            ReplEvent::MessageAppended {
+                message: repl_message("user", text),
+            },
+            run_id,
+        );
+        self.publish_event_with_run_now(ReplEvent::RunStarted { run_id }, run_id);
+        self.publish_event_with_run_now(
+            ReplEvent::MessageAppended {
+                message: repl_message("assistant", assistant_text.clone()),
+            },
+            run_id,
+        );
+        self.publish_event_with_run_now(ReplEvent::RunCompleted { run_id }, run_id);
+
+        CoddyResult::Text {
+            request_id,
+            text: assistant_text,
+            spoken: speak,
+        }
+    }
+
     pub fn snapshot(&self) -> ReplSessionSnapshot {
         self.with_state(|state| state.broker.snapshot(state.session.clone()))
     }
@@ -81,6 +194,14 @@ impl CoddyRuntime {
         captured_at_unix_ms: u64,
     ) -> ReplEventEnvelope {
         self.with_state_mut(|state| state.broker.publish(event, run_id, captured_at_unix_ms))
+    }
+
+    fn publish_event_now(&self, event: ReplEvent) -> ReplEventEnvelope {
+        self.publish_event(event, None, unix_ms_now())
+    }
+
+    fn publish_event_with_run_now(&self, event: ReplEvent, run_id: Uuid) -> ReplEventEnvelope {
+        self.publish_event(event, Some(run_id), unix_ms_now())
     }
 
     pub async fn handle_connection<IO>(&self, stream: &mut IO) -> CoddyIpcResult<()>
@@ -195,6 +316,31 @@ fn unix_ms_now() -> u64 {
         .unwrap_or_default()
 }
 
+fn normalize_text(text: impl Into<String>) -> Option<String> {
+    let normalized = text.into().trim().to_string();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn repl_message(role: &str, text: String) -> ReplMessage {
+    ReplMessage {
+        id: Uuid::new_v4(),
+        role: role.to_string(),
+        text,
+    }
+}
+
+fn invalid_command(request_id: Uuid, message: &str) -> CoddyResult {
+    CoddyResult::Error {
+        request_id,
+        code: "invalid_command".to_string(),
+        message: message.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,7 +348,9 @@ mod tests {
     use coddy_core::{
         ApprovalPolicy, ModelRef, ModelRole, ReplEvent, ToolCategory, ToolPermission, ToolRiskLevel,
     };
-    use coddy_ipc::{ReplEventStreamJob, ReplEventsJob, ReplSessionSnapshotJob, ReplToolsJob};
+    use coddy_ipc::{
+        ReplCommandJob, ReplEventStreamJob, ReplEventsJob, ReplSessionSnapshotJob, ReplToolsJob,
+    };
     use std::{env, path::PathBuf};
     use uuid::Uuid;
 
@@ -339,6 +487,166 @@ mod tests {
         assert!(matches!(events[0].event, ReplEvent::VoiceListeningStarted));
     }
 
+    #[test]
+    fn select_model_command_emits_model_event_and_updates_snapshot() {
+        let request_id = Uuid::new_v4();
+        let runtime = CoddyRuntime::default();
+        let model = ModelRef {
+            provider: "ollama".to_string(),
+            name: "qwen2.5-coder:7b".to_string(),
+        };
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::SelectModel {
+                model: model.clone(),
+                role: ModelRole::Chat,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(
+            result,
+            CoddyResult::ActionStatus {
+                request_id: actual_request_id,
+                ..
+            } if actual_request_id == request_id
+        ));
+        let snapshot = runtime.snapshot();
+
+        assert_eq!(snapshot.session.selected_model, model);
+        assert_eq!(snapshot.last_sequence, 2);
+    }
+
+    #[test]
+    fn ask_command_records_minimal_run_messages() {
+        let request_id = Uuid::new_v4();
+        let runtime = CoddyRuntime::default();
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "  explain this module  ".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+            },
+            speak: true,
+        }));
+
+        let CoddyResult::Text {
+            request_id: actual_request_id,
+            text,
+            spoken,
+        } = result
+        else {
+            panic!("expected text result");
+        };
+        let snapshot = runtime.snapshot();
+        let messages = snapshot.session.messages;
+        let events = runtime.events_after(1).0;
+
+        assert_eq!(actual_request_id, request_id);
+        assert_eq!(text, "Coddy runtime received: explain this module");
+        assert!(spoken);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].text, "explain this module");
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(snapshot.session.active_run, None);
+        assert!(events
+            .iter()
+            .any(|event| matches!(event.event, ReplEvent::RunStarted { .. })));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event.event, ReplEvent::RunCompleted { .. })));
+    }
+
+    #[test]
+    fn empty_ask_command_returns_structured_error_without_events() {
+        let request_id = Uuid::new_v4();
+        let runtime = CoddyRuntime::default();
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "   ".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Error {
+            request_id: actual_request_id,
+            code,
+            message,
+        } = result
+        else {
+            panic!("expected error result");
+        };
+
+        assert_eq!(actual_request_id, request_id);
+        assert_eq!(code, "invalid_command");
+        assert!(message.contains("ask text"));
+        assert_eq!(runtime.snapshot().last_sequence, 1);
+    }
+
+    #[test]
+    fn stop_active_run_completes_current_run_when_present() {
+        let request_id = Uuid::new_v4();
+        let run_id = Uuid::new_v4();
+        let runtime = CoddyRuntime::default();
+        runtime.publish_event(
+            ReplEvent::RunStarted { run_id },
+            Some(run_id),
+            1_775_000_000_060,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::StopActiveRun,
+            speak: false,
+        }));
+
+        assert!(matches!(
+            result,
+            CoddyResult::ActionStatus {
+                request_id: actual_request_id,
+                ..
+            } if actual_request_id == request_id
+        ));
+        let snapshot = runtime.snapshot();
+        let events = runtime.events_after(1).0;
+
+        assert_eq!(snapshot.session.active_run, None);
+        assert!(events.iter().any(
+            |event| matches!(event.event, ReplEvent::RunCompleted { run_id: completed } if completed == run_id)
+        ));
+    }
+
+    #[test]
+    fn voice_turn_records_transcript_then_minimal_run() {
+        let request_id = Uuid::new_v4();
+        let runtime = CoddyRuntime::default();
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::VoiceTurn {
+                transcript_override: Some("  summarize this error ".to_string()),
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let events = runtime.events_after(1).0;
+
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::VoiceTranscriptFinal { text } if text == "summarize this error"
+        )));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event.event, ReplEvent::RunCompleted { .. })));
+    }
+
     #[tokio::test]
     async fn connection_roundtrips_wire_tools_request() {
         let request_id = Uuid::new_v4();
@@ -449,6 +757,44 @@ mod tests {
             batch.events[0].event,
             ReplEvent::VoiceListeningStarted
         ));
+        server.await.expect("server task");
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    #[tokio::test]
+    async fn unix_listener_serves_coddy_client_command_and_snapshot_replay() {
+        let socket_path = test_socket_path("runtime-command-snapshot");
+        let listener = UnixListener::bind(&socket_path).expect("bind runtime socket");
+        let runtime = CoddyRuntime::default();
+        let server_runtime = runtime.clone();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                server_runtime
+                    .serve_next_unix_connection(&listener)
+                    .await
+                    .expect("serve unix request");
+            }
+        });
+        let model = ModelRef {
+            provider: "ollama".to_string(),
+            name: "qwen2.5-coder:7b".to_string(),
+        };
+
+        let client = CoddyClient::new(&socket_path);
+        let result = client
+            .send_command(
+                ReplCommand::SelectModel {
+                    model: model.clone(),
+                    role: ModelRole::Chat,
+                },
+                false,
+            )
+            .await
+            .expect("send select model command");
+        let snapshot = client.snapshot().await.expect("session snapshot");
+
+        assert!(matches!(result, CoddyResult::ActionStatus { .. }));
+        assert_eq!(snapshot.session.selected_model, model);
         server.await.expect("server task");
         let _ = std::fs::remove_file(socket_path);
     }
