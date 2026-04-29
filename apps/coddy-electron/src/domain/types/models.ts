@@ -101,7 +101,7 @@ export const MODEL_PROVIDER_CATALOG: readonly ModelProviderOption[] = [
     id: 'vertex',
     label: 'Google Vertex',
     shortLabel: 'Vertex',
-    description: 'Gemini via Vertex AI ou Gemini API com credencial Google.',
+    description: 'Gemini via API key; Vertex Model Garden e Claude via OAuth.',
     connectionLabel: 'api key/token',
     routingLabel: 'project scoped',
     connectionKind: 'api_key',

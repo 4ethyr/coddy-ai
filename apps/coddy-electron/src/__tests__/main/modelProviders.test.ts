@@ -10,6 +10,15 @@ function jsonResponse(body: unknown) {
   }
 }
 
+function errorResponse(status: number, statusText: string) {
+  return {
+    ok: false,
+    status,
+    statusText,
+    json: () => Promise.resolve({}),
+  }
+}
+
 describe('modelProviders', () => {
   it('lists OpenAI models with bearer authentication', async () => {
     const fetcher = vi.fn().mockResolvedValue(
@@ -113,6 +122,90 @@ describe('modelProviders', () => {
         }),
       }),
     )
+  })
+
+  it('lists Anthropic publisher models when using Vertex AI OAuth', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          publisherModels: [{ name: 'publishers/google/models/gemini-test' }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          publisherModels: [
+            {
+              name: 'publishers/anthropic/models/claude-sonnet-4-5@20250929',
+              displayName: 'Claude Sonnet 4.5',
+              launchStage: 'GA',
+            },
+            {
+              name: 'publishers/anthropic/models/claude-opus-4-1@20250805',
+              displayName: 'Claude Opus 4.1',
+              launchStage: 'GA',
+            },
+          ],
+        }),
+      )
+
+    const result = await listProviderModels(
+      { provider: 'vertex', apiKey: 'Bearer ya29.test-token' },
+      fetcher,
+    )
+
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://us-east5-aiplatform.googleapis.com/v1beta1/publishers/anthropic/models?pageSize=100&view=BASIC',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer ya29.test-token',
+        }),
+      }),
+    )
+    expect(result.models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          model: {
+            provider: 'vertex',
+            name: 'claude-sonnet-4-5@20250929',
+          },
+          label: 'Claude Sonnet 4.5',
+          tags: expect.arrayContaining(['vertex', 'anthropic', 'GA']),
+        }),
+        expect.objectContaining({
+          model: {
+            provider: 'vertex',
+            name: 'claude-opus-4-1@20250805',
+          },
+          label: 'Claude Opus 4.1',
+          tags: expect.arrayContaining(['vertex', 'anthropic', 'GA']),
+        }),
+      ]),
+    )
+  })
+
+  it('keeps available Vertex publisher models when one partner publisher fails', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          publisherModels: [{ name: 'publishers/google/models/gemini-test' }],
+        }),
+      )
+      .mockResolvedValueOnce(errorResponse(403, 'Forbidden'))
+
+    const result = await listProviderModels(
+      { provider: 'vertex', apiKey: 'Bearer ya29.test-token' },
+      fetcher,
+    )
+
+    expect(result.error).toBeUndefined()
+    expect(result.models).toEqual([
+      expect.objectContaining({
+        model: { provider: 'vertex', name: 'gemini-test' },
+        tags: expect.arrayContaining(['vertex', 'google']),
+      }),
+    ])
   })
 
   it('requires Azure model endpoints to use HTTPS before sending API keys', async () => {

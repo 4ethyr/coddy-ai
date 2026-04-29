@@ -52,6 +52,16 @@ export interface ModelProviderListPayloadResult {
 
 const MODEL_LIST_TIMEOUT_MS = 12_000
 const MAX_MODELS_PER_PROVIDER = 500
+const VERTEX_PUBLISHERS = [
+  {
+    id: 'google',
+    endpoint: 'https://aiplatform.googleapis.com',
+  },
+  {
+    id: 'anthropic',
+    endpoint: 'https://us-east5-aiplatform.googleapis.com',
+  },
+] as const
 
 export async function listProviderModels(
   request: ModelProviderListPayload,
@@ -217,31 +227,56 @@ async function listVertexPublisherModels(
   token: string,
   fetcher: Fetcher,
 ): Promise<ModelProviderListPayloadResult> {
+  const modelGroups = await Promise.allSettled(
+    VERTEX_PUBLISHERS.map((publisher) =>
+      listVertexPublisherModelGroup(publisher, token, fetcher),
+    ),
+  )
+  const models = modelGroups.flatMap((result) =>
+    result.status === 'fulfilled' ? result.value : [],
+  )
+  if (models.length === 0) {
+    const firstError = modelGroups.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    )
+    throw firstError?.reason instanceof Error
+      ? firstError.reason
+      : new Error('Unable to list Vertex publisher models.')
+  }
+  return successResult('vertex', 'api', models)
+}
+
+async function listVertexPublisherModelGroup(
+  publisher: (typeof VERTEX_PUBLISHERS)[number],
+  token: string,
+  fetcher: Fetcher,
+): Promise<ModelCatalogEntryPayload[]> {
   const data = await fetchJson(
-    'https://aiplatform.googleapis.com/v1beta1/publishers/google/models?pageSize=100&view=BASIC',
+    `${publisher.endpoint}/v1beta1/publishers/${publisher.id}/models?pageSize=100&view=BASIC`,
     {
       Authorization: `Bearer ${token}`,
     },
     fetcher,
   )
-  const models = asArray(getObject(data).publisherModels)
+  return asArray(getObject(data).publisherModels)
     .map((item) => {
       const object = getObject(item)
       const id = lastResourceSegment(getString(object.name))
       if (!id) return null
       const launchStage = getString(object.launchStage)
       const versionId = getString(object.versionId)
+      const label = getString(object.displayName) || id
       return modelEntry(
         'vertex',
         id,
-        id,
-        versionId ? `Vertex publisher model version ${versionId}.` : 'Vertex publisher model.',
-        ['vertex', launchStage],
+        label,
+        versionId
+          ? `Vertex ${publisher.id} model version ${versionId}.`
+          : `Vertex ${publisher.id} publisher model.`,
+        ['vertex', publisher.id, launchStage],
       )
     })
     .filter((item): item is ModelCatalogEntryPayload => Boolean(item))
-
-  return successResult('vertex', 'api', models)
 }
 
 async function listAzureModels(
