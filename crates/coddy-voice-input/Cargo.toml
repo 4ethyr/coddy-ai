@@ -1,0 +1,18 @@
+[package]
+name = "coddy-voice-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+gtk-overlay = ["dep:gtk4"]
+
+[dependencies]
+anyhow.workspace = true
+gtk4 = { workspace = true, optional = true }
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+which.workspace = true

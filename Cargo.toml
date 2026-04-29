@@ -1,0 +1,37 @@
+[workspace]
+members = [
+  "apps/coddy",
+  "crates/coddy-agent",
+  "crates/coddy-client",
+  "crates/coddy-core",
+  "crates/coddy-ipc",
+  "crates/coddy-voice-input",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+authors = ["R. Rodrigues <263508957+4ethyr@users.noreply.github.com>"]
+
+[workspace.dependencies]
+anyhow = "1.0"
+bincode = { version = "2.0", features = ["serde"] }
+clap = { version = "4.5", features = ["derive"] }
+coddy-agent = { path = "crates/coddy-agent" }
+coddy-client = { path = "crates/coddy-client" }
+coddy-core = { path = "crates/coddy-core" }
+coddy-ipc = { path = "crates/coddy-ipc" }
+coddy-voice-input = { path = "crates/coddy-voice-input" }
+directories = "5.0"
+gtk4 = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.44", features = ["full"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1.11", features = ["serde", "v4"] }
+which = "7.0"
