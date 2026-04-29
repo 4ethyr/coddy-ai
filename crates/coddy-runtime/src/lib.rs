@@ -224,6 +224,16 @@ impl CoddyRuntime {
         self.handle_connection(&mut stream).await
     }
 
+    pub async fn serve_unix_listener(&self, listener: UnixListener) -> CoddyIpcResult<()> {
+        loop {
+            let (mut stream, _) = listener.accept().await?;
+            let runtime = self.clone();
+            tokio::spawn(async move {
+                let _ = runtime.handle_connection(&mut stream).await;
+            });
+        }
+    }
+
     async fn handle_event_stream<IO>(
         &self,
         stream: &mut IO,
@@ -858,6 +868,57 @@ mod tests {
             frame.event.event,
             ReplEvent::VoiceListeningStarted
         ));
+        server.abort();
+        let _ = server.await;
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    #[tokio::test]
+    async fn unix_listener_loop_serves_command_while_event_stream_is_open() {
+        let socket_path = test_socket_path("runtime-loop-concurrent");
+        let listener = UnixListener::bind(&socket_path).expect("bind runtime socket");
+        let runtime = CoddyRuntime::default();
+        let server_runtime = runtime.clone();
+        let server = tokio::spawn(async move {
+            server_runtime
+                .serve_unix_listener(listener)
+                .await
+                .expect("serve unix listener loop");
+        });
+        let client = CoddyClient::new(&socket_path);
+        let mut stream = client.event_stream(1).await.expect("open runtime stream");
+        let model = ModelRef {
+            provider: "ollama".to_string(),
+            name: "qwen2.5-coder:7b".to_string(),
+        };
+
+        let result = client
+            .send_command(
+                ReplCommand::SelectModel {
+                    model: model.clone(),
+                    role: ModelRole::Chat,
+                },
+                false,
+            )
+            .await
+            .expect("send command while stream is open");
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+            .await
+            .expect("stream event before timeout")
+            .expect("stream frame")
+            .expect("stream event");
+        let snapshot = client.snapshot().await.expect("session snapshot");
+
+        assert!(matches!(result, CoddyResult::ActionStatus { .. }));
+        assert!(matches!(
+            frame.event.event,
+            ReplEvent::ModelSelected {
+                model: streamed_model,
+                role: ModelRole::Chat,
+            } if streamed_model == model
+        ));
+        assert_eq!(snapshot.session.selected_model, model);
+
         server.abort();
         let _ = server.await;
         let _ = std::fs::remove_file(socket_path);

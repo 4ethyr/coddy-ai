@@ -17,6 +17,8 @@ O backend já possui:
   incremental via `ReplEventBroker`;
 - stream de eventos em `coddy-runtime` usando `ReplEventBroker::subscribe_after`
   e um envelope por frame wire;
+- loop Unix concorrente em `coddy-runtime` para manter stream aberto enquanto
+  outras conexões processam comandos, snapshots e polling;
 - handling inicial de `CoddyRequest::Command` no `coddy-runtime` para comandos
   determinísticos de REPL, modelo, UI, voz e ciclo mínimo de ask;
 - configuração mínima do CLI em `CoddyRuntimeConfig`;
@@ -106,6 +108,8 @@ Critérios de aceite:
   de um `UnixListener` servido por `coddy-runtime`;
 - comandos seguros enviados por `coddy-client` atualizam o snapshot/event log
   do `coddy-runtime`;
+- runtime consegue atender comando e snapshot em conexões separadas enquanto
+  um `event_stream` permanece aberto;
 - testes de serialização permanecem estáveis;
 - daemon rejeita versão incompatível com mensagem clara.
 
