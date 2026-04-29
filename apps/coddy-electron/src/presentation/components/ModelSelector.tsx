@@ -71,7 +71,8 @@ export function ModelSelector({ model, onSelect }: Props) {
         }`}
       >
         <div
-          className="flex max-h-[min(620px,calc(100vh-96px))] min-w-[360px] max-w-[calc(100vw-32px)] flex-col gap-2 overflow-y-auto rounded-lg border border-outline-variant/70 bg-surface-container-high/95 p-2 shadow-[0_20px_40px_rgba(0,0,0,0.5)] backdrop-blur-[30px]"
+          data-testid="model-selector-menu"
+          className="model-selector-menu flex max-h-[min(620px,calc(100vh-96px))] min-w-[360px] max-w-[calc(100vw-32px)] flex-col gap-2 overflow-y-auto rounded-lg border border-outline-variant/80 p-2 shadow-[0_24px_56px_rgba(0,0,0,0.72)]"
           aria-label="Model provider catalog"
         >
           {MODEL_PROVIDER_CATALOG.map((provider) => (
@@ -101,7 +102,7 @@ function ProviderGroup({
   onSelect: (model: ModelRef) => void
 }) {
   return (
-    <section className="rounded-md border border-white/5 bg-surface-container-low/45 p-2">
+    <section className="rounded-md border border-white/[0.08] bg-surface-container-low/90 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
       <div className="mb-2 flex items-start justify-between gap-3 px-1">
         <div className="min-w-0">
           <h3 className="font-display text-xs font-medium uppercase tracking-[0.16em] text-on-surface">
@@ -152,8 +153,8 @@ function ModelOptionButton({
       aria-label={`Select ${entry.label} via ${provider.label}`}
       className={`flex w-full items-center justify-between gap-3 rounded-md border-l-2 px-3 py-2 text-left transition-colors ${
         active
-          ? 'border-primary bg-primary/10 text-primary shadow-[inset_16px_0_32px_-16px_rgba(0,240,255,0.35)]'
-          : 'border-transparent text-on-surface-variant hover:bg-surface-bright/40 hover:text-on-surface'
+          ? 'border-primary bg-primary/15 text-primary shadow-[inset_16px_0_32px_-16px_rgba(0,240,255,0.35)]'
+          : 'border-transparent text-on-surface-variant hover:bg-surface-bright/70 hover:text-on-surface'
       }`}
       onClick={() => onSelect(entry.model)}
     >

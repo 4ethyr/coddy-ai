@@ -111,6 +111,15 @@ body.window-resizing * {
     0 0 0 1px rgba(0, 219, 233, 0.03);
 }
 
+.model-selector-menu {
+  isolation: isolate;
+  background:
+    linear-gradient(135deg, rgba(0, 219, 233, 0.06), transparent 42%, rgba(182, 0, 248, 0.1)),
+    rgba(18, 18, 18, 0.985);
+  backdrop-filter: blur(34px) saturate(1.28);
+  -webkit-backdrop-filter: blur(34px) saturate(1.28);
+}
+
 /* ── Desktop app shell ── */
 .desktop-shell {
   background:

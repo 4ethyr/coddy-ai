@@ -58,6 +58,20 @@ describe('ModelSelector', () => {
     expect(screen.getByText('Azure OpenAI')).toBeInTheDocument()
   })
 
+  it('renders the dropdown as an isolated surface above terminal content', async () => {
+    render(
+      <ModelSelector model={{ provider: 'ollama', name: 'gemma4-E2B' }} />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Active model ollama/gemma4-E2B' }),
+    )
+
+    expect(screen.getByTestId('model-selector-menu')).toHaveClass(
+      'model-selector-menu',
+    )
+  })
+
   it('emits cloud provider selections without credential side effects', async () => {
     const onSelect = vi.fn()
     render(
