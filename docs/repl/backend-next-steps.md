@@ -19,6 +19,8 @@ O backend já possui:
   e um envelope por frame wire;
 - loop Unix concorrente em `coddy-runtime` para manter stream aberto enquanto
   outras conexões processam comandos, snapshots e polling;
+- comando `coddy runtime serve` para subir o runtime Coddy local no socket
+  configurado ou em um caminho explícito via `--socket`;
 - handling inicial de `CoddyRequest::Command` no `coddy-runtime` para comandos
   determinísticos de REPL, modelo, UI, voz e ciclo mínimo de ask;
 - configuração mínima do CLI em `CoddyRuntimeConfig`;
@@ -110,6 +112,7 @@ Critérios de aceite:
   do `coddy-runtime`;
 - runtime consegue atender comando e snapshot em conexões separadas enquanto
   um `event_stream` permanece aberto;
+- CLI consegue iniciar o runtime local sem sobrescrever socket existente;
 - testes de serialização permanecem estáveis;
 - daemon rejeita versão incompatível com mensagem clara.
 

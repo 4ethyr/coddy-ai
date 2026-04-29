@@ -12,6 +12,7 @@ gtk-overlay = ["coddy-voice-input/gtk-overlay"]
 coddy-client.workspace = true
 coddy-core.workspace = true
 coddy-ipc.workspace = true
+coddy-runtime.workspace = true
 coddy-voice-input.workspace = true
 anyhow.workspace = true
 clap.workspace = true

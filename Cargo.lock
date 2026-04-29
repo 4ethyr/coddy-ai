@@ -200,6 +200,7 @@ dependencies = [
  "coddy-client",
  "coddy-core",
  "coddy-ipc",
+ "coddy-runtime",
  "coddy-voice-input",
  "directories",
  "serde",

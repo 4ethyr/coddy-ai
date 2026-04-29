@@ -10,7 +10,8 @@ use coddy_client::CoddyClient;
 use coddy_core::{AssessmentPolicy, ContextPolicy, ModelRef, ModelRole, ReplCommand, ReplMode};
 use coddy_core::{ReplShellContext, ScreenAssistMode, SessionStatus};
 use coddy_ipc::CoddyResult;
-use std::{env, ffi::OsString, process::Stdio};
+use std::{env, ffi::OsString, fs, path::PathBuf, process::Stdio};
+use tokio::net::UnixListener;
 use tokio::process::Command as TokioCommand;
 use tracing::{info, warn};
 
@@ -73,6 +74,10 @@ enum Command {
     Doctor {
         #[command(subcommand)]
         command: DoctorCommand,
+    },
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommand,
     },
 }
 
@@ -223,6 +228,14 @@ enum SessionCommand {
 #[derive(Debug, Subcommand)]
 enum DoctorCommand {
     Shortcuts,
+}
+
+#[derive(Debug, Subcommand)]
+enum RuntimeCommand {
+    Serve {
+        #[arg(long)]
+        socket: Option<std::path::PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -382,8 +395,11 @@ async fn main() -> Result<()> {
         Some(Command::Doctor {
             command: DoctorCommand::Shortcuts,
         }) => run_shortcuts_doctor(&config).await,
+        Some(Command::Runtime {
+            command: RuntimeCommand::Serve { socket },
+        }) => run_runtime_serve(&config, socket).await,
         None => {
-            println!("Use `coddy repl`, `coddy ask`, `coddy voice`, `coddy screen explain`, `coddy model select`, `coddy ui open`, `coddy stop-speaking`, `coddy stop-active-run`, `coddy session snapshot`, `coddy shortcuts test` ou `coddy doctor shortcuts`.");
+            println!("Use `coddy repl`, `coddy ask`, `coddy voice`, `coddy screen explain`, `coddy model select`, `coddy ui open`, `coddy stop-speaking`, `coddy stop-active-run`, `coddy session snapshot`, `coddy runtime serve`, `coddy shortcuts test` ou `coddy doctor shortcuts`.");
             Ok(())
         }
     }
@@ -593,6 +609,36 @@ async fn run_session_watch(
         if session_watch_limit_reached(received, limit) {
             return Ok(());
         }
+    }
+    Ok(())
+}
+
+async fn run_runtime_serve(config: &CoddyRuntimeConfig, socket: Option<PathBuf>) -> Result<()> {
+    let socket_path = socket.unwrap_or(config.socket_path()?);
+    prepare_runtime_socket_path(&socket_path)?;
+    let listener = UnixListener::bind(&socket_path).with_context(|| {
+        format!(
+            "failed to bind Coddy runtime socket {}",
+            socket_path.display()
+        )
+    })?;
+    let runtime = coddy_runtime::CoddyRuntime::default();
+
+    info!(socket = %socket_path.display(), "serving local Coddy runtime");
+    runtime.serve_unix_listener(listener).await?;
+    Ok(())
+}
+
+fn prepare_runtime_socket_path(socket_path: &std::path::Path) -> Result<()> {
+    if let Some(parent) = socket_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create socket dir {}", parent.display()))?;
+    }
+    if socket_path.exists() {
+        anyhow::bail!(
+            "Coddy runtime socket already exists: {}. Stop the running daemon or choose --socket.",
+            socket_path.display()
+        );
     }
     Ok(())
 }
@@ -809,6 +855,37 @@ mod tests {
                 command: SessionCommand::Tools
             })
         ));
+    }
+
+    #[test]
+    fn parses_runtime_serve_command() {
+        let cli = Cli::try_parse_from(["coddy", "runtime", "serve", "--socket", "/tmp/coddy.sock"])
+            .expect("parse runtime serve");
+
+        match cli.command {
+            Some(Command::Runtime {
+                command: RuntimeCommand::Serve { socket },
+            }) => {
+                assert_eq!(socket, Some(std::path::PathBuf::from("/tmp/coddy.sock")));
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn runtime_socket_preparation_creates_parent_without_overwriting_existing_socket() {
+        let root = std::env::temp_dir().join(format!("coddy-runtime-cli-{}", uuid::Uuid::new_v4()));
+        let socket_path = root.join("nested").join("coddy.sock");
+
+        prepare_runtime_socket_path(&socket_path).expect("prepare missing socket path");
+        assert!(root.join("nested").exists());
+
+        std::fs::write(&socket_path, "").expect("create existing socket placeholder");
+        let error =
+            prepare_runtime_socket_path(&socket_path).expect_err("existing socket rejected");
+
+        assert!(error.to_string().contains("already exists"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
