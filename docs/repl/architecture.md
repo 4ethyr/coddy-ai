@@ -110,6 +110,7 @@ Comandos propostos:
 ```bash
 coddy                         # abre modo desktop app ou última UI usada
 coddy repl                    # abre terminal flutuante (alias implementado para OpenUi/FloatingTerminal)
+coddy repl --terminal         # executa REPL stdin/stdout local
 coddy ask "explique esse erro"
 coddy screen explain          # captura tela e explica
 coddy screen code             # captura tela e analisa código visível

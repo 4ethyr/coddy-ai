@@ -619,7 +619,7 @@ Escopo entregue:
 
 ## Proximo bloco recomendado
 
-Conectar o shell puro a um loop interativo local.
+Implementado: adaptador terminal stdin/stdout para o REPL shell.
 
 Motivo:
 
@@ -630,11 +630,31 @@ Motivo:
 - o loop deve continuar em Rust e enviar apenas comandos/eventos estruturados
   para preservar o desacoplamento da UI glassmorphism em TypeScript.
 
+Escopo entregue:
+
+- `apps/coddy/src/repl_terminal.rs` como adaptador fino, sem regra de dominio;
+- `coddy repl --terminal` para executar um loop local stdin/stdout;
+- renderizacao testavel de `ReplShellResponse`;
+- despacho de texto livre como `ReplCommand` estruturado para o daemon;
+- `/exit` com encerramento limpo;
+- refatoracao de formatacao de `CoddyResult` para reaproveitamento no loop.
+
+## Proximo bloco recomendado
+
+Adicionar historico local e refresh de contexto/tools no terminal REPL.
+
+Motivo:
+
+- o terminal ja renderiza slash commands e despacha comandos, mas ainda nao
+  persiste historico;
+- `/tools` ainda usa a lista recebida no contexto do shell e precisa ser
+  alimentado por um registry real exposto sem acoplar `apps/coddy` ao runtime;
+- o proximo passo deve melhorar ergonomia sem alterar a UI Electron.
+
 Escopo recomendado:
 
-- adicionar um adaptador de terminal fino em `apps/coddy` ou crate dedicado;
-- carregar `ReplShellContext` a partir de snapshot de sessao, config e registry
-  de tools;
-- renderizar `ReplShellResponse` sem regras de dominio na UI;
-- suportar historico local e interrupcao limpa;
+- persistir historico em local de estado do Coddy;
+- criar contrato read-only para listar tools registradas pelo daemon/runtime;
+- atualizar o contexto do shell antes de cada comando que renderiza status/tools;
+- tratar `Ctrl+C`/EOF com saida limpa;
 - manter fixtures versionadas de evals como bloco posterior.

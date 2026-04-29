@@ -1,4 +1,5 @@
 mod config;
+mod repl_terminal;
 mod shortcut;
 mod voice_overlay;
 
@@ -6,9 +7,8 @@ use crate::config::CoddyRuntimeConfig;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use coddy_client::CoddyClient;
-use coddy_core::{
-    AssessmentPolicy, ContextPolicy, ModelRef, ModelRole, ReplCommand, ReplMode, ScreenAssistMode,
-};
+use coddy_core::{AssessmentPolicy, ContextPolicy, ModelRef, ModelRole, ReplCommand, ReplMode};
+use coddy_core::{ReplShellContext, ScreenAssistMode, SessionStatus};
 use coddy_ipc::CoddyResult;
 use std::{env, ffi::OsString, process::Stdio};
 use tokio::process::Command as TokioCommand;
@@ -33,7 +33,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    Repl,
+    Repl {
+        #[arg(long, default_value_t = false)]
+        terminal: bool,
+    },
     Ask {
         #[arg(required = true, trailing_var_arg = true)]
         text: Vec<String>,
@@ -235,16 +238,20 @@ async fn main() -> Result<()> {
         .init();
 
     match cli.command {
-        Some(Command::Repl) => {
-            let result = send_repl_command(
-                &config,
-                ReplCommand::OpenUi {
-                    mode: ReplMode::FloatingTerminal,
-                },
-                cli.speak,
-            )
-            .await?;
-            print_job_result(result)
+        Some(Command::Repl { terminal }) => {
+            if terminal {
+                run_terminal_repl(&config).await
+            } else {
+                let result = send_repl_command(
+                    &config,
+                    ReplCommand::OpenUi {
+                        mode: ReplMode::FloatingTerminal,
+                    },
+                    cli.speak,
+                )
+                .await?;
+                print_job_result(result)
+            }
         }
         Some(Command::Ask { text }) => {
             let text = join_command_text(text);
@@ -395,6 +402,84 @@ async fn send_repl_command(
     client.send_command(command, speak).await
 }
 
+async fn run_terminal_repl(config: &CoddyRuntimeConfig) -> Result<()> {
+    use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt};
+
+    let stdin = io::stdin();
+    let mut reader = io::BufReader::new(stdin).lines();
+    let mut stdout = io::stdout();
+
+    stdout
+        .write_all(repl_terminal::WELCOME_MESSAGE.as_bytes())
+        .await?;
+    stdout
+        .write_all(repl_terminal::REPL_PROMPT.as_bytes())
+        .await?;
+    stdout.flush().await?;
+
+    while let Some(line) = reader.next_line().await? {
+        let context = load_repl_shell_context(config).await;
+        match repl_terminal::decide_terminal_step(&line, &context) {
+            repl_terminal::TerminalReplDecision::Continue => {}
+            repl_terminal::TerminalReplDecision::Exit(message) => {
+                stdout.write_all(message.as_bytes()).await?;
+                stdout.flush().await?;
+                return Ok(());
+            }
+            repl_terminal::TerminalReplDecision::Render(output) => {
+                stdout.write_all(output.as_bytes()).await?;
+            }
+            repl_terminal::TerminalReplDecision::DispatchCommand(command) => {
+                let result = send_repl_command(config, command, false).await?;
+                stdout
+                    .write_all(format_job_result(result)?.as_bytes())
+                    .await?;
+            }
+        }
+
+        stdout
+            .write_all(repl_terminal::REPL_PROMPT.as_bytes())
+            .await?;
+        stdout.flush().await?;
+    }
+
+    Ok(())
+}
+
+async fn load_repl_shell_context(config: &CoddyRuntimeConfig) -> ReplShellContext {
+    let snapshot = match coddy_client(config) {
+        Ok(client) => client.snapshot().await.ok(),
+        Err(_) => None,
+    };
+
+    let (session_status, selected_model) = snapshot
+        .as_ref()
+        .map(|snapshot| {
+            (
+                snapshot.session.status,
+                snapshot.session.selected_model.clone(),
+            )
+        })
+        .unwrap_or_else(|| {
+            (
+                SessionStatus::Idle,
+                ModelRef {
+                    provider: "coddy".to_string(),
+                    name: "unselected".to_string(),
+                },
+            )
+        });
+
+    ReplShellContext {
+        session_status,
+        selected_model,
+        config_path: CoddyRuntimeConfig::config_path()
+            .ok()
+            .map(|path| path.display().to_string()),
+        tool_names: Vec::new(),
+    }
+}
+
 async fn run_shortcuts_doctor(config: &CoddyRuntimeConfig) -> Result<()> {
     let environment = shortcut::ShortcutEnvironment::detect(config.socket_path()?);
     print!("{environment}");
@@ -539,43 +624,40 @@ fn run_shortcuts_install(
 }
 
 fn print_job_result(result: CoddyResult) -> Result<()> {
+    print!("{}", format_job_result(result)?);
+    Ok(())
+}
+
+fn format_job_result(result: CoddyResult) -> Result<String> {
     match result {
-        CoddyResult::Text { text, .. } => {
-            println!("{text}");
-            Ok(())
-        }
+        CoddyResult::Text { text, .. } => Ok(format!("{text}\n")),
         CoddyResult::BrowserQuery { query, summary, .. } => {
-            println!("Pesquisa: {query}");
+            let mut output = format!("Pesquisa: {query}\n");
             if let Some(summary) = summary {
-                println!("\n{summary}");
+                output.push('\n');
+                output.push_str(&summary);
+                output.push('\n');
             }
-            Ok(())
+            Ok(output)
         }
-        CoddyResult::ActionStatus { message, .. } => {
-            println!("{message}");
-            Ok(())
-        }
+        CoddyResult::ActionStatus { message, .. } => Ok(format!("{message}\n")),
         CoddyResult::Error { code, message, .. } => {
             anyhow::bail!("daemon returned error {code}: {message}")
         }
         CoddyResult::ReplSessionSnapshot { snapshot, .. } => {
-            println!("{}", serde_json::to_string_pretty(&snapshot)?);
-            Ok(())
+            Ok(format!("{}\n", serde_json::to_string_pretty(&snapshot)?))
         }
         CoddyResult::ReplEvents {
             events,
             last_sequence,
             ..
-        } => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "last_sequence": last_sequence,
-                    "events": events,
-                }))?
-            );
-            Ok(())
-        }
+        } => Ok(format!(
+            "{}\n",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "last_sequence": last_sequence,
+                "events": events,
+            }))?
+        )),
     }
 }
 
@@ -706,7 +788,32 @@ mod tests {
     fn parses_repl_command() {
         let cli = Cli::try_parse_from(["coddy", "repl"]).expect("parse repl");
 
-        assert!(matches!(cli.command, Some(Command::Repl)));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Repl { terminal: false })
+        ));
+    }
+
+    #[test]
+    fn parses_terminal_repl_command() {
+        let cli = Cli::try_parse_from(["coddy", "repl", "--terminal"]).expect("parse repl");
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Repl { terminal: true })
+        ));
+    }
+
+    #[test]
+    fn formats_daemon_text_results_for_cli_and_terminal() {
+        let output = format_job_result(CoddyResult::Text {
+            request_id: uuid::Uuid::nil(),
+            text: "done".to_string(),
+            spoken: false,
+        })
+        .expect("format text");
+
+        assert_eq!(output, "done\n");
     }
 
     #[test]
