@@ -219,6 +219,51 @@ describe('ModelSelector', () => {
     expect(apiKeyInput).toHaveValue('')
   })
 
+  it('shows provider notices after loading models', async () => {
+    const onLoadModels = vi.fn((request: ModelProviderListRequest) => {
+      if (request.provider === 'ollama') return modelLoader(request)
+
+      return Promise.resolve({
+        provider: request.provider,
+        models: [
+          {
+            model: { provider: 'vertex', name: 'gemini-test' },
+            label: 'Gemini Test',
+            description: 'Google Gemini API model.',
+            tags: ['api'],
+          },
+        ],
+        source: 'api' as const,
+        fetchedAtUnixMs: 1,
+        notices: [
+          'Gemini API keys list Gemini models only. Claude on Vertex requires a Google OAuth access token or Application Default Credentials.',
+        ],
+      })
+    })
+
+    render(
+      <ModelSelector
+        model={{ provider: 'ollama', name: 'gemma4-E2B' }}
+        onLoadModels={onLoadModels}
+      />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Active model ollama/gemma4-E2B' }),
+    )
+
+    const vertexGroup = providerGroup('Google Vertex')
+    await userEvent.type(
+      within(vertexGroup).getByPlaceholderText('Google API key ou Bearer token'),
+      'google-api-key',
+    )
+    await userEvent.click(within(vertexGroup).getByRole('button', { name: 'Load' }))
+
+    expect(
+      await within(vertexGroup).findByText(/Claude on Vertex requires/),
+    ).toBeInTheDocument()
+  })
+
   it('keeps the dropdown frame inside narrow floating windows', async () => {
     Object.defineProperty(window, 'innerWidth', {
       configurable: true,

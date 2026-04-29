@@ -32,6 +32,7 @@ export interface ModelProviderListResult {
   models: ModelCatalogEntry[]
   source: 'api' | 'local'
   fetchedAtUnixMs: number
+  notices?: string[]
   error?: {
     code: string
     message: string

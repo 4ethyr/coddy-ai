@@ -40,6 +40,7 @@ export interface ModelProviderListPayloadResult {
   models: ModelCatalogEntryPayload[]
   source: 'api' | 'local'
   fetchedAtUnixMs: number
+  notices?: string[]
   error?: {
     code: string
     message: string
@@ -52,6 +53,8 @@ export interface ModelProviderListPayloadResult {
 
 const MODEL_LIST_TIMEOUT_MS = 12_000
 const MAX_MODELS_PER_PROVIDER = 500
+const GEMINI_API_KEY_NOTICE =
+  'Gemini API keys list Gemini models only. Claude on Vertex requires a Google OAuth access token or Application Default Credentials.'
 const VERTEX_PUBLISHERS = [
   {
     id: 'google',
@@ -220,7 +223,7 @@ async function listGeminiApiModels(
     })
     .filter((item): item is ModelCatalogEntryPayload => Boolean(item))
 
-  return successResult('vertex', 'api', models)
+  return successResult('vertex', 'api', models, [GEMINI_API_KEY_NOTICE])
 }
 
 async function listVertexPublisherModels(
@@ -371,12 +374,14 @@ function successResult(
   provider: ModelProviderId,
   source: 'api' | 'local',
   models: ModelCatalogEntryPayload[],
+  notices?: string[],
 ): ModelProviderListPayloadResult {
   return {
     provider,
     source,
     fetchedAtUnixMs: Date.now(),
     models: normalizeModelList(models),
+    ...(notices && notices.length > 0 ? { notices } : {}),
   }
 }
 

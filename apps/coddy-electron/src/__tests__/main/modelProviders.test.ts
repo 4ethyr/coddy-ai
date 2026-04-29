@@ -78,6 +78,9 @@ describe('modelProviders', () => {
       model: { provider: 'vertex', name: 'gemini-test' },
       label: 'Gemini Test',
     })
+    expect(result.notices).toEqual([
+      'Gemini API keys list Gemini models only. Claude on Vertex requires a Google OAuth access token or Application Default Credentials.',
+    ])
   })
 
   it('treats non-bearer Google credentials as Gemini API keys', async () => {
@@ -87,7 +90,7 @@ describe('modelProviders', () => {
       }),
     )
 
-    await listProviderModels(
+    const result = await listProviderModels(
       { provider: 'vertex', apiKey: 'google-key-without-aiza-prefix' },
       fetcher,
     )
@@ -100,6 +103,7 @@ describe('modelProviders', () => {
         }),
       }),
     )
+    expect(result.notices?.[0]).toContain('Claude on Vertex requires')
   })
 
   it('uses Vertex AI OAuth only for explicit bearer credentials', async () => {

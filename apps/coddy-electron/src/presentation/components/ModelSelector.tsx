@@ -35,6 +35,7 @@ type ProviderLoadMap = Partial<
     {
       status: ProviderLoadStatus
       message?: string
+      notices?: string[]
       fetchedAtUnixMs?: number
     }
   >
@@ -160,6 +161,7 @@ export function ModelSelector({ model, onSelect, onLoadModels }: Props) {
       [provider.id]: {
         status: 'ready',
         message: getLoadedStatusMessage(result),
+        notices: result.notices,
         fetchedAtUnixMs: result.fetchedAtUnixMs,
       },
     }))
@@ -432,6 +434,15 @@ function ProviderGroup({
             {status === 'loading' ? 'Loading' : hasModels ? 'Refresh' : 'Load'}
           </button>
         </div>
+
+        {loadState?.notices?.map((notice) => (
+          <p
+            key={notice}
+            className="rounded border border-primary/15 bg-primary/5 px-2 py-1.5 font-mono text-[10px] leading-4 text-on-surface-variant/75"
+          >
+            {notice}
+          </p>
+        ))}
       </form>
 
       {hasModels ? (
