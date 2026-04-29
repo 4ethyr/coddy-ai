@@ -233,12 +233,18 @@ pub struct ReplEventStreamJob {
     pub after_sequence: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplToolsJob {
+    pub request_id: Uuid,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CoddyRequest {
     Command(ReplCommandJob),
     SessionSnapshot(ReplSessionSnapshotJob),
     Events(ReplEventsJob),
     EventStream(ReplEventStreamJob),
+    Tools(ReplToolsJob),
 }
 
 impl CoddyRequest {
@@ -248,6 +254,7 @@ impl CoddyRequest {
             Self::SessionSnapshot(job) => job.request_id,
             Self::Events(job) => job.request_id,
             Self::EventStream(job) => job.request_id,
+            Self::Tools(job) => job.request_id,
         }
     }
 }
@@ -284,6 +291,10 @@ pub enum CoddyResult {
         events: Vec<coddy_core::ReplEventEnvelope>,
         last_sequence: u64,
     },
+    ReplTools {
+        request_id: Uuid,
+        tools: Vec<String>,
+    },
 }
 
 impl CoddyResult {
@@ -294,7 +305,8 @@ impl CoddyResult {
             | Self::ActionStatus { request_id, .. }
             | Self::Error { request_id, .. }
             | Self::ReplSessionSnapshot { request_id, .. }
-            | Self::ReplEvents { request_id, .. } => *request_id,
+            | Self::ReplEvents { request_id, .. }
+            | Self::ReplTools { request_id, .. } => *request_id,
         }
     }
 }
@@ -345,6 +357,14 @@ mod tests {
     }
 
     #[test]
+    fn repl_tools_job_keeps_request_id() {
+        let request_id = Uuid::new_v4();
+        let job = ReplToolsJob { request_id };
+
+        assert_eq!(job.request_id, request_id);
+    }
+
+    #[test]
     fn coddy_request_exposes_request_id_for_all_variants() {
         let request_id = Uuid::new_v4();
 
@@ -363,6 +383,7 @@ mod tests {
                 request_id,
                 after_sequence: 1,
             }),
+            CoddyRequest::Tools(ReplToolsJob { request_id }),
         ];
 
         for request in requests {
@@ -594,6 +615,10 @@ mod tests {
                 request_id,
                 events: vec![event],
                 last_sequence: 1,
+            },
+            CoddyResult::ReplTools {
+                request_id,
+                tools: vec!["filesystem.read_file".to_string()],
             },
         ];
 

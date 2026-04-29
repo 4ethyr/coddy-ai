@@ -8,6 +8,7 @@ use coddy_core::{ReplCommand, ReplEventEnvelope, ReplSessionSnapshot};
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcError, CoddyRequest, CoddyResult, CoddyWireRequest,
     CoddyWireResult, ReplCommandJob, ReplEventStreamJob, ReplEventsJob, ReplSessionSnapshotJob,
+    ReplToolsJob,
 };
 use tokio::net::UnixStream;
 use tokio::time::{sleep, timeout};
@@ -140,6 +141,20 @@ impl CoddyClient {
                 bail!("daemon returned error {code}: {message}")
             }
             _ => bail!("daemon returned unexpected response for REPL session events"),
+        }
+    }
+
+    pub async fn tools(&self) -> Result<Vec<String>> {
+        let request_id = Uuid::new_v4();
+        match self
+            .roundtrip(CoddyRequest::Tools(ReplToolsJob { request_id }))
+            .await?
+        {
+            CoddyResult::ReplTools { tools, .. } => Ok(tools),
+            CoddyResult::Error { code, message, .. } => {
+                bail!("daemon returned error {code}: {message}")
+            }
+            _ => bail!("daemon returned unexpected response for REPL tools"),
         }
     }
 
@@ -402,6 +417,39 @@ mod tests {
             .expect("send command");
 
         assert!(matches!(result, CoddyResult::ActionStatus { .. }));
+        server.await.expect("server task");
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    #[tokio::test]
+    async fn client_reads_tool_names() {
+        let socket_path = test_socket_path("tools");
+        let listener = UnixListener::bind(&socket_path).expect("bind test socket");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept client");
+            let request: CoddyWireRequest = read_frame(&mut stream).await.expect("read request");
+            request.ensure_compatible().expect("compatible request");
+            let CoddyRequest::Tools(job) = request.request else {
+                panic!("unexpected request")
+            };
+            write_frame(
+                &mut stream,
+                &CoddyWireResult::new(CoddyResult::ReplTools {
+                    request_id: job.request_id,
+                    tools: vec!["shell.run".to_string(), "filesystem.read_file".to_string()],
+                }),
+            )
+            .await
+            .expect("write response");
+        });
+
+        let client = CoddyClient::new(&socket_path);
+        let tools = client.tools().await.expect("tools");
+
+        assert_eq!(
+            tools,
+            vec!["shell.run".to_string(), "filesystem.read_file".to_string()]
+        );
         server.await.expect("server task");
         let _ = std::fs::remove_file(socket_path);
     }

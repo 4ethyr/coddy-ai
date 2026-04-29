@@ -8,8 +8,8 @@ Coddy e o projeto de REPL/CLI agentic extraido do VisionClip para evoluir como r
 - `apps/coddy-electron`: interface desktop Electron.
 - `crates/coddy-agent`: runtime agentic Rust, registry de tools locais, router de tools, contexto local, executor deterministico de planos, eval runner local, run state minimo, tools read-only, read tracker, previews, aplicacao aprovada de edicao, command guard, shell planner e shell executor controlado.
 - `crates/coddy-core`: dominio, sessoes, politicas, eventos, contratos e parser/handler desacoplado de comandos do REPL shell.
-- `crates/coddy-ipc`: transporte e contratos IPC.
-- `crates/coddy-client`: cliente do runtime Coddy.
+- `crates/coddy-ipc`: transporte e contratos IPC, incluindo snapshot/eventos e catalogo read-only de tools.
+- `crates/coddy-client`: cliente do runtime Coddy, incluindo comandos, eventos, snapshots e listagem de tools.
 - `crates/coddy-voice-input`: entrada de voz e overlay opcional.
 - `docs/repl`: documentacao de arquitetura, contratos e plano do REPL.
 - `repl_ui`: prototipos visuais.

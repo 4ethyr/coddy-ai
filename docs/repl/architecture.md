@@ -126,6 +126,10 @@ coddy settings                # abre configurações
 
 Todos esses comandos devem gerar `ReplCommand` estruturado e passar pelo daemon ou pelo core Rust, nunca por shell arbitrário.
 
+O modo terminal usa `CoddyRequest::Tools` para alimentar `/tools` quando o
+daemon expõe o catalogo read-only de tools; enquanto esse handler nao existe,
+o REPL preserva fallback vazio sem quebrar a sessao.
+
 ### `crates/coddy-core`
 
 Crate Rust com domínio independente de UI.

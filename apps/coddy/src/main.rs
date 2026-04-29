@@ -486,9 +486,14 @@ async fn run_terminal_repl(config: &CoddyRuntimeConfig) -> Result<()> {
 }
 
 async fn load_repl_shell_context(config: &CoddyRuntimeConfig) -> ReplShellContext {
-    let snapshot = match coddy_client(config) {
-        Ok(client) => client.snapshot().await.ok(),
-        Err(_) => None,
+    let client = coddy_client(config).ok();
+    let snapshot = match &client {
+        Some(client) => client.snapshot().await.ok(),
+        None => None,
+    };
+    let tool_names = match (&client, snapshot.is_some()) {
+        (Some(client), true) => client.tools().await.unwrap_or_default(),
+        _ => Vec::new(),
     };
 
     let (session_status, selected_model) = snapshot
@@ -515,7 +520,7 @@ async fn load_repl_shell_context(config: &CoddyRuntimeConfig) -> ReplShellContex
         config_path: CoddyRuntimeConfig::config_path()
             .ok()
             .map(|path| path.display().to_string()),
-        tool_names: Vec::new(),
+        tool_names,
     }
 }
 
@@ -697,6 +702,9 @@ fn format_job_result(result: CoddyResult) -> Result<String> {
                 "events": events,
             }))?
         )),
+        CoddyResult::ReplTools { tools, .. } => {
+            Ok(format!("{}\n", serde_json::to_string_pretty(&tools)?))
+        }
     }
 }
 
@@ -853,6 +861,18 @@ mod tests {
         .expect("format text");
 
         assert_eq!(output, "done\n");
+    }
+
+    #[test]
+    fn formats_repl_tools_results_for_cli_and_terminal() {
+        let output = format_job_result(CoddyResult::ReplTools {
+            request_id: uuid::Uuid::nil(),
+            tools: vec!["filesystem.read_file".to_string(), "shell.run".to_string()],
+        })
+        .expect("format tools");
+
+        assert!(output.contains("filesystem.read_file"));
+        assert!(output.contains("shell.run"));
     }
 
     #[test]

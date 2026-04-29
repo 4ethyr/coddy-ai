@@ -663,7 +663,7 @@ Escopo entregue:
 
 ## Proximo bloco recomendado
 
-Adicionar refresh de contexto/tools no terminal REPL.
+Implementado: contrato read-only de tools para alimentar `/tools`.
 
 Motivo:
 
@@ -673,9 +673,32 @@ Motivo:
   sem acoplar `apps/coddy` diretamente ao `coddy-agent`;
 - essa etapa prepara UI Electron e terminal para exibirem as mesmas tools.
 
+Escopo entregue:
+
+- `ReplToolsJob`, `CoddyRequest::Tools` e `CoddyResult::ReplTools` no IPC;
+- `CoddyClient::tools()` com validacao de resposta e request id;
+- `load_repl_shell_context` passa a consultar tools pelo cliente Coddy;
+- `/tools` continua com fallback vazio quando o daemon ainda nao suporta o
+  contrato;
+- formatacao explicita de `ReplTools` no CLI;
+- testes focados no IPC, client e CLI.
+
+## Proximo bloco recomendado
+
+Implementar o handler `Tools` no daemon/runtime.
+
+Motivo:
+
+- o contrato ja existe no client e no IPC, mas o lado servidor ainda precisa
+  responder com o catalogo real;
+- o catalogo deve vir do runtime/registry, mantendo `apps/coddy` desacoplado de
+  `coddy-agent`;
+- depois disso, terminal e UI podem compartilhar a mesma fonte de verdade.
+
 Escopo recomendado:
 
-- criar contrato read-only para listar tools registradas pelo daemon/runtime;
-- atualizar o contexto do shell antes de cada comando que renderiza status/tools;
-- adicionar teste de IPC/contrato para lista de tools;
+- adicionar handler de `CoddyRequest::Tools` no daemon que fala o protocolo
+  Coddy;
+- retornar nomes ordenados vindos de `AgentToolRegistry`;
+- adicionar teste de roundtrip servidor/cliente;
 - manter fixtures versionadas de evals como bloco posterior.
