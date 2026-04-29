@@ -40,7 +40,7 @@ describe('FloatingTerminal', () => {
     Object.defineProperty(window, 'replApi', {
       configurable: true,
       value: {
-        invoke: vi.fn(),
+        invoke: vi.fn().mockResolvedValue({ maximized: true }),
         on: vi.fn(),
       },
     })

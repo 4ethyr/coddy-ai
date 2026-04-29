@@ -3,7 +3,7 @@
 
 import { spawn, ChildProcess } from 'child_process'
 import { createInterface } from 'readline'
-import { ipcMain, BrowserWindow } from 'electron'
+import { ipcMain, BrowserWindow, screen } from 'electron'
 import type { Rectangle } from 'electron'
 
 const CODDY_BIN = process.env.CODDY_BIN || 'coddy'
@@ -38,6 +38,10 @@ type ResizeStartPayload = {
 type ResizeDragPayload = {
   screenX: number
   screenY: number
+}
+
+type WindowMaximizeResult = {
+  maximized: boolean
 }
 
 type ReplCommandResult = {
@@ -99,14 +103,17 @@ let voiceCaptureCancelRequested = false
 const resizeSessions = new Map<
   number,
   {
+    window: BrowserWindow
     edge: ResizeEdge
     startX: number
     startY: number
     bounds: Rectangle
     minWidth: number
     minHeight: number
+    timer: ReturnType<typeof setInterval>
   }
 >()
+const restoreBoundsByWebContents = new Map<number, Rectangle>()
 
 function reapStream(streamId: string): void {
   const child = activeStreams.get(streamId)
@@ -132,12 +139,8 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('window:maximize', (event) => {
     const targetWindow = BrowserWindow.fromWebContents(event.sender)
-    if (!targetWindow) return
-    if (targetWindow.isMaximized()) {
-      targetWindow.unmaximize()
-      return
-    }
-    targetWindow.maximize()
+    if (!targetWindow) return { maximized: false }
+    return toggleWindowMaximize(event.sender.id, targetWindow)
   })
 
   ipcMain.handle(
@@ -147,13 +150,31 @@ export function registerIpcHandlers(): void {
       if (!targetWindow) return { ok: false }
 
       const [minWidth, minHeight] = targetWindow.getMinimumSize()
-      resizeSessions.set(event.sender.id, {
+      clearResizeSession(event.sender.id)
+      restoreBoundsByWebContents.delete(event.sender.id)
+
+      const session = {
+        window: targetWindow,
         edge: payload.edge,
         startX: payload.screenX,
         startY: payload.screenY,
         bounds: targetWindow.getBounds(),
         minWidth: minWidth ?? 680,
         minHeight: minHeight ?? 400,
+        timer: setInterval(() => {
+          const active = resizeSessions.get(event.sender.id)
+          if (!active) return
+          if (active.window.isDestroyed()) {
+            clearResizeSession(event.sender.id)
+            return
+          }
+          const point = screen.getCursorScreenPoint()
+          updateResizeSession(active, { screenX: point.x, screenY: point.y })
+        }, 16),
+      }
+
+      resizeSessions.set(event.sender.id, {
+        ...session,
       })
       return { ok: true }
     },
@@ -164,16 +185,12 @@ export function registerIpcHandlers(): void {
     const session = resizeSessions.get(event.sender.id)
     if (!targetWindow || !session) return { ok: false }
 
-    const dx = payload.screenX - session.startX
-    const dy = payload.screenY - session.startY
-    const next = resizeBounds(session, dx, dy)
-
-    targetWindow.setBounds(next, false)
+    updateResizeSession(session, payload)
     return { ok: true }
   })
 
   ipcMain.handle('window:resize-end', (event) => {
-    resizeSessions.delete(event.sender.id)
+    clearResizeSession(event.sender.id)
     return { ok: true }
   })
 
@@ -331,7 +348,10 @@ export function cleanupStreams(): void {
   }
   activeVoiceCapture = null
   voiceCaptureCancelRequested = false
-  resizeSessions.clear()
+  for (const webContentsId of Array.from(resizeSessions.keys())) {
+    clearResizeSession(webContentsId)
+  }
+  restoreBoundsByWebContents.clear()
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +399,61 @@ function normalizeCommandResult(raw: unknown): ReplCommandResult {
 
 async function runCoddyCommand(args: string[]): Promise<ReplCommandResult> {
   return runCoddyCommandFromChild(coddySpawn(args))
+}
+
+function toggleWindowMaximize(
+  webContentsId: number,
+  targetWindow: BrowserWindow,
+): WindowMaximizeResult {
+  clearResizeSession(webContentsId)
+
+  const restoreBounds = restoreBoundsByWebContents.get(webContentsId)
+  if (restoreBounds) {
+    if (targetWindow.isMaximized()) {
+      targetWindow.unmaximize()
+    }
+    targetWindow.setBounds(restoreBounds, false)
+    restoreBoundsByWebContents.delete(webContentsId)
+    return { maximized: false }
+  }
+
+  if (targetWindow.isMaximized()) {
+    targetWindow.unmaximize()
+    return { maximized: false }
+  }
+
+  const currentBounds = targetWindow.getBounds()
+  const display = screen.getDisplayMatching(currentBounds)
+
+  restoreBoundsByWebContents.set(webContentsId, currentBounds)
+  targetWindow.setBounds(display.workArea, false)
+
+  return { maximized: true }
+}
+
+function clearResizeSession(webContentsId: number): void {
+  const session = resizeSessions.get(webContentsId)
+  if (session) {
+    clearInterval(session.timer)
+  }
+  resizeSessions.delete(webContentsId)
+}
+
+function updateResizeSession(
+  session: {
+    window: BrowserWindow
+    edge: ResizeEdge
+    startX: number
+    startY: number
+    bounds: Rectangle
+    minWidth: number
+    minHeight: number
+  },
+  point: ResizeDragPayload,
+): void {
+  const dx = point.screenX - session.startX
+  const dy = point.screenY - session.startY
+  session.window.setBounds(resizeBounds(session, dx, dy), false)
 }
 
 function resizeBounds(

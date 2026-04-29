@@ -6,6 +6,7 @@ import { useEffect } from 'react'
 import { FloatingTerminal } from './views/FloatingTerminal'
 import { DesktopApp } from './views/DesktopApp'
 import { SessionProvider, useSessionContext, ModeProvider, useMode } from './hooks'
+import { WindowResizeHandles } from './components'
 
 /** Inner component that has access to session + mode contexts */
 function AppInner() {
@@ -31,12 +32,23 @@ function AppInner() {
     }
   }, [connecting, mode, session.mode, setMode])
 
-  if (connecting) return <FloatingTerminal />
+  if (connecting) {
+    return (
+      <>
+        <WindowResizeHandles />
+        <FloatingTerminal />
+      </>
+    )
+  }
 
   const activeMode = session.mode
 
-  if (activeMode === 'DesktopApp') return <DesktopApp />
-  return <FloatingTerminal />
+  return (
+    <>
+      <WindowResizeHandles />
+      {activeMode === 'DesktopApp' ? <DesktopApp /> : <FloatingTerminal />}
+    </>
+  )
 }
 
 /** Root provider wrapper */

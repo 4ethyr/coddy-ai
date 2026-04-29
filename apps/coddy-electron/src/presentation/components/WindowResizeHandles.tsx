@@ -22,6 +22,11 @@ export function WindowResizeHandles() {
 
       event.preventDefault()
       event.stopPropagation()
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId)
+      } catch {
+        // Pointer capture is best-effort; the main process also polls cursor position.
+      }
       const startPoint = pointerPoint(event)
 
       const payload = {
@@ -46,18 +51,20 @@ export function WindowResizeHandles() {
         window.removeEventListener('pointermove', handlePointerMove)
         window.removeEventListener('pointerup', handlePointerUp)
         window.removeEventListener('pointercancel', handlePointerUp)
+        window.removeEventListener('blur', handlePointerUp)
         void window.replApi.invoke('window:resize-end')
       }
 
       window.addEventListener('pointermove', handlePointerMove)
       window.addEventListener('pointerup', handlePointerUp)
       window.addEventListener('pointercancel', handlePointerUp)
+      window.addEventListener('blur', handlePointerUp)
     },
     [],
   )
 
   return (
-    <div className="pointer-events-none absolute inset-0 z-[115]" aria-hidden="true">
+    <div className="pointer-events-none fixed inset-0 z-[115]" aria-hidden="true">
       {HANDLES.map((handle) => (
         <div
           key={handle.edge}

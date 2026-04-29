@@ -17,7 +17,6 @@ import { StreamingText } from '@/presentation/components/StreamingText'
 import { AssessmentConfirmModal } from '@/presentation/components/AssessmentConfirmModal'
 import { FloatingSettingsModal } from '@/presentation/components/FloatingSettingsModal'
 import { Icon } from '@/presentation/components/Icon'
-import { WindowResizeHandles } from '@/presentation/components/WindowResizeHandles'
 
 export function FloatingTerminal() {
   const {
@@ -62,10 +61,12 @@ export function FloatingTerminal() {
     }
   }, [])
 
-  const handleMaximize = useCallback(() => {
-    setExpanded((value) => !value)
+  const handleMaximize = useCallback(async () => {
     if (typeof window !== 'undefined' && window.replApi) {
-      void window.replApi.invoke('window:maximize')
+      const result = await window.replApi.invoke('window:maximize')
+      if (result && typeof result === 'object' && 'maximized' in result) {
+        setExpanded(Boolean(result.maximized))
+      }
     }
   }, [])
 
@@ -93,14 +94,13 @@ export function FloatingTerminal() {
 
   return (
     <main
-      className={`floating-terminal-shell aurora-gradient relative flex flex-col overflow-hidden border border-primary/20 transition-[width,height,border-radius,margin] duration-200 ease-out ${
+      className={`floating-terminal-shell aurora-gradient relative flex flex-col overflow-hidden border border-primary/20 ${
         expanded
           ? 'h-screen w-screen rounded-none'
           : 'm-6 h-[calc(100vh-48px)] w-[calc(100vw-48px)] rounded-xl'
       }`}
       style={terminalStyle}
     >
-      <WindowResizeHandles />
       <header className="relative z-[120] flex w-full flex-shrink-0 items-center justify-between border-b border-primary/20 bg-slate-950/60 px-6 py-3 shadow-[0_4px_30px_rgba(0,0,0,0.15)] backdrop-blur-xl">
         <div className="flex items-center gap-3">
           <Icon
