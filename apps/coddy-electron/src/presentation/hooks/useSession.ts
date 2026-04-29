@@ -5,6 +5,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type {
   ModelRef,
+  ModelProviderListRequest,
+  ModelProviderListResult,
   ModelRole,
   ReplCommandResult,
   ReplMode,
@@ -27,6 +29,7 @@ import {
   cancelVoiceCapture,
   captureAndExplain,
   dismissConfirmation,
+  listProviderModels,
 } from '@/application'
 import { useReplClient } from './useReplClient'
 
@@ -51,6 +54,11 @@ export interface UseSessionReturn {
 
   /** Select a model for the requested role */
   selectModel: (model: ModelRef, role?: ModelRole) => Promise<void>
+
+  /** Load available models for a provider with a request-scoped credential */
+  listProviderModels: (
+    request: ModelProviderListRequest,
+  ) => Promise<ModelProviderListResult>
 
   /** Switch the REPL UI mode through the daemon */
   openUi: (mode: ReplMode) => Promise<void>
@@ -172,6 +180,13 @@ export function useSession(): UseSessionReturn {
     [client],
   )
 
+  const handleListProviderModels = useCallback(
+    async (request: ModelProviderListRequest) => {
+      return listProviderModels(client, request)
+    },
+    [client],
+  )
+
   const handleOpenUi = useCallback(
     async (mode: ReplMode) => {
       try {
@@ -234,6 +249,7 @@ export function useSession(): UseSessionReturn {
     cancelRun: handleCancelRun,
     cancelSpeech: handleCancelSpeech,
     selectModel: handleSelectModel,
+    listProviderModels: handleListProviderModels,
     openUi: handleOpenUi,
     captureVoice: handleCaptureVoice,
     cancelVoiceCapture: handleCancelVoiceCapture,

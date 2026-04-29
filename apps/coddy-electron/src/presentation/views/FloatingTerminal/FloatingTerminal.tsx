@@ -27,6 +27,7 @@ export function FloatingTerminal() {
     ask,
     reconnect,
     selectModel,
+    listProviderModels,
     openUi,
     captureVoice,
     cancelVoiceCapture,
@@ -119,6 +120,7 @@ export function FloatingTerminal() {
           <StatusIndicator status={session.status} />
           <ModelSelector
             model={session.selected_model}
+            onLoadModels={listProviderModels}
             onSelect={(model) => {
               void selectModel(model, 'Chat')
             }}

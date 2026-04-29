@@ -106,6 +106,10 @@ describe('ElectronReplIpcClient', () => {
       'Chat',
     )
     await client.getToolCatalog()
+    await client.listProviderModels({
+      provider: 'openai',
+      apiKey: 'sk-test',
+    })
     await client.openUi('DesktopApp')
     await client.captureAndExplain('MultipleChoice', 'RestrictedAssessment')
     await client.dismissConfirmation()
@@ -117,6 +121,10 @@ describe('ElectronReplIpcClient', () => {
       'Chat',
     )
     expect(invoke).toHaveBeenCalledWith('repl:tools')
+    expect(invoke).toHaveBeenCalledWith('models:list', {
+      provider: 'openai',
+      apiKey: 'sk-test',
+    })
     expect(invoke).toHaveBeenCalledWith('repl:open-ui', 'DesktopApp')
     expect(invoke).toHaveBeenCalledWith(
       'repl:capture-and-explain',

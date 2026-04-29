@@ -20,6 +20,23 @@ export interface ModelCatalogEntry {
   tags: readonly string[]
 }
 
+export interface ModelProviderListRequest {
+  provider: ModelProviderId
+  apiKey?: string
+  endpoint?: string
+}
+
+export interface ModelProviderListResult {
+  provider: ModelProviderId
+  models: ModelCatalogEntry[]
+  source: 'api' | 'local'
+  fetchedAtUnixMs: number
+  error?: {
+    code: string
+    message: string
+  }
+}
+
 export interface ModelProviderOption {
   id: ModelProviderId
   label: string
@@ -28,6 +45,12 @@ export interface ModelProviderOption {
   connectionLabel: string
   routingLabel: string
   connectionKind: ProviderConnectionKind
+  credentialLabel?: string
+  credentialPlaceholder?: string
+  endpointLabel?: string
+  endpointPlaceholder?: string
+  requiresCredential: boolean
+  requiresEndpoint?: boolean
   models: readonly ModelCatalogEntry[]
 }
 
@@ -40,32 +63,8 @@ export const MODEL_PROVIDER_CATALOG: readonly ModelProviderOption[] = [
     connectionLabel: 'local',
     routingLabel: 'workspace',
     connectionKind: 'local',
-    models: [
-      {
-        model: { provider: 'ollama', name: 'gemma4-E2B' },
-        label: 'gemma4-E2B',
-        description: 'Perfil local padrao do Coddy.',
-        tags: ['local', 'fast'],
-      },
-      {
-        model: { provider: 'ollama', name: 'qwen2.5:0.5b' },
-        label: 'qwen2.5:0.5b',
-        description: 'Resposta rapida para fluxos leves.',
-        tags: ['local', 'small'],
-      },
-      {
-        model: { provider: 'ollama', name: 'qwen2.5:7b' },
-        label: 'qwen2.5:7b',
-        description: 'Modelo local balanceado para codigo.',
-        tags: ['local', 'code'],
-      },
-      {
-        model: { provider: 'ollama', name: 'llama3.2:3b' },
-        label: 'llama3.2:3b',
-        description: 'Modelo local compacto para conversas.',
-        tags: ['local', 'compact'],
-      },
-    ],
+    requiresCredential: false,
+    models: [],
   },
   {
     id: 'openai',
@@ -75,26 +74,10 @@ export const MODEL_PROVIDER_CATALOG: readonly ModelProviderOption[] = [
     connectionLabel: 'api key',
     routingLabel: 'responses',
     connectionKind: 'api_key',
-    models: [
-      {
-        model: { provider: 'openai', name: 'gpt-5.2' },
-        label: 'GPT-5.2',
-        description: 'Modelo frontier para coding agentic.',
-        tags: ['code', 'tools'],
-      },
-      {
-        model: { provider: 'openai', name: 'gpt-5-mini' },
-        label: 'GPT-5 mini',
-        description: 'Opcao eficiente para tarefas bem definidas.',
-        tags: ['fast', 'tools'],
-      },
-      {
-        model: { provider: 'openai', name: 'gpt-4.1' },
-        label: 'GPT-4.1',
-        description: 'Modelo nao-reasoning forte em tool calling.',
-        tags: ['tools', 'long-context'],
-      },
-    ],
+    credentialLabel: 'OpenAI API key',
+    credentialPlaceholder: 'sk-...',
+    requiresCredential: true,
+    models: [],
   },
   {
     id: 'openrouter',
@@ -104,43 +87,23 @@ export const MODEL_PROVIDER_CATALOG: readonly ModelProviderOption[] = [
     connectionLabel: 'api key',
     routingLabel: 'multi-provider',
     connectionKind: 'api_key',
-    models: [
-      {
-        model: { provider: 'openrouter', name: 'qwen/qwen3-coder-next' },
-        label: 'Qwen3 Coder Next',
-        description: 'Modelo focado em coding agents e contexto longo.',
-        tags: ['code', 'agentic'],
-      },
-      {
-        model: { provider: 'openrouter', name: 'qwen/qwen3-coder' },
-        label: 'Qwen3 Coder',
-        description: 'Opcao de codigo para execucao via OpenRouter.',
-        tags: ['code', 'router'],
-      },
-    ],
+    credentialLabel: 'OpenRouter API key',
+    credentialPlaceholder: 'sk-or-...',
+    requiresCredential: true,
+    models: [],
   },
   {
     id: 'vertex',
     label: 'Google Vertex',
     shortLabel: 'Vertex',
-    description: 'Gemini via Vertex AI com identidade Google Cloud.',
-    connectionLabel: 'gcloud',
+    description: 'Gemini via Vertex AI ou Gemini API com credencial Google.',
+    connectionLabel: 'api key/token',
     routingLabel: 'project scoped',
-    connectionKind: 'workload_identity',
-    models: [
-      {
-        model: { provider: 'vertex', name: 'gemini-2.5-pro' },
-        label: 'Gemini 2.5 Pro',
-        description: 'Modelo Gemini avancado para codigo e contexto longo.',
-        tags: ['code', 'multimodal'],
-      },
-      {
-        model: { provider: 'vertex', name: 'gemini-2.5-flash' },
-        label: 'Gemini 2.5 Flash',
-        description: 'Opcao rapida de bom custo-beneficio.',
-        tags: ['fast', 'multimodal'],
-      },
-    ],
+    connectionKind: 'api_key',
+    credentialLabel: 'Google API key or OAuth token',
+    credentialPlaceholder: 'AIza... ou Bearer token',
+    requiresCredential: true,
+    models: [],
   },
   {
     id: 'azure',
@@ -150,20 +113,13 @@ export const MODEL_PROVIDER_CATALOG: readonly ModelProviderOption[] = [
     connectionLabel: 'resource',
     routingLabel: 'deployment',
     connectionKind: 'azure_resource',
-    models: [
-      {
-        model: { provider: 'azure', name: 'gpt-5.2' },
-        label: 'GPT-5.2 deployment',
-        description: 'Deployment Azure para tarefas agentic coding.',
-        tags: ['deployment', 'code'],
-      },
-      {
-        model: { provider: 'azure', name: 'gpt-4.1' },
-        label: 'GPT-4.1 deployment',
-        description: 'Deployment Azure para tool use e contexto longo.',
-        tags: ['deployment', 'tools'],
-      },
-    ],
+    credentialLabel: 'Azure OpenAI API key',
+    credentialPlaceholder: 'api-key',
+    endpointLabel: 'Azure endpoint',
+    endpointPlaceholder: 'https://resource.openai.azure.com',
+    requiresCredential: true,
+    requiresEndpoint: true,
+    models: [],
   },
 ]
 

@@ -3,6 +3,8 @@
 
 import type {
   ModelRef,
+  ModelProviderListRequest,
+  ModelProviderListResult,
   ModelRole,
   AssessmentPolicy,
   ReplIpcClient,
@@ -55,6 +57,16 @@ export async function selectModel(
   role: ModelRole,
 ): Promise<ReplCommandResult> {
   return client.selectModel(model, role)
+}
+
+/**
+ * Lists provider models using a credential supplied for this request only.
+ */
+export async function listProviderModels(
+  client: ReplIpcClient,
+  request: ModelProviderListRequest,
+): Promise<ModelProviderListResult> {
+  return client.listProviderModels(request)
 }
 
 /**

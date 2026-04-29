@@ -316,6 +316,15 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
       return (await sim.invoke('repl:tools')) as ReplToolCatalogItem[]
     },
 
+    async listProviderModels(request) {
+      return {
+        provider: request.provider,
+        models: [],
+        source: request.provider === 'ollama' ? 'local' : 'api',
+        fetchedAtUnixMs: 1,
+      }
+    },
+
     watchEvents(afterSequence: number): AsyncIterable<ReplEventEnvelope> {
       const stream: AsyncIterable<ReplEventEnvelope> = {
         [Symbol.asyncIterator]() {

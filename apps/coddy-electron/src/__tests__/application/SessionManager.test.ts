@@ -36,6 +36,7 @@ describe('SessionManager', () => {
           approval_policy: 'AutoApprove',
         },
       ]),
+      listProviderModels: vi.fn(),
       watchEvents: vi.fn(),
       ask: vi.fn(),
       voiceTurn: vi.fn(),

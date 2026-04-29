@@ -23,6 +23,7 @@ const sessionContext = {
   ask: vi.fn(),
   reconnect: vi.fn(),
   selectModel: vi.fn(),
+  listProviderModels: vi.fn(),
   openUi: vi.fn(),
   captureVoice: vi.fn(),
   cancelVoiceCapture: vi.fn(),

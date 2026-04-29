@@ -5,6 +5,7 @@ import { spawn, ChildProcess } from 'child_process'
 import { createInterface } from 'readline'
 import { ipcMain, BrowserWindow, screen } from 'electron'
 import type { Rectangle } from 'electron'
+import { listProviderModels, type ModelProviderListPayload } from './modelProviders'
 
 const CODDY_BIN = process.env.CODDY_BIN || 'coddy'
 
@@ -210,6 +211,14 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('repl:tools', async () => {
     return readJson(coddySpawn(['session', 'tools']))
   })
+
+  // ---- Provider model catalogs ----
+  ipcMain.handle(
+    'models:list',
+    async (_event, payload: ModelProviderListPayload) => {
+      return listProviderModels(payload)
+    },
+  )
 
   // ---- Watch (streaming) ----
   ipcMain.handle('repl:watch-start', async (_event, afterSequence: number) => {

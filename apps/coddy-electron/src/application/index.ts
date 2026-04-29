@@ -12,6 +12,7 @@ export {
   cancelRun,
   cancelSpeech,
   selectModel,
+  listProviderModels,
   openUi,
   captureVoice,
   cancelVoiceCapture,

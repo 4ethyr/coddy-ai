@@ -3,6 +3,8 @@
 
 import type {
   ModelRef,
+  ModelProviderListRequest,
+  ModelProviderListResult,
   ModelRole,
   ReplEventEnvelope,
   ReplMode,
@@ -45,6 +47,11 @@ export interface ReplIpcClient {
 
   /** Get the backend tool catalog exposed by the active Coddy runtime */
   getToolCatalog(): Promise<ReplToolCatalogItem[]>
+
+  /** List available models for a provider using a session-scoped credential */
+  listProviderModels(
+    request: ModelProviderListRequest,
+  ): Promise<ModelProviderListResult>
 
   /** Open a persistent stream of live events. Returns an AsyncIterable. */
   watchEvents(afterSequence: number): AsyncIterable<ReplEventEnvelope>

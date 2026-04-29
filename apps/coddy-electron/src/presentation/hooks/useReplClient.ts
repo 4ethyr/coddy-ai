@@ -17,6 +17,13 @@ function createClient(): ReplIpcClient {
     getSnapshot: () => new Promise(() => {}),
     getEventsAfter: () => new Promise(() => {}),
     getToolCatalog: () => Promise.resolve([]),
+    listProviderModels: (request) =>
+      Promise.resolve({
+        provider: request.provider,
+        models: [],
+        source: request.provider === 'ollama' ? 'local' : 'api',
+        fetchedAtUnixMs: Date.now(),
+      }),
     watchEvents: () => ({ [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => {}) }) }),
     ask: () => new Promise(() => {}),
     voiceTurn: () => new Promise(() => {}),

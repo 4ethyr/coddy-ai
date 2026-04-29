@@ -10,6 +10,7 @@ const replApi = {
       'repl:snapshot',
       'repl:events-after',
       'repl:tools',
+      'models:list',
       'repl:ask',
       'repl:voice-turn',
       'repl:stop-speaking',

@@ -2,7 +2,7 @@
 // Advanced mode: sidebar + conversation + workspace panels.
 // Uses the same useSession hook as FloatingTerminal.
 
-import { useCallback, useState } from 'react'
+import { useCallback, useState, type ComponentProps } from 'react'
 import type { FloatingAppearanceSettings } from '@/application'
 import { loadSettings, saveSettings } from '@/application'
 import { useSessionContext } from '@/presentation/hooks'
@@ -15,8 +15,16 @@ import { FloatingSettingsModal } from '@/presentation/components/FloatingSetting
 import { Icon } from '@/presentation/components/Icon'
 
 export function DesktopApp() {
-  const { session, toolCatalog, connecting, error, ask, selectModel, openUi } =
-    useSessionContext()
+  const {
+    session,
+    toolCatalog,
+    connecting,
+    error,
+    ask,
+    selectModel,
+    listProviderModels,
+    openUi,
+  } = useSessionContext()
   const [activeTab, setActiveTab] = useState<DesktopTab>('chat')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
@@ -147,6 +155,7 @@ export function DesktopApp() {
           {activeTab === 'models' && (
             <ModelsTab
               model={session.selected_model}
+              onLoadModels={listProviderModels}
               onSelect={(model) => {
                 void selectModel(model, 'Chat')
               }}
@@ -205,9 +214,11 @@ function WindowButton({
 
 function ModelsTab({
   model,
+  onLoadModels,
   onSelect,
 }: {
   model: { provider: string; name: string }
+  onLoadModels: ComponentProps<typeof ModelSelector>['onLoadModels']
   onSelect: (model: { provider: string; name: string }) => void
 }) {
   return (
@@ -227,7 +238,11 @@ function ModelsTab({
               desktop alinhados.
             </p>
           </div>
-          <ModelSelector model={model} onSelect={onSelect} />
+          <ModelSelector
+            model={model}
+            onLoadModels={onLoadModels}
+            onSelect={onSelect}
+          />
         </section>
 
         <div className="grid gap-4 md:grid-cols-3">

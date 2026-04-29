@@ -20,6 +20,8 @@ export type {
 export type {
   ModelCatalogEntry,
   ModelProviderId,
+  ModelProviderListRequest,
+  ModelProviderListResult,
   ModelProviderOption,
   ProviderConnectionKind,
 } from './models'

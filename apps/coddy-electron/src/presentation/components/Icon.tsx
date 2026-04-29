@@ -15,6 +15,7 @@ export type IconName =
   | 'mic'
   | 'minimize'
   | 'screen'
+  | 'search'
   | 'send'
   | 'sensors'
   | 'settings'
@@ -120,6 +121,12 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="M3 18h18" />
       <path d="M8 22h8" />
       <path d="M12 18v4" />
+    </>
+  ),
+  search: (
+    <>
+      <circle cx="11" cy="11" r="7" />
+      <path d="m21 21-4.3-4.3" />
     </>
   ),
   send: (

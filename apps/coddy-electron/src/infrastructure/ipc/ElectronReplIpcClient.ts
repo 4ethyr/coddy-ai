@@ -5,6 +5,8 @@ import './globals' // side-effect: registers Window.replApi type
 import type { ReplIpcClient, ReplCommandResult, ReplEventsBatch } from '@/domain'
 import type {
   ModelRef,
+  ModelProviderListRequest,
+  ModelProviderListResult,
   ModelRole,
   AssessmentPolicy,
   ReplEventEnvelope,
@@ -157,6 +159,15 @@ export class ElectronReplIpcClient implements ReplIpcClient {
 
   async getToolCatalog(): Promise<ReplToolCatalogItem[]> {
     return (await window.replApi.invoke('repl:tools')) as ReplToolCatalogItem[]
+  }
+
+  async listProviderModels(
+    request: ModelProviderListRequest,
+  ): Promise<ModelProviderListResult> {
+    return (await window.replApi.invoke(
+      'models:list',
+      request,
+    )) as ModelProviderListResult
   }
 
   watchEvents(afterSequence: number): AsyncIterable<ReplEventEnvelope> {
