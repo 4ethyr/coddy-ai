@@ -1,4 +1,7 @@
-use coddy_agent::{AgentToolRegistry, LocalAgentRuntime, LIST_FILES_TOOL};
+use coddy_agent::{
+    AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError, ChatRequest, ChatResponse,
+    ChatToolSpec, LocalAgentRuntime, UnavailableChatModelClient, LIST_FILES_TOOL,
+};
 use coddy_core::{
     ModelRef, ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage,
     ReplMode, ReplSession, ReplSessionSnapshot, ToolCall, ToolName, ToolResultStatus,
@@ -21,6 +24,7 @@ use uuid::Uuid;
 pub struct CoddyRuntime {
     tool_registry: AgentToolRegistry,
     agent_runtime: Option<LocalAgentRuntime>,
+    chat_client: Arc<dyn ChatModelClient>,
     state: Arc<Mutex<RuntimeState>>,
 }
 
@@ -51,9 +55,43 @@ impl CoddyRuntime {
         tool_registry: AgentToolRegistry,
         agent_runtime: Option<LocalAgentRuntime>,
     ) -> Self {
+        Self::new_with_agent_runtime_and_chat_client(
+            tool_registry,
+            agent_runtime,
+            Arc::new(UnavailableChatModelClient),
+        )
+    }
+
+    pub fn with_chat_client(
+        tool_registry: AgentToolRegistry,
+        chat_client: Arc<dyn ChatModelClient>,
+    ) -> Self {
+        let agent_runtime =
+            default_workspace_root().and_then(|workspace| LocalAgentRuntime::new(workspace).ok());
+        Self::new_with_agent_runtime_and_chat_client(tool_registry, agent_runtime, chat_client)
+    }
+
+    pub fn with_workspace_and_chat_client(
+        tool_registry: AgentToolRegistry,
+        workspace_root: impl AsRef<Path>,
+        chat_client: Arc<dyn ChatModelClient>,
+    ) -> Result<Self, coddy_agent::AgentError> {
+        Ok(Self::new_with_agent_runtime_and_chat_client(
+            tool_registry,
+            Some(LocalAgentRuntime::new(workspace_root)?),
+            chat_client,
+        ))
+    }
+
+    fn new_with_agent_runtime_and_chat_client(
+        tool_registry: AgentToolRegistry,
+        agent_runtime: Option<LocalAgentRuntime>,
+        chat_client: Arc<dyn ChatModelClient>,
+    ) -> Self {
         Self {
             tool_registry,
             agent_runtime,
+            chat_client,
             state: Arc::new(Mutex::new(RuntimeState::new(default_session()))),
         }
     }
@@ -187,26 +225,27 @@ impl CoddyRuntime {
         self.publish_event_with_run_now(ReplEvent::RunStarted { run_id }, run_id);
         self.publish_event_with_run_now(ReplEvent::IntentDetected { intent, confidence }, run_id);
 
-        let assistant_text = match action {
+        let assistant_response = match action {
             AskAction::ListWorkspace { path } => {
                 self.execute_workspace_listing(session_id, run_id, &text, &path, selected_model)
             }
-            AskAction::ModelBackedResponse => model_backed_response_placeholder(
-                &selected_model,
-                self.tool_registry.definitions().len(),
-            ),
+            AskAction::ModelBackedResponse => {
+                self.execute_model_backed_response(&selected_model, text.clone())
+            }
         };
 
-        self.publish_event_with_run_now(
-            ReplEvent::TokenDelta {
+        for delta in assistant_response.deltas() {
+            self.publish_event_with_run_now(
+                ReplEvent::TokenDelta {
+                    run_id,
+                    text: delta.clone(),
+                },
                 run_id,
-                text: assistant_text.clone(),
-            },
-            run_id,
-        );
+            );
+        }
         self.publish_event_with_run_now(
             ReplEvent::MessageAppended {
-                message: repl_message("assistant", assistant_text.clone()),
+                message: repl_message("assistant", assistant_response.text.clone()),
             },
             run_id,
         );
@@ -214,7 +253,7 @@ impl CoddyRuntime {
 
         CoddyResult::Text {
             request_id,
-            text: assistant_text,
+            text: assistant_response.text,
             spoken: speak,
         }
     }
@@ -226,9 +265,11 @@ impl CoddyRuntime {
         goal: &str,
         path: &str,
         selected_model: ModelRef,
-    ) -> String {
+    ) -> AssistantResponse {
         let Some(agent_runtime) = &self.agent_runtime else {
-            return "Coddy cannot access the workspace from this runtime process yet.".to_string();
+            return AssistantResponse::from_text(
+                "Coddy cannot access the workspace from this runtime process yet.",
+            );
         };
 
         let mut state = agent_runtime.start_run(session_id, goal.to_string());
@@ -254,14 +295,17 @@ impl CoddyRuntime {
         }
 
         let Some(result) = outcome.result else {
-            return "Coddy started a workspace listing but did not receive a tool result."
-                .to_string();
+            return AssistantResponse::from_text(
+                "Coddy started a workspace listing but did not receive a tool result.",
+            );
         };
 
-        match result.status {
+        let text = match result.status {
             ToolResultStatus::Succeeded => {
                 let Some(output) = result.output else {
-                    return format!("Workspace entries under `{path}`: no structured output.");
+                    return AssistantResponse::from_text(format!(
+                        "Workspace entries under `{path}`: no structured output."
+                    ));
                 };
                 let entries = output.text.trim();
                 let scope = if path == "." { "workspace" } else { path };
@@ -287,7 +331,50 @@ impl CoddyRuntime {
                     .unwrap_or_else(|| "unknown tool failure".to_string());
                 format!("I could not list workspace entries under `{path}`: {message}")
             }
+        };
+        AssistantResponse::from_text(text)
+    }
+
+    fn execute_model_backed_response(
+        &self,
+        selected_model: &ModelRef,
+        user_text: String,
+    ) -> AssistantResponse {
+        let request = match ChatRequest::new(
+            selected_model.clone(),
+            vec![
+                ChatMessage::system(
+                    "You are Coddy, a secure coding agent. Use tools only through the runtime.",
+                ),
+                ChatMessage::user(user_text),
+            ],
+        ) {
+            Ok(request) => request.with_tools(self.chat_tool_specs()),
+            Err(error) => {
+                return AssistantResponse::from_text(model_error_message(
+                    &error,
+                    selected_model,
+                    self.tool_registry.definitions().len(),
+                ));
+            }
+        };
+
+        match self.chat_client.complete(request) {
+            Ok(response) => AssistantResponse::from_chat_response(response),
+            Err(error) => AssistantResponse::from_text(model_error_message(
+                &error,
+                selected_model,
+                self.tool_registry.definitions().len(),
+            )),
         }
+    }
+
+    fn chat_tool_specs(&self) -> Vec<ChatToolSpec> {
+        self.tool_registry
+            .definitions()
+            .iter()
+            .map(ChatToolSpec::from_tool_definition)
+            .collect()
     }
 
     pub fn snapshot(&self) -> ReplSessionSnapshot {
@@ -477,6 +564,37 @@ enum AskAction {
     ModelBackedResponse,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AssistantResponse {
+    text: String,
+    deltas: Vec<String>,
+}
+
+impl AssistantResponse {
+    fn from_text(text: impl Into<String>) -> Self {
+        let text = text.into();
+        Self {
+            deltas: vec![text.clone()],
+            text,
+        }
+    }
+
+    fn from_chat_response(response: ChatResponse) -> Self {
+        Self {
+            text: response.text,
+            deltas: response.deltas,
+        }
+    }
+
+    fn deltas(&self) -> Vec<&String> {
+        if self.deltas.is_empty() {
+            vec![&self.text]
+        } else {
+            self.deltas.iter().collect()
+        }
+    }
+}
+
 fn plan_ask_action(text: &str) -> AskAction {
     let normalized = text.trim();
     let normalized_ascii = normalized.to_ascii_lowercase();
@@ -580,17 +698,27 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
 }
 
-fn model_backed_response_placeholder(selected_model: &ModelRef, tool_count: usize) -> String {
-    if selected_model.name == "unselected" {
-        return format!(
+fn model_error_message(
+    error: &ChatModelError,
+    selected_model: &ModelRef,
+    tool_count: usize,
+) -> String {
+    match error {
+        ChatModelError::UnselectedModel => format!(
             "Coddy received the request, but no chat model is selected yet. Select a provider/model to enable model-backed coding responses. {tool_count} local tools are available for safe workspace actions."
-        );
+        ),
+        ChatModelError::ProviderUnavailable { provider } => format!(
+            "Coddy received the request for {}/{}. The {provider} chat provider is not connected in the Rust runtime yet; the current runtime can synchronize sessions, stream events and execute safe local tools.",
+            selected_model.provider, selected_model.name
+        ),
+        ChatModelError::UnsupportedModel { provider, model } => format!(
+            "Coddy received the request for {}/{}. The selected model {provider}/{model} is not supported by the current runtime adapter yet.",
+            selected_model.provider, selected_model.name
+        ),
+        ChatModelError::InvalidRequest(message) => {
+            format!("Coddy could not build a valid chat request: {message}")
+        }
     }
-
-    format!(
-        "Coddy received the request for {}/{}. Model-backed streaming is not wired into this runtime path yet; the current runtime can synchronize sessions, stream events and execute safe local tools.",
-        selected_model.provider, selected_model.name
-    )
 }
 
 fn default_workspace_root() -> Option<PathBuf> {
@@ -639,6 +767,35 @@ mod tests {
     impl Drop for TempWorkspace {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecordingChatClient {
+        requests: Arc<Mutex<Vec<ChatRequest>>>,
+        response: ChatResponse,
+    }
+
+    impl RecordingChatClient {
+        fn new(response: ChatResponse) -> (Self, Arc<Mutex<Vec<ChatRequest>>>) {
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    requests: Arc::clone(&requests),
+                    response,
+                },
+                requests,
+            )
+        }
+    }
+
+    impl ChatModelClient for RecordingChatClient {
+        fn complete(&self, request: ChatRequest) -> coddy_agent::ChatModelResult {
+            self.requests
+                .lock()
+                .expect("requests mutex poisoned")
+                .push(request);
+            Ok(self.response.clone())
         }
     }
 
@@ -896,6 +1053,70 @@ mod tests {
             .expect("final assistant message");
 
         assert!(delta_index < assistant_message_index);
+    }
+
+    #[test]
+    fn ask_command_uses_injected_chat_client_for_selected_model() {
+        let request_id = Uuid::new_v4();
+        let (chat_client, requests) = RecordingChatClient::new(
+            ChatResponse::from_deltas(vec!["hello".to_string(), " world".to_string()])
+                .expect("chat response"),
+        );
+        let runtime =
+            CoddyRuntime::with_chat_client(AgentToolRegistry::default(), Arc::new(chat_client));
+        let model = ModelRef {
+            provider: "openai".to_string(),
+            name: "gpt-test".to_string(),
+        };
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: model.clone(),
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "explain this module".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let events = runtime.events_after(2).0;
+        let deltas: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match &event.event {
+                ReplEvent::TokenDelta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(text, "hello world");
+        assert_eq!(captured_requests.len(), 1);
+        assert_eq!(captured_requests[0].model, model);
+        assert_eq!(captured_requests[0].messages.len(), 2);
+        assert_eq!(
+            captured_requests[0].messages[1].content,
+            "explain this module"
+        );
+        assert!(captured_requests[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == LIST_FILES_TOOL));
+        assert_eq!(deltas, vec!["hello", " world"]);
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::MessageAppended { message }
+                if message.role == "assistant" && message.text == "hello world"
+        )));
     }
 
     #[test]
