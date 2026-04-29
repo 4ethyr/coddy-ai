@@ -3,8 +3,9 @@ use coddy_agent::{
     ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, LIST_FILES_TOOL,
 };
 use coddy_core::{
-    ModelRef, ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage,
-    ReplMode, ReplSession, ReplSessionSnapshot, ToolCall, ToolName, ToolResultStatus,
+    ApprovalPolicy, ModelRef, ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope,
+    ReplIntent, ReplMessage, ReplMode, ReplSession, ReplSessionSnapshot, ToolCall, ToolName,
+    ToolResultStatus, ToolRiskLevel,
 };
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
@@ -229,9 +230,12 @@ impl CoddyRuntime {
             AskAction::ListWorkspace { path } => {
                 self.execute_workspace_listing(session_id, run_id, &text, &path, selected_model)
             }
-            AskAction::ModelBackedResponse => {
-                self.execute_model_backed_response(&selected_model, text.clone())
-            }
+            AskAction::ModelBackedResponse => self.execute_model_backed_response(
+                session_id,
+                run_id,
+                &selected_model,
+                text.clone(),
+            ),
         };
 
         for delta in assistant_response.deltas() {
@@ -337,6 +341,8 @@ impl CoddyRuntime {
 
     fn execute_model_backed_response(
         &self,
+        session_id: Uuid,
+        run_id: Uuid,
         selected_model: &ModelRef,
         user_text: String,
     ) -> AssistantResponse {
@@ -346,7 +352,7 @@ impl CoddyRuntime {
                 ChatMessage::system(
                     "You are Coddy, a secure coding agent. Use tools only through the runtime.",
                 ),
-                ChatMessage::user(user_text),
+                ChatMessage::user(user_text.clone()),
             ],
         ) {
             Ok(request) => request.with_tools(self.chat_tool_specs()),
@@ -360,13 +366,140 @@ impl CoddyRuntime {
         };
 
         match self.chat_client.complete(request) {
-            Ok(response) => AssistantResponse::from_chat_response(response),
+            Ok(response) => {
+                self.assistant_response_from_model(session_id, run_id, user_text, response)
+            }
             Err(error) => AssistantResponse::from_text(model_error_message(
                 &error,
                 selected_model,
                 self.tool_registry.definitions().len(),
             )),
         }
+    }
+
+    fn assistant_response_from_model(
+        &self,
+        session_id: Uuid,
+        run_id: Uuid,
+        goal: String,
+        response: ChatResponse,
+    ) -> AssistantResponse {
+        if response.tool_calls.is_empty() {
+            return AssistantResponse::from_chat_response(response);
+        }
+
+        self.execute_model_tool_calls(session_id, run_id, goal, response)
+    }
+
+    fn execute_model_tool_calls(
+        &self,
+        session_id: Uuid,
+        run_id: Uuid,
+        goal: String,
+        response: ChatResponse,
+    ) -> AssistantResponse {
+        let Some(agent_runtime) = &self.agent_runtime else {
+            return AssistantResponse::from_chat_response(response);
+        };
+
+        let mut state = agent_runtime.start_run(session_id, goal);
+        state.run_id = run_id;
+        let mut observations = Vec::new();
+
+        for tool_call in response.tool_calls.iter().take(3) {
+            let tool_name = match ToolName::new(&tool_call.name) {
+                Ok(tool_name) => tool_name,
+                Err(error) => {
+                    observations.push(format!(
+                        "- `{}` was rejected because the tool name is invalid: {error}.",
+                        tool_call.name
+                    ));
+                    continue;
+                }
+            };
+
+            let Some(definition) = self.tool_registry.get(&tool_name) else {
+                observations.push(format!(
+                    "- `{tool_name}` was rejected because it is not registered in the local tool registry."
+                ));
+                continue;
+            };
+
+            if definition.approval_policy != ApprovalPolicy::AutoApprove
+                || definition.risk_level > ToolRiskLevel::Low
+            {
+                observations.push(format!(
+                    "- `{tool_name}` was not executed because model-initiated tools must be auto-approved and low risk."
+                ));
+                continue;
+            }
+
+            agent_runtime.add_plan_item(
+                &mut state,
+                format!("Run model-requested tool {tool_name}"),
+                Some(tool_name.clone()),
+            );
+            let call = ToolCall::new(
+                session_id,
+                run_id,
+                tool_name.clone(),
+                tool_call.arguments.clone(),
+                unix_ms_now(),
+            );
+            let outcome = agent_runtime.execute_tool_call(&mut state, &call);
+            for event in outcome.events {
+                self.publish_event_with_run_now(event, run_id);
+            }
+
+            let Some(result) = outcome.result else {
+                observations.push(format!(
+                    "- `{tool_name}` did not return a tool result from the local runtime."
+                ));
+                continue;
+            };
+
+            match result.status {
+                ToolResultStatus::Succeeded => {
+                    let text = result
+                        .output
+                        .map(|output| {
+                            let mut text = output.text.trim().to_string();
+                            if output.truncated {
+                                text.push_str("\n  Result truncated.");
+                            }
+                            text
+                        })
+                        .filter(|text| !text.is_empty())
+                        .unwrap_or_else(|| "no structured output".to_string());
+                    observations.push(format!("- `{tool_name}` succeeded:\n{text}"));
+                }
+                ToolResultStatus::Failed
+                | ToolResultStatus::Cancelled
+                | ToolResultStatus::Denied => {
+                    let message = result
+                        .error
+                        .map(|error| error.message)
+                        .unwrap_or_else(|| "unknown tool failure".to_string());
+                    observations.push(format!("- `{tool_name}` failed: {message}"));
+                }
+            }
+        }
+
+        if response.tool_calls.len() > 3 {
+            observations.push(format!(
+                "- {} additional model-requested tool calls were not executed in this turn.",
+                response.tool_calls.len() - 3
+            ));
+        }
+
+        let mut text = response.text.trim().to_string();
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str("Tool observations:\n");
+        text.push_str(&observations.join("\n"));
+
+        AssistantResponse::from_text(text)
     }
 
     fn chat_tool_specs(&self) -> Vec<ChatToolSpec> {
@@ -1156,7 +1289,7 @@ mod tests {
     }
 
     #[test]
-    fn ask_command_reports_model_tool_calls_without_auto_execution() {
+    fn ask_command_does_not_auto_execute_unsafe_model_tool_calls() {
         let request_id = Uuid::new_v4();
         let (chat_client, _requests) = RecordingChatClient::new(ChatResponse {
             text: String::new(),
@@ -1164,8 +1297,8 @@ mod tests {
             finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
             tool_calls: vec![ChatToolCall {
                 id: Some("call-1".to_string()),
-                name: LIST_FILES_TOOL.to_string(),
-                arguments: json!({ "path": "." }),
+                name: "shell.run".to_string(),
+                arguments: json!({ "command": "ls" }),
             }],
         });
         let runtime =
@@ -1197,15 +1330,76 @@ mod tests {
         };
         let events = runtime.events_after(2).0;
 
-        assert!(text.contains(LIST_FILES_TOOL));
-        assert!(text.contains("Automatic model-initiated tool execution is not enabled yet"));
+        assert!(text.contains("shell.run"));
+        assert!(text.contains("was not executed"));
         assert!(!events
             .iter()
             .any(|event| matches!(event.event, ReplEvent::ToolStarted { .. })));
         assert!(events.iter().any(|event| matches!(
             &event.event,
             ReplEvent::MessageAppended { message }
-                if message.role == "assistant" && message.text.contains(LIST_FILES_TOOL)
+                if message.role == "assistant" && message.text.contains("shell.run")
+        )));
+    }
+
+    #[test]
+    fn ask_command_executes_safe_model_tool_calls_through_agent_runtime() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("src/main.rs", "fn main() {}\n");
+        let (chat_client, _requests) = RecordingChatClient::new(ChatResponse {
+            text: "I will inspect the workspace.".to_string(),
+            deltas: vec!["I will inspect the workspace.".to_string()],
+            finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+            tool_calls: vec![ChatToolCall {
+                id: Some("call-1".to_string()),
+                name: LIST_FILES_TOOL.to_string(),
+                arguments: json!({ "path": ".", "max_entries": 20 }),
+            }],
+        });
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        let model = ModelRef {
+            provider: "openai".to_string(),
+            name: "gpt-test".to_string(),
+        };
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model,
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect the workspace".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let events = runtime.events_after(2).0;
+
+        assert!(text.contains("Tool observations"));
+        assert!(text.contains("filesystem.list_files"));
+        assert!(text.contains("src"));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolStarted { name } if name == LIST_FILES_TOOL
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolCompleted { name, .. } if name == LIST_FILES_TOOL
         )));
     }
 
