@@ -9,6 +9,7 @@ import type {
   ReplCommandResult,
   ReplMode,
   ReplSession,
+  ReplToolCatalogItem,
   AssessmentPolicy,
   ScreenAssistMode,
 } from '@/domain'
@@ -31,6 +32,7 @@ import { useReplClient } from './useReplClient'
 export interface UseSessionReturn {
   session: ReplSession
   lastSequence: number
+  toolCatalog: ReplToolCatalogItem[]
   /** True while still connecting / loading the first snapshot */
   connecting: boolean
   /** True when the daemon stream disconnected and we're retrying */
@@ -212,6 +214,7 @@ export function useSession(): UseSessionReturn {
   return {
     session: state.session,
     lastSequence: state.lastSequence,
+    toolCatalog: state.toolCatalog,
     connecting,
     reconnecting,
     error,

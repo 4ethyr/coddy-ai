@@ -15,7 +15,7 @@ import { FloatingSettingsModal } from '@/presentation/components/FloatingSetting
 import { Icon } from '@/presentation/components/Icon'
 
 export function DesktopApp() {
-  const { session, connecting, error, ask, selectModel, openUi } =
+  const { session, toolCatalog, connecting, error, ask, selectModel, openUi } =
     useSessionContext()
   const [activeTab, setActiveTab] = useState<DesktopTab>('chat')
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -138,7 +138,10 @@ export function DesktopApp() {
           )}
 
           {activeTab === 'workspace' && (
-            <WorkspacePanel items={session.workspace_context} />
+            <WorkspacePanel
+              items={session.workspace_context}
+              tools={toolCatalog}
+            />
           )}
 
           {activeTab === 'models' && (

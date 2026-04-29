@@ -1,13 +1,14 @@
 // application/SessionManager.ts
 // Use case: initializes a REPL session from snapshot and manages its lifecycle.
 
-import type { ReplIpcClient } from '@/domain'
+import type { ReplIpcClient, ReplToolCatalogItem } from '@/domain'
 import type { ReplSession, ReplEventEnvelope } from '@/domain'
 import { sessionReducer, createInitialSession } from '@/domain'
 
 export interface SessionState {
   session: ReplSession
   lastSequence: number
+  toolCatalog: ReplToolCatalogItem[]
 }
 
 /**
@@ -17,7 +18,10 @@ export interface SessionState {
 export async function initializeSession(
   client: ReplIpcClient,
 ): Promise<SessionState> {
-  const snapshot = await client.getSnapshot()
+  const [snapshot, toolCatalog] = await Promise.all([
+    client.getSnapshot(),
+    client.getToolCatalog(),
+  ])
 
   // Cast the raw JSON-serialized session (string enums) to the typed ReplSession.
   // The field values are validated by the Rust backend at serialization time.
@@ -31,6 +35,7 @@ export async function initializeSession(
   return {
     session,
     lastSequence: snapshot.last_sequence,
+    toolCatalog,
   }
 }
 
@@ -44,6 +49,7 @@ export function createLocalSession(): SessionState {
       name: 'gemma4:e2b',
     }),
     lastSequence: 0,
+    toolCatalog: [],
   }
 }
 
@@ -63,5 +69,6 @@ export function applyEvents(
   return {
     session,
     lastSequence: newLastSequence,
+    toolCatalog: state.toolCatalog,
   }
 }

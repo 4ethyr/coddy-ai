@@ -1,13 +1,14 @@
 // Workspace panel: shows context items (files, screen captures, etc.)
 
-import type { ContextItem } from '@/domain'
+import type { ContextItem, ReplToolCatalogItem, ToolRiskLevel } from '@/domain'
 import { Icon } from './Icon'
 
 interface Props {
   items: ContextItem[]
+  tools: ReplToolCatalogItem[]
 }
 
-export function WorkspacePanel({ items }: Props) {
+export function WorkspacePanel({ items, tools }: Props) {
   return (
     <div className="h-full overflow-y-auto p-5 sm:p-8">
       <div className="mx-auto flex max-w-6xl flex-col gap-6">
@@ -66,9 +67,100 @@ export function WorkspacePanel({ items }: Props) {
             ))
           )}
         </section>
+
+        <section className="flex flex-col gap-4 border-t border-white/10 pt-5">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="font-display text-[10px] uppercase tracking-[0.22em] text-primary/70">
+                Tool Registry
+              </p>
+              <h2 className="mt-1 font-display text-lg font-medium text-on-surface">
+                Local tools
+              </h2>
+            </div>
+            <span className="rounded border border-primary/20 bg-primary/5 px-2.5 py-1 font-mono text-[11px] text-primary">
+              {tools.length}
+            </span>
+          </div>
+
+          {tools.length === 0 ? (
+            <ContextPill label="No tools loaded yet" muted />
+          ) : (
+            <div className="grid gap-3 xl:grid-cols-2">
+              {tools.map((tool) => (
+                <ToolRow key={tool.name} tool={tool} />
+              ))}
+            </div>
+          )}
+        </section>
       </div>
     </div>
   )
+}
+
+function ToolRow({ tool }: { tool: ReplToolCatalogItem }) {
+  const permissions = tool.permissions.length
+    ? tool.permissions.join(', ')
+    : 'No explicit permission'
+
+  return (
+    <article className="rounded-lg border border-outline/15 bg-surface-container-highest/40 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="truncate font-mono text-sm text-on-surface">
+            {tool.name}
+          </h3>
+          <p className="mt-1 line-clamp-2 text-xs leading-5 text-on-surface-variant">
+            {tool.description}
+          </p>
+        </div>
+        <RiskBadge risk={tool.risk_level} />
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <MetaPill label={tool.category} />
+        <MetaPill label={tool.approval_policy} />
+        <MetaPill label={`${tool.timeout_ms}ms`} />
+      </div>
+
+      <p className="mt-3 truncate font-mono text-[11px] text-on-surface-variant/80">
+        {permissions}
+      </p>
+    </article>
+  )
+}
+
+function RiskBadge({ risk }: { risk: ToolRiskLevel }) {
+  const tone = riskTone(risk)
+
+  return (
+    <span
+      className={`shrink-0 rounded border px-2 py-1 font-mono text-[11px] ${tone}`}
+    >
+      {risk}
+    </span>
+  )
+}
+
+function MetaPill({ label }: { label: string }) {
+  return (
+    <span className="rounded border border-white/10 bg-surface-container/60 px-2 py-1 font-mono text-[11px] text-on-surface-variant">
+      {label}
+    </span>
+  )
+}
+
+function riskTone(risk: ToolRiskLevel): string {
+  switch (risk) {
+    case 'Low':
+      return 'border-emerald-400/20 bg-emerald-400/10 text-emerald-200'
+    case 'Medium':
+      return 'border-yellow-400/20 bg-yellow-400/10 text-yellow-200'
+    case 'High':
+      return 'border-orange-400/20 bg-orange-400/10 text-orange-200'
+    case 'Critical':
+      return 'border-red-400/20 bg-red-400/10 text-red-200'
+  }
 }
 
 function ContextPill({
