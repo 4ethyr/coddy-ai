@@ -13,6 +13,8 @@ O backend já possui:
 - adaptador de conexão em `coddy-runtime` que lê `CoddyWireRequest`, valida
   magic/versão e escreve `CoddyWireResult`;
 - listener Unix mínimo em `coddy-runtime` para atender uma conexão Coddy real;
+- estado mínimo de sessão/eventos em `coddy-runtime` com snapshot e replay
+  incremental via `ReplEventBroker`;
 - configuração mínima do CLI em `CoddyRuntimeConfig`;
 - configuração neutra de microfone em `coddy_voice_input::VoiceInputConfig`;
 - protocolo direto `CoddyWireRequest`/`CoddyWireResult` aceito pelo daemon;
@@ -94,6 +96,8 @@ Critérios de aceite:
   depender do daemon VisionClip;
 - `coddy-client` consegue consumir o catálogo de tools de um `UnixListener`
   servido por `coddy-runtime`;
+- `coddy-client` consegue consumir snapshot e eventos incrementais de um
+  `UnixListener` servido por `coddy-runtime`;
 - testes de serialização permanecem estáveis;
 - daemon rejeita versão incompatível com mensagem clara.
 
