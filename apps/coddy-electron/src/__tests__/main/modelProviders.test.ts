@@ -188,6 +188,49 @@ describe('modelProviders', () => {
     )
   })
 
+  it('uses an explicit Vertex region for publisher model listing', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      jsonResponse({
+        publisherModels: [{ name: 'publishers/anthropic/models/claude-test' }],
+      }),
+    )
+
+    await listProviderModels(
+      {
+        provider: 'vertex',
+        apiKey: 'Bearer ya29.test-token',
+        endpoint: 'europe-west1',
+      },
+      fetcher,
+    )
+
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://europe-west1-aiplatform.googleapis.com/v1beta1/publishers/anthropic/models?pageSize=100&view=BASIC',
+      expect.anything(),
+    )
+  })
+
+  it('rejects invalid Vertex region values before sending credentials', async () => {
+    const fetcher = vi.fn()
+
+    const result = await listProviderModels(
+      {
+        provider: 'vertex',
+        apiKey: 'Bearer ya29.test-token',
+        endpoint: '../secret',
+      },
+      fetcher,
+    )
+
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(result.error).toEqual(
+      expect.objectContaining({
+        code: 'MODEL_LIST_FAILED',
+        message: 'Vertex region must be a region id like us-east5 or an HTTPS endpoint.',
+      }),
+    )
+  })
+
   it('lists Vertex publisher models with Application Default Credentials', async () => {
     const fetcher = vi
       .fn()

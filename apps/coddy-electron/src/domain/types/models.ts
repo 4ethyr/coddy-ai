@@ -108,7 +108,10 @@ export const MODEL_PROVIDER_CATALOG: readonly ModelProviderOption[] = [
     connectionKind: 'api_key',
     credentialLabel: 'Google API key, OAuth token or ADC',
     credentialPlaceholder: 'API key, Bearer token ou ADC env',
+    endpointLabel: 'Vertex region',
+    endpointPlaceholder: 'global, us-east5 ou https://...',
     requiresCredential: true,
+    requiresEndpoint: true,
     models: [],
   },
   {

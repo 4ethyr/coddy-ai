@@ -258,6 +258,10 @@ or configure Application Default Credentials with `GOOGLE_APPLICATION_CREDENTIAL
 Plain Google API keys intentionally use the Gemini API model list and do not
 return Anthropic publisher models.
 
+The Vertex provider accepts an optional region or endpoint override such as
+`global`, `us-east5`, `europe-west1`, or
+`https://us-east5-aiplatform.googleapis.com`.
+
 Runtime chat completion currently supports local Ollama models. By default Coddy
 connects to `http://127.0.0.1:11434/api/chat`; set `OLLAMA_HOST` to override the
 host, for example `OLLAMA_HOST=127.0.0.1:11434` or

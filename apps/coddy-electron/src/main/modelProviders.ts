@@ -72,11 +72,11 @@ const VERTEX_ADC_NOTICE =
 const VERTEX_PUBLISHERS = [
   {
     id: 'google',
-    endpoint: 'https://aiplatform.googleapis.com',
+    defaultEndpoint: 'https://aiplatform.googleapis.com',
   },
   {
     id: 'anthropic',
-    endpoint: 'https://us-east5-aiplatform.googleapis.com',
+    defaultEndpoint: 'https://us-east5-aiplatform.googleapis.com',
   },
 ] as const
 
@@ -204,12 +204,22 @@ async function listGoogleModels(
 ): Promise<ModelProviderListPayloadResult> {
   const credential = request.apiKey?.trim()
   if (looksLikeGoogleOAuthCredential(credential)) {
-    return listVertexPublisherModels(stripBearerPrefix(credential), fetcher)
+    return listVertexPublisherModels(
+      stripBearerPrefix(credential),
+      fetcher,
+      [],
+      request.endpoint,
+    )
   }
   if (!credential) {
     const token = await googleAccessTokenProvider(fetcher)
     if (token) {
-      return listVertexPublisherModels(token, fetcher, [VERTEX_ADC_NOTICE])
+      return listVertexPublisherModels(
+        token,
+        fetcher,
+        [VERTEX_ADC_NOTICE],
+        request.endpoint,
+      )
     }
     throw new Error(
       'Provider credential is required. Use a Google API key for Gemini, paste a Vertex OAuth Bearer token for Claude, or set GOOGLE_APPLICATION_CREDENTIALS for Application Default Credentials.',
@@ -256,10 +266,12 @@ async function listVertexPublisherModels(
   token: string,
   fetcher: Fetcher,
   notices: string[] = [],
+  endpoint: string | undefined = undefined,
 ): Promise<ModelProviderListPayloadResult> {
+  const endpointOverride = normalizeVertexPublisherEndpoint(endpoint)
   const modelGroups = await Promise.allSettled(
     VERTEX_PUBLISHERS.map((publisher) =>
-      listVertexPublisherModelGroup(publisher, token, fetcher),
+      listVertexPublisherModelGroup(publisher, token, fetcher, endpointOverride),
     ),
   )
   const models = modelGroups.flatMap((result) =>
@@ -280,9 +292,10 @@ async function listVertexPublisherModelGroup(
   publisher: (typeof VERTEX_PUBLISHERS)[number],
   token: string,
   fetcher: Fetcher,
+  endpointOverride: string | null,
 ): Promise<ModelCatalogEntryPayload[]> {
   const data = await fetchJson(
-    `${publisher.endpoint}/v1beta1/publishers/${publisher.id}/models?pageSize=100&view=BASIC`,
+    `${endpointOverride ?? publisher.defaultEndpoint}/v1beta1/publishers/${publisher.id}/models?pageSize=100&view=BASIC`,
     {
       Authorization: `Bearer ${token}`,
     },
@@ -397,6 +410,25 @@ function normalizeHttpsEndpoint(endpoint: string | undefined): string {
   parsed.search = ''
   parsed.hash = ''
   return parsed.toString().replace(/\/$/, '')
+}
+
+function normalizeVertexPublisherEndpoint(endpoint: string | undefined): string | null {
+  const value = endpoint?.trim()
+  if (!value) return null
+
+  if (/^https:\/\//i.test(value)) {
+    return normalizeHttpsEndpoint(value)
+  }
+
+  if (!/^[a-z0-9-]+$/i.test(value)) {
+    throw new Error('Vertex region must be a region id like us-east5 or an HTTPS endpoint.')
+  }
+
+  if (value === 'global') {
+    return 'https://aiplatform.googleapis.com'
+  }
+
+  return `https://${value.toLowerCase()}-aiplatform.googleapis.com`
 }
 
 function successResult(
