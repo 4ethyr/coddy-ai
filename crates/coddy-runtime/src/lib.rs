@@ -5,7 +5,7 @@ use coddy_core::{
 };
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
-    CoddyWireResult, ReplToolCatalogItem,
+    CoddyWireResult, ReplEventStreamJob, ReplToolCatalogItem,
 };
 use std::{
     sync::{Arc, Mutex},
@@ -89,13 +89,42 @@ impl CoddyRuntime {
     {
         let request: CoddyWireRequest = read_frame(stream).await?;
         request.ensure_compatible()?;
-        let response = CoddyWireResult::new(self.handle_request(request.request));
-        write_frame(stream, &response).await
+        match request.request {
+            CoddyRequest::EventStream(job) => self.handle_event_stream(stream, job).await,
+            request => {
+                let response = CoddyWireResult::new(self.handle_request(request));
+                write_frame(stream, &response).await
+            }
+        }
     }
 
     pub async fn serve_next_unix_connection(&self, listener: &UnixListener) -> CoddyIpcResult<()> {
         let (mut stream, _) = listener.accept().await?;
         self.handle_connection(&mut stream).await
+    }
+
+    async fn handle_event_stream<IO>(
+        &self,
+        stream: &mut IO,
+        job: ReplEventStreamJob,
+    ) -> CoddyIpcResult<()>
+    where
+        IO: AsyncWrite + Unpin,
+    {
+        let mut subscription = self.subscribe_after(job.after_sequence);
+        while let Some(event) = subscription.next().await {
+            let last_sequence = event.sequence;
+            write_frame(
+                stream,
+                &CoddyWireResult::new(CoddyResult::ReplEvents {
+                    request_id: job.request_id,
+                    events: vec![event],
+                    last_sequence,
+                }),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     pub fn tool_catalog(&self) -> Vec<ReplToolCatalogItem> {
@@ -107,6 +136,10 @@ impl CoddyRuntime {
             .collect();
         tools.sort_by(|left, right| left.name.cmp(&right.name));
         tools
+    }
+
+    fn subscribe_after(&self, sequence: u64) -> coddy_core::ReplEventSubscription {
+        self.with_state(|state| state.broker.subscribe_after(sequence))
     }
 
     fn with_state<T>(&self, action: impl FnOnce(&RuntimeState) -> T) -> T {
@@ -417,6 +450,70 @@ mod tests {
             ReplEvent::VoiceListeningStarted
         ));
         server.await.expect("server task");
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    #[tokio::test]
+    async fn unix_listener_streams_replayed_runtime_events_to_coddy_client() {
+        let socket_path = test_socket_path("runtime-stream-replay");
+        let listener = UnixListener::bind(&socket_path).expect("bind runtime socket");
+        let runtime = CoddyRuntime::default();
+        runtime.publish_event(ReplEvent::VoiceListeningStarted, None, 1_775_000_000_040);
+        let server_runtime = runtime.clone();
+        let server = tokio::spawn(async move {
+            server_runtime
+                .serve_next_unix_connection(&listener)
+                .await
+                .expect("serve unix stream");
+        });
+
+        let client = CoddyClient::new(&socket_path);
+        let mut stream = client.event_stream(1).await.expect("open runtime stream");
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+            .await
+            .expect("stream frame before timeout")
+            .expect("stream frame")
+            .expect("stream event");
+
+        assert_eq!(frame.last_sequence, 2);
+        assert!(matches!(
+            frame.event.event,
+            ReplEvent::VoiceListeningStarted
+        ));
+        server.abort();
+        let _ = server.await;
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    #[tokio::test]
+    async fn unix_listener_streams_live_runtime_events_to_coddy_client() {
+        let socket_path = test_socket_path("runtime-stream-live");
+        let listener = UnixListener::bind(&socket_path).expect("bind runtime socket");
+        let runtime = CoddyRuntime::default();
+        let server_runtime = runtime.clone();
+        let server = tokio::spawn(async move {
+            server_runtime
+                .serve_next_unix_connection(&listener)
+                .await
+                .expect("serve unix stream");
+        });
+
+        let client = CoddyClient::new(&socket_path);
+        let mut stream = client.event_stream(1).await.expect("open runtime stream");
+        runtime.publish_event(ReplEvent::VoiceListeningStarted, None, 1_775_000_000_050);
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+            .await
+            .expect("stream frame before timeout")
+            .expect("stream frame")
+            .expect("stream event");
+
+        assert_eq!(frame.last_sequence, 2);
+        assert!(matches!(
+            frame.event.event,
+            ReplEvent::VoiceListeningStarted
+        ));
+        server.abort();
+        let _ = server.await;
         let _ = std::fs::remove_file(socket_path);
     }
 
