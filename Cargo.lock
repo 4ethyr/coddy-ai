@@ -256,6 +256,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "coddy-runtime"
+version = "0.1.0"
+dependencies = [
+ "coddy-agent",
+ "coddy-core",
+ "coddy-ipc",
+ "uuid",
+]
+
+[[package]]
 name = "coddy-voice-input"
 version = "0.1.0"
 dependencies = [

@@ -2,9 +2,11 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 const CODDY_MANIFESTS: &[&str] = &[
     "apps/coddy/Cargo.toml",
+    "crates/coddy-agent/Cargo.toml",
     "crates/coddy-client/Cargo.toml",
     "crates/coddy-core/Cargo.toml",
     "crates/coddy-ipc/Cargo.toml",
+    "crates/coddy-runtime/Cargo.toml",
     "crates/coddy-voice-input/Cargo.toml",
 ];
 
@@ -55,9 +57,11 @@ fn coddy_sources_do_not_include_visionclip_app_sources_or_runtime_crates() {
 
     for source_dir in [
         "apps/coddy/src",
+        "crates/coddy-agent/src",
         "crates/coddy-client/src",
         "crates/coddy-core/src",
         "crates/coddy-ipc/src",
+        "crates/coddy-runtime/src",
         "crates/coddy-voice-input/src",
     ] {
         collect_source_violations(&repo_root.join(source_dir), &mut violations);

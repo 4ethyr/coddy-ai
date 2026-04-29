@@ -10,6 +10,7 @@ Coddy e o projeto de REPL/CLI agentic extraido do VisionClip para evoluir como r
 - `crates/coddy-core`: dominio, sessoes, politicas, eventos, contratos e parser/handler desacoplado de comandos do REPL shell.
 - `crates/coddy-ipc`: transporte e contratos IPC, incluindo snapshot/eventos e catalogo read-only de tools.
 - `crates/coddy-client`: cliente do runtime Coddy, incluindo comandos, eventos, snapshots e listagem de tools.
+- `crates/coddy-runtime`: handlers IPC do runtime Coddy, conectando contratos de transporte ao registry agentic sem depender do VisionClip.
 - `crates/coddy-voice-input`: entrada de voz e overlay opcional.
 - `docs/repl`: documentacao de arquitetura, contratos e plano do REPL.
 - `repl_ui`: prototipos visuais.
@@ -20,6 +21,7 @@ Coddy e o projeto de REPL/CLI agentic extraido do VisionClip para evoluir como r
 cargo test -p coddy-ipc --test repository_boundaries
 cargo test -p coddy-voice-input
 cargo test -p coddy-client
+cargo test -p coddy-runtime
 cargo test -p coddy-core repl_shell
 cargo test -p coddy
 

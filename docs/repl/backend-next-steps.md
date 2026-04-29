@@ -9,6 +9,7 @@ O backend já possui:
 - domínio REPL em `crates/coddy-core`;
 - contratos REPL iniciais em `crates/coddy-ipc`;
 - cliente de transporte inicial em `crates/coddy-client`;
+- handler runtime inicial em `crates/coddy-runtime` para requests IPC do Coddy;
 - configuração mínima do CLI em `CoddyRuntimeConfig`;
 - configuração neutra de microfone em `coddy_voice_input::VoiceInputConfig`;
 - protocolo direto `CoddyWireRequest`/`CoddyWireResult` aceito pelo daemon;
@@ -30,10 +31,12 @@ O Coddy deve ser tratado como produto separado que consome serviços do VisionCl
 Modelo alvo:
 
 ```text
-Coddy UI/CLI -> coddy-client -> coddy-ipc -> VisionClip daemon -> serviços Linux/AI
+Coddy UI/CLI -> coddy-client -> coddy-ipc -> coddy-runtime -> serviços Linux/AI
 ```
 
-Regra prática: o Coddy pode depender de `coddy-core`, `coddy-ipc` e `coddy-client`; ele não deve depender diretamente de `visionclip-common` quando for movido para outro repositório.
+Regra prática: o Coddy pode depender de `coddy-core`, `coddy-ipc`,
+`coddy-client`, `coddy-agent` e `coddy-runtime`; ele não deve depender
+diretamente de `visionclip-common` quando for movido para outro repositório.
 
 ## Fase 1: Consolidar Stream de Eventos
 

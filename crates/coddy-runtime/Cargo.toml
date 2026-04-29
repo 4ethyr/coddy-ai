@@ -1,0 +1,13 @@
+[package]
+name = "coddy-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+coddy-agent.workspace = true
+coddy-ipc.workspace = true
+
+[dev-dependencies]
+coddy-core.workspace = true
+uuid.workspace = true

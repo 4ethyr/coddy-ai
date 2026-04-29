@@ -11,6 +11,7 @@ Mover:
 - `crates/coddy-core`
 - `crates/coddy-ipc`
 - `crates/coddy-client`
+- `crates/coddy-runtime`
 - `crates/coddy-voice-input`
 - `docs/IMPLEMENTATION_PLAN.md`
 - `docs/repl`
@@ -19,7 +20,10 @@ Mover:
 - `.agent`
 - `AGENTS.md`
 
-Esses pacotes devem depender apenas entre si, de dependencias externas publicas e do daemon via `coddy-ipc`/socket. Eles nao devem importar crates runtime do VisionClip nem incluir arquivos de `apps/visionclip`.
+Esses pacotes devem depender apenas entre si, de dependencias externas publicas
+e do daemon via `coddy-ipc`/socket. O `coddy-runtime` concentra handlers
+testaveis do protocolo Coddy antes de existir um daemon proprio, sem importar
+crates runtime do VisionClip nem incluir arquivos de `apps/visionclip`.
 
 ## Repositorio VisionClip
 

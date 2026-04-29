@@ -5,6 +5,7 @@ members = [
   "crates/coddy-client",
   "crates/coddy-core",
   "crates/coddy-ipc",
+  "crates/coddy-runtime",
   "crates/coddy-voice-input",
 ]
 resolver = "2"
@@ -23,6 +24,7 @@ coddy-agent = { path = "crates/coddy-agent" }
 coddy-client = { path = "crates/coddy-client" }
 coddy-core = { path = "crates/coddy-core" }
 coddy-ipc = { path = "crates/coddy-ipc" }
+coddy-runtime = { path = "crates/coddy-runtime" }
 coddy-voice-input = { path = "crates/coddy-voice-input" }
 directories = "5.0"
 gtk4 = "0.8"
