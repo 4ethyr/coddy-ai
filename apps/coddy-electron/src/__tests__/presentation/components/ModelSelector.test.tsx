@@ -111,6 +111,50 @@ describe('ModelSelector', () => {
     expect(screen.getByText('Azure OpenAI')).toBeInTheDocument()
   })
 
+  it('labels which providers are executable by the current Rust runtime', async () => {
+    render(
+      <ModelSelector model={{ provider: 'ollama', name: 'gemma4-E2B' }} />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Active model ollama/gemma4-E2B' }),
+    )
+
+    expect(within(providerGroup('Local Ollama')).getByText('runtime ready')).toBeInTheDocument()
+    expect(within(providerGroup('OpenAI')).getByText('adapter pending')).toBeInTheDocument()
+    expect(within(providerGroup('Google Vertex')).getByText('adapter pending')).toBeInTheDocument()
+  })
+
+  it('allows Vertex model loading through local gcloud or ADC without pasting a token', async () => {
+    const onLoadModels = vi.fn(modelLoader)
+    render(
+      <ModelSelector
+        model={{ provider: 'vertex', name: 'gemini-2.5-flash' }}
+        onLoadModels={onLoadModels}
+      />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Active model vertex/gemini-2.5-flash',
+      }),
+    )
+
+    const vertexGroup = providerGroup('Google Vertex')
+    expect(within(vertexGroup).getByText('local auth or token')).toBeInTheDocument()
+    expect(
+      within(vertexGroup).getByText('Load with local gcloud/ADC or paste a token.'),
+    ).toBeInTheDocument()
+
+    await userEvent.click(within(vertexGroup).getByRole('button', { name: 'Load' }))
+
+    expect(onLoadModels).toHaveBeenCalledWith({
+      provider: 'vertex',
+      apiKey: undefined,
+      endpoint: undefined,
+    })
+  })
+
   it('loads provider models with a request-scoped API key', async () => {
     const onLoadModels = vi.fn(modelLoader)
     const onSelect = vi.fn()
@@ -254,7 +298,7 @@ describe('ModelSelector', () => {
 
     const vertexGroup = providerGroup('Google Vertex')
     await userEvent.type(
-      within(vertexGroup).getByPlaceholderText('API key, Bearer token ou ADC env'),
+      within(vertexGroup).getByPlaceholderText('API key, Bearer token, or leave blank for gcloud'),
       'google-api-key',
     )
     await userEvent.click(within(vertexGroup).getByRole('button', { name: 'Load' }))

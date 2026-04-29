@@ -13,6 +13,16 @@ import type {
   ScreenAssistMode,
 } from '@/domain'
 
+export class ReplCommandError extends Error {
+  readonly code: string
+
+  constructor(code: string, message: string) {
+    super(message)
+    this.name = 'ReplCommandError'
+    this.code = code
+  }
+}
+
 /**
  * Sends a text question to the REPL backend.
  * The result (text/summary/error) comes back after the daemon finishes.
@@ -21,7 +31,7 @@ export async function sendAsk(
   client: ReplIpcClient,
   text: string,
 ): Promise<ReplCommandResult> {
-  return client.ask(text)
+  return assertCommandSucceeded(await client.ask(text))
 }
 
 /**
@@ -31,7 +41,7 @@ export async function sendVoiceTurn(
   client: ReplIpcClient,
   transcript: string,
 ): Promise<ReplCommandResult> {
-  return client.voiceTurn(transcript)
+  return assertCommandSucceeded(await client.voiceTurn(transcript))
 }
 
 /**
@@ -56,7 +66,7 @@ export async function selectModel(
   model: ModelRef,
   role: ModelRole,
 ): Promise<ReplCommandResult> {
-  return client.selectModel(model, role)
+  return assertCommandSucceeded(await client.selectModel(model, role))
 }
 
 /**
@@ -77,7 +87,7 @@ export async function openUi(
   client: ReplIpcClient,
   mode: ReplMode,
 ): Promise<ReplCommandResult> {
-  return client.openUi(mode)
+  return assertCommandSucceeded(await client.openUi(mode))
 }
 
 /**
@@ -108,7 +118,7 @@ export async function captureAndExplain(
   mode: ScreenAssistMode,
   policy: AssessmentPolicy,
 ): Promise<ReplCommandResult> {
-  return client.captureAndExplain(mode, policy)
+  return assertCommandSucceeded(await client.captureAndExplain(mode, policy))
 }
 
 /**
@@ -117,5 +127,14 @@ export async function captureAndExplain(
 export async function dismissConfirmation(
   client: ReplIpcClient,
 ): Promise<ReplCommandResult> {
-  return client.dismissConfirmation()
+  return assertCommandSucceeded(await client.dismissConfirmation())
+}
+
+function assertCommandSucceeded(
+  result: ReplCommandResult,
+): ReplCommandResult {
+  if (result.error) {
+    throw new ReplCommandError(result.error.code, result.error.message)
+  }
+  return result
 }

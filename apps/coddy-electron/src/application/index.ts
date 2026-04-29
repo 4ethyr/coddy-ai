@@ -18,6 +18,7 @@ export {
   cancelVoiceCapture,
   captureAndExplain,
   dismissConfirmation,
+  ReplCommandError,
 } from './CommandSender'
 
 export {

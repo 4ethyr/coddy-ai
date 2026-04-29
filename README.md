@@ -37,7 +37,8 @@ scaffolded and should be evolved incrementally with tests.
   - OpenAI models.
   - OpenRouter text models.
   - Google Gemini API models with API keys.
-  - Google Vertex AI Model Garden publishers with OAuth access tokens.
+  - Google Vertex AI Model Garden publishers with OAuth access tokens, ADC or a
+    local `gcloud` login.
   - Azure OpenAI deployments.
 - Secure token handling through Electron `safeStorage` when available.
 - Agent tool registry, tool metadata, risk levels, permissions and approval
@@ -73,6 +74,30 @@ principal, such as:
 Plain Gemini API keys are rejected by the Vertex AI publisher model API. The UI
 shows a notice when Gemini models are loaded with an API key so users understand
 why Claude models are not present.
+
+### Local gcloud Authentication
+
+For Vertex AI publisher models, Coddy can use local Google credentials without
+asking you to paste a token. Leave the Vertex credential field empty and click
+`Load`.
+
+The Electron main process resolves credentials in this order:
+
+1. `GOOGLE_APPLICATION_CREDENTIALS` or the default ADC file.
+2. `gcloud auth print-access-token`.
+
+The `gcloud` token is short-lived, kept only in memory for the Vertex model list
+request and never persisted by Coddy. Run these before opening the UI:
+
+```bash
+gcloud auth application-default login
+gcloud config set project YOUR_PROJECT_ID
+```
+
+If you only ran `gcloud auth login`, Coddy can still use the active local
+account through `gcloud auth print-access-token`, but ADC is the recommended
+development setup. Claude models also need to be enabled in Vertex AI Model
+Garden for the selected project and region.
 
 ## Repository Layout
 
@@ -247,16 +272,18 @@ Supported model discovery paths:
 - OpenRouter: `/api/v1/models` with bearer API key.
 - Gemini API: Google API key through `x-goog-api-key`.
 - Vertex AI Model Garden: OAuth bearer token for `publishers/google` and
-  `publishers/anthropic`.
+  `publishers/anthropic`, Application Default Credentials, or an active local
+  `gcloud` login.
 - Azure OpenAI: HTTPS resource endpoint and API key.
 
 Do not commit `.env` files or API keys. The repository ignores common `.env`
 variants.
 
-For Vertex AI partner models such as Claude, paste a Google OAuth bearer token
-or configure Application Default Credentials with `GOOGLE_APPLICATION_CREDENTIALS`.
-Plain Google API keys intentionally use the Gemini API model list and do not
-return Anthropic publisher models.
+For Vertex AI partner models such as Claude, paste a Google OAuth bearer token,
+configure Application Default Credentials with `GOOGLE_APPLICATION_CREDENTIALS`,
+or leave the credential field empty after authenticating with `gcloud`. Plain
+Google API keys intentionally use the Gemini API model list and do not return
+Anthropic publisher models.
 
 The Vertex provider accepts an optional region or endpoint override such as
 `global`, `us-east5`, `europe-west1`, or

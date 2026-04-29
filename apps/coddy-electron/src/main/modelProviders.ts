@@ -1,4 +1,5 @@
 import { createSign } from 'crypto'
+import { execFile as nodeExecFile } from 'child_process'
 import { promises as fs } from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -24,6 +25,23 @@ type Fetcher = (
   statusText: string
   json(): Promise<unknown>
 }>
+
+type ExecFileCallback = (
+  error: Error | null,
+  stdout: string | Buffer,
+  stderr: string | Buffer,
+) => void
+
+type ExecFileRunner = (
+  file: string,
+  args: string[],
+  options: {
+    timeout: number
+    windowsHide: boolean
+    maxBuffer: number
+  },
+  callback: ExecFileCallback,
+) => void
 
 export interface ModelCatalogEntryPayload {
   model: {
@@ -58,10 +76,21 @@ export interface ModelProviderListPayloadResult {
   }
 }
 
-type GoogleAccessTokenProvider = (fetcher: Fetcher) => Promise<string | null>
+type GoogleAccessTokenResolution =
+  | string
+  | {
+      token: string
+      notice: string
+    }
+
+type GoogleAccessTokenProvider = (
+  fetcher: Fetcher,
+) => Promise<GoogleAccessTokenResolution | null>
 
 const MODEL_LIST_TIMEOUT_MS = 12_000
 const MAX_MODELS_PER_PROVIDER = 500
+const GCLOUD_TOKEN_TIMEOUT_MS = 10_000
+const GCLOUD_TOKEN_MAX_BUFFER_BYTES = 4_096
 const GOOGLE_AUTH_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
 const GOOGLE_JWT_BEARER_GRANT =
   'urn:ietf:params:oauth:grant-type:jwt-bearer'
@@ -69,6 +98,8 @@ const GEMINI_API_KEY_NOTICE =
   'Gemini API keys list Gemini models only. Claude on Vertex requires a Google OAuth access token or Application Default Credentials.'
 const VERTEX_ADC_NOTICE =
   'Using Google Application Default Credentials for Vertex AI publisher models.'
+const VERTEX_GCLOUD_NOTICE =
+  'Using local gcloud OAuth credentials for Vertex AI publisher models. The access token is short-lived and is not stored by Coddy.'
 const VERTEX_PUBLISHERS = [
   {
     id: 'google',
@@ -212,17 +243,19 @@ async function listGoogleModels(
     )
   }
   if (!credential) {
-    const token = await googleAccessTokenProvider(fetcher)
-    if (token) {
+    const resolvedToken = normalizeGoogleAccessTokenResolution(
+      await googleAccessTokenProvider(fetcher),
+    )
+    if (resolvedToken) {
       return listVertexPublisherModels(
-        token,
+        resolvedToken.token,
         fetcher,
-        [VERTEX_ADC_NOTICE],
+        [resolvedToken.notice],
         request.endpoint,
       )
     }
     throw new Error(
-      'Provider credential is required. Use a Google API key for Gemini, paste a Vertex OAuth Bearer token for Claude, or set GOOGLE_APPLICATION_CREDENTIALS for Application Default Credentials.',
+      'Provider credential is required. Use a Google API key for Gemini, paste a Vertex OAuth Bearer token for Claude, set GOOGLE_APPLICATION_CREDENTIALS, run gcloud auth application-default login, or run gcloud auth login.',
     )
   }
   return listGeminiApiModels(credential, fetcher)
@@ -535,6 +568,28 @@ function looksLikeGoogleOAuthCredential(value: string | undefined): value is str
 
 async function resolveGoogleApplicationDefaultAccessToken(
   fetcher: Fetcher,
+): Promise<GoogleAccessTokenResolution | null> {
+  const adcToken = await resolveGoogleAdcAccessToken(fetcher)
+  if (adcToken) {
+    return {
+      token: adcToken,
+      notice: VERTEX_ADC_NOTICE,
+    }
+  }
+
+  const gcloudToken = await resolveGcloudAccessToken()
+  if (gcloudToken) {
+    return {
+      token: gcloudToken,
+      notice: VERTEX_GCLOUD_NOTICE,
+    }
+  }
+
+  return null
+}
+
+async function resolveGoogleAdcAccessToken(
+  fetcher: Fetcher,
 ): Promise<string | null> {
   const credentialPath = googleApplicationCredentialsPath()
   if (!credentialPath) return null
@@ -555,6 +610,29 @@ async function resolveGoogleApplicationDefaultAccessToken(
     return authorizedUserAccessToken(credential, fetcher)
   }
   throw new Error('Unsupported Google ADC credential type.')
+}
+
+export async function resolveGcloudAccessToken(
+  runner: ExecFileRunner = nodeExecFile as ExecFileRunner,
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    runner(
+      'gcloud',
+      ['auth', 'print-access-token'],
+      {
+        maxBuffer: GCLOUD_TOKEN_MAX_BUFFER_BYTES,
+        timeout: GCLOUD_TOKEN_TIMEOUT_MS,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (error) {
+          resolve(null)
+          return
+        }
+        resolve(normalizeGcloudTokenOutput(stdout))
+      },
+    )
+  })
 }
 
 function googleApplicationCredentialsPath(): string | null {
@@ -654,6 +732,26 @@ function accessTokenFromTokenResponse(data: unknown): string {
     throw new Error('Google OAuth token response did not include access_token.')
   }
   return token
+}
+
+function normalizeGoogleAccessTokenResolution(
+  value: GoogleAccessTokenResolution | null,
+): { token: string; notice: string } | null {
+  if (!value) return null
+
+  if (typeof value === 'string') {
+    const token = value.trim()
+    return token ? { token, notice: VERTEX_ADC_NOTICE } : null
+  }
+
+  const token = value.token.trim()
+  const notice = value.notice.trim() || VERTEX_ADC_NOTICE
+  return token ? { token, notice } : null
+}
+
+function normalizeGcloudTokenOutput(value: string | Buffer): string | null {
+  const token = value.toString('utf8').trim().split(/\s+/)[0] ?? ''
+  return token ? token : null
 }
 
 function requiredCredentialField(

@@ -5,6 +5,7 @@
 import { useCallback, useState, type ComponentProps } from 'react'
 import type { FloatingAppearanceSettings } from '@/application'
 import { loadSettings, saveSettings } from '@/application'
+import { getRuntimeChatCapability } from '@/domain'
 import { useSessionContext } from '@/presentation/hooks'
 import { Sidebar, type DesktopTab } from '@/presentation/components/Sidebar'
 import { ConversationPanel } from '@/presentation/components/ConversationPanel'
@@ -221,6 +222,12 @@ function ModelsTab({
   onLoadModels: ComponentProps<typeof ModelSelector>['onLoadModels']
   onSelect: (model: { provider: string; name: string }) => void
 }) {
+  const runtimeChat = getRuntimeChatCapability(model.provider)
+  const runtimeTone =
+    runtimeChat.status === 'supported' ? 'text-primary' : 'text-yellow-200'
+  const pipelineValue =
+    runtimeChat.status === 'supported' ? 'Runtime' : 'Discovery'
+
   return (
     <div className="h-full overflow-y-auto p-5 sm:p-8">
       <div className="mx-auto flex max-w-6xl flex-col gap-6">
@@ -233,9 +240,9 @@ function ModelsTab({
               Model routing
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-on-surface-variant">
-              Controle o modelo local usado pelo chat do Coddy. O daemon
-              sincroniza a sessão por eventos para manter terminal flutuante e
-              desktop alinhados.
+              Controle o modelo usado pelo chat do Coddy. O daemon sincroniza
+              sessão, mensagens, tools e configuração por eventos para manter
+              terminal flutuante e desktop alinhados.
             </p>
           </div>
           <ModelSelector
@@ -247,7 +254,7 @@ function ModelsTab({
 
         <div className="grid gap-4 md:grid-cols-3">
           <MetricCard label="CPU CORE" value="Nominal" icon="cpu" tone="primary" />
-          <MetricCard label="PIPELINE" value="Local" icon="sensors" tone="secondary" />
+          <MetricCard label="PIPELINE" value={pipelineValue} icon="sensors" tone="secondary" />
           <MetricCard label="BACKEND" value={model.provider} icon="cloud" tone="neutral" />
         </div>
 
@@ -258,11 +265,13 @@ function ModelsTab({
                 Active daemon
               </h2>
               <p className="mt-1 font-mono text-xs text-on-surface-variant/70">
-                TCP socket via Ollama · session scoped model
+                {runtimeChat.description}
               </p>
             </div>
-            <span className="rounded border border-secondary/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] text-secondary">
-              chat
+            <span
+              className={`rounded border border-secondary/30 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.18em] ${runtimeTone}`}
+            >
+              {runtimeChat.label}
             </span>
           </div>
           <div className="flex flex-col gap-3 p-4">

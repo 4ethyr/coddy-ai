@@ -358,9 +358,12 @@ function ProviderGroup({
             {provider.description}
           </p>
         </div>
-        <span className="rounded border border-primary/20 bg-primary/10 px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-primary/80">
-          {provider.connectionLabel}
-        </span>
+        <div className="flex flex-shrink-0 flex-col items-end gap-1">
+          <span className="rounded border border-primary/20 bg-primary/10 px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] text-primary/80">
+            {provider.connectionLabel}
+          </span>
+          <RuntimeChatBadge capability={provider.runtimeChat} />
+        </div>
       </div>
 
       <form
@@ -462,7 +465,9 @@ function ProviderGroup({
         </div>
       ) : (
         <div className="rounded-md border border-dashed border-outline-variant/40 px-3 py-4 text-center font-mono text-[11px] leading-5 text-on-surface-variant/55">
-          {provider.requiresCredential
+          {provider.allowsLocalCredential
+            ? 'Load with local gcloud/ADC or paste a token.'
+            : provider.requiresCredential
             ? 'Connect this provider to list available models.'
             : 'Load local runtime models.'}
         </div>
@@ -507,12 +512,35 @@ function ModelOptionButton({
         <span className="hidden font-mono text-[9px] uppercase tracking-[0.14em] text-on-surface-variant/50 sm:inline">
           {provider.routingLabel}
         </span>
+        <span className="hidden font-mono text-[9px] uppercase tracking-[0.14em] text-on-surface-variant/50 md:inline">
+          {provider.runtimeChat.label}
+        </span>
         <Icon
           name={provider.connectionKind === 'local' ? 'cpu' : 'cloud'}
           className="h-4 w-4 opacity-60"
         />
       </span>
     </button>
+  )
+}
+
+function RuntimeChatBadge({
+  capability,
+}: {
+  capability: ModelProviderOption['runtimeChat']
+}) {
+  const tone =
+    capability.status === 'supported'
+      ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-200'
+      : 'border-yellow-400/20 bg-yellow-400/10 text-yellow-200'
+
+  return (
+    <span
+      className={`rounded border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.14em] ${tone}`}
+      title={capability.description}
+    >
+      {capability.label}
+    </span>
   )
 }
 
@@ -652,6 +680,7 @@ function getStatusLabel(
   if (state?.status === 'error') return state.message ?? 'provider unavailable'
   if (state?.status === 'ready') return state.message ?? 'models loaded'
   if (hasModels) return `${provider.models.length} cached models`
+  if (provider.allowsLocalCredential) return 'local auth or token'
   return provider.requiresCredential ? 'credential required' : 'local discovery'
 }
 

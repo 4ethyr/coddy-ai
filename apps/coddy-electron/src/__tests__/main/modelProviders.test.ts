@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { listProviderModels } from '../../main/modelProviders'
+import {
+  listProviderModels,
+  resolveGcloudAccessToken,
+} from '../../main/modelProviders'
 
 function jsonResponse(body: unknown) {
   return {
@@ -282,6 +285,57 @@ describe('modelProviders', () => {
     )
   })
 
+  it('lists Vertex publisher models with local gcloud OAuth fallback', async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          publisherModels: [{ name: 'publishers/google/models/gemini-test' }],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          publisherModels: [
+            {
+              name: 'publishers/anthropic/models/claude-sonnet-test',
+              displayName: 'Claude Sonnet Test',
+            },
+          ],
+        }),
+      )
+    const tokenProvider = vi.fn().mockResolvedValue({
+      token: 'gcloud-access-token',
+      notice:
+        'Using local gcloud OAuth credentials for Vertex AI publisher models. The access token is short-lived and is not stored by Coddy.',
+    })
+
+    const result = await listProviderModels(
+      { provider: 'vertex' },
+      fetcher,
+      tokenProvider,
+    )
+
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://us-east5-aiplatform.googleapis.com/v1beta1/publishers/anthropic/models?pageSize=100&view=BASIC',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer gcloud-access-token',
+        }),
+      }),
+    )
+    expect(result.notices?.[0]).toContain('gcloud OAuth credentials')
+    expect(result.models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          model: {
+            provider: 'vertex',
+            name: 'claude-sonnet-test',
+          },
+        }),
+      ]),
+    )
+  })
+
   it('reports a helpful Vertex credential error when no API key or ADC exists', async () => {
     const fetcher = vi.fn()
     const tokenProvider = vi.fn().mockResolvedValue(null)
@@ -296,8 +350,28 @@ describe('modelProviders', () => {
     expect(result.error).toEqual(
       expect.objectContaining({
         code: 'MODEL_LIST_FAILED',
-        message: expect.stringContaining('GOOGLE_APPLICATION_CREDENTIALS'),
+        message: expect.stringContaining('gcloud auth'),
       }),
+    )
+  })
+
+  it('resolves local gcloud access tokens without exposing command output', async () => {
+    const runner = vi.fn((_file, _args, _options, callback) => {
+      callback(null, 'ya29.gcloud-token\n', '')
+    })
+
+    await expect(resolveGcloudAccessToken(runner)).resolves.toBe(
+      'ya29.gcloud-token',
+    )
+    expect(runner).toHaveBeenCalledWith(
+      'gcloud',
+      ['auth', 'print-access-token'],
+      expect.objectContaining({
+        maxBuffer: 4096,
+        timeout: 10_000,
+        windowsHide: true,
+      }),
+      expect.any(Function),
     )
   })
 

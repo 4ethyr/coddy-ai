@@ -24,12 +24,15 @@ export type {
   ModelProviderListResult,
   ModelProviderOption,
   ProviderConnectionKind,
+  RuntimeChatCapability,
+  RuntimeChatSupport,
 } from './models'
 
 export {
   MODEL_PROVIDER_CATALOG,
   getModelCatalogEntry,
   getModelProvider,
+  getRuntimeChatCapability,
 } from './models'
 
 export type {

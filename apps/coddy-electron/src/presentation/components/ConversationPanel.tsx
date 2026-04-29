@@ -16,7 +16,7 @@ export function ConversationPanel({ session, onSend }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    messagesEndRef.current?.scrollIntoView?.({ behavior: 'smooth' })
   }, [session.messages.length, session.streaming_text])
 
   return (
