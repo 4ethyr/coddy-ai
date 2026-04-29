@@ -8,4 +8,5 @@ license.workspace = true
 coddy-core.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+ureq.workspace = true
 uuid.workspace = true

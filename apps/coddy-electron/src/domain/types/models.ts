@@ -77,6 +77,13 @@ const LOCAL_RUNTIME_CHAT: RuntimeChatCapability = {
     'Chat execution, streaming events and safe low-risk tools are wired through the Rust runtime.',
 }
 
+const OPENAI_COMPATIBLE_RUNTIME_CHAT: RuntimeChatCapability = {
+  status: 'supported',
+  label: 'runtime ready',
+  description:
+    'Chat execution uses the Rust OpenAI-compatible adapter with request-scoped credentials from the secure main-process bridge.',
+}
+
 const CLOUD_DISCOVERY_ONLY_CHAT: RuntimeChatCapability = {
   status: 'adapter_pending',
   label: 'adapter pending',
@@ -115,7 +122,7 @@ export const MODEL_PROVIDER_CATALOG: readonly ModelProviderOption[] = [
     credentialLabel: 'OpenAI API key',
     credentialPlaceholder: 'sk-...',
     requiresCredential: true,
-    runtimeChat: CLOUD_DISCOVERY_ONLY_CHAT,
+    runtimeChat: OPENAI_COMPATIBLE_RUNTIME_CHAT,
     models: [],
   },
   {
@@ -129,7 +136,7 @@ export const MODEL_PROVIDER_CATALOG: readonly ModelProviderOption[] = [
     credentialLabel: 'OpenRouter API key',
     credentialPlaceholder: 'sk-or-...',
     requiresCredential: true,
-    runtimeChat: CLOUD_DISCOVERY_ONLY_CHAT,
+    runtimeChat: OPENAI_COMPATIBLE_RUNTIME_CHAT,
     models: [],
   },
   {

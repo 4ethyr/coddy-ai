@@ -121,7 +121,8 @@ describe('ModelSelector', () => {
     )
 
     expect(within(providerGroup('Local Ollama')).getByText('runtime ready')).toBeInTheDocument()
-    expect(within(providerGroup('OpenAI')).getByText('adapter pending')).toBeInTheDocument()
+    expect(within(providerGroup('OpenAI')).getByText('runtime ready')).toBeInTheDocument()
+    expect(within(providerGroup('OpenRouter')).getByText('runtime ready')).toBeInTheDocument()
     expect(within(providerGroup('Google Vertex')).getByText('adapter pending')).toBeInTheDocument()
   })
 

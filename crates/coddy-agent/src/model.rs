@@ -107,9 +107,11 @@ pub trait ChatModelClient: std::fmt::Debug + Send + Sync {
 #[derive(Debug, Default)]
 pub struct UnavailableChatModelClient;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DefaultChatModelClient {
     ollama: OllamaChatModelClient,
+    openai: OpenAiCompatibleChatModelClient,
+    openrouter: OpenAiCompatibleChatModelClient,
     unavailable: UnavailableChatModelClient,
 }
 
@@ -126,6 +128,28 @@ struct HttpOllamaTransport {
 
 trait OllamaTransport: std::fmt::Debug + Send + Sync {
     fn chat(&self, body: &Value) -> ChatModelResult;
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenAiCompatibleChatModelClient {
+    provider: String,
+    default_base_url: String,
+    transport: Arc<dyn OpenAiCompatibleTransport>,
+}
+
+#[derive(Debug, Clone)]
+struct HttpOpenAiCompatibleTransport {
+    timeout: Duration,
+}
+
+trait OpenAiCompatibleTransport: std::fmt::Debug + Send + Sync {
+    fn chat(
+        &self,
+        provider: &str,
+        endpoint: &str,
+        credential: &ModelCredential,
+        body: &Value,
+    ) -> ChatModelResult;
 }
 
 impl ChatMessage {
@@ -256,6 +280,17 @@ impl ChatModelError {
     }
 }
 
+impl Default for DefaultChatModelClient {
+    fn default() -> Self {
+        Self {
+            ollama: OllamaChatModelClient::default(),
+            openai: OpenAiCompatibleChatModelClient::openai(),
+            openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            unavailable: UnavailableChatModelClient,
+        }
+    }
+}
+
 impl Default for OllamaChatModelClient {
     fn default() -> Self {
         Self::new()
@@ -284,12 +319,61 @@ impl HttpOllamaTransport {
     }
 }
 
+impl OpenAiCompatibleChatModelClient {
+    pub fn openai() -> Self {
+        Self::new(
+            "openai",
+            "https://api.openai.com/v1",
+            Arc::new(HttpOpenAiCompatibleTransport::new()),
+        )
+    }
+
+    pub fn openrouter() -> Self {
+        Self::new(
+            "openrouter",
+            "https://openrouter.ai/api/v1",
+            Arc::new(HttpOpenAiCompatibleTransport::new()),
+        )
+    }
+
+    fn new(
+        provider: impl Into<String>,
+        default_base_url: impl Into<String>,
+        transport: Arc<dyn OpenAiCompatibleTransport>,
+    ) -> Self {
+        Self {
+            provider: provider.into(),
+            default_base_url: default_base_url.into(),
+            transport,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_transport(
+        provider: impl Into<String>,
+        default_base_url: impl Into<String>,
+        transport: Arc<dyn OpenAiCompatibleTransport>,
+    ) -> Self {
+        Self::new(provider, default_base_url, transport)
+    }
+}
+
+impl HttpOpenAiCompatibleTransport {
+    fn new() -> Self {
+        Self {
+            timeout: Duration::from_secs(120),
+        }
+    }
+}
+
 impl ChatModelClient for DefaultChatModelClient {
     fn complete(&self, request: ChatRequest) -> ChatModelResult {
-        if request.model.provider == "ollama" {
-            return self.ollama.complete(request);
+        match request.model.provider.as_str() {
+            "ollama" => self.ollama.complete(request),
+            "openai" => self.openai.complete(request),
+            "openrouter" => self.openrouter.complete(request),
+            _ => self.unavailable.complete(request),
         }
-        self.unavailable.complete(request)
     }
 }
 
@@ -315,6 +399,39 @@ impl ChatModelClient for UnavailableChatModelClient {
         Err(ChatModelError::ProviderUnavailable {
             provider: request.model.provider,
         })
+    }
+}
+
+impl ChatModelClient for OpenAiCompatibleChatModelClient {
+    fn complete(&self, request: ChatRequest) -> ChatModelResult {
+        if request.model.provider != self.provider {
+            return Err(ChatModelError::UnsupportedModel {
+                provider: request.model.provider,
+                model: request.model.name,
+            });
+        }
+
+        let credential = request.model_credential.as_ref().ok_or_else(|| {
+            ChatModelError::InvalidRequest(format!(
+                "{} chat execution requires a provider credential",
+                self.provider
+            ))
+        })?;
+        if credential.token.trim().is_empty() {
+            return Err(ChatModelError::InvalidRequest(format!(
+                "{} chat execution requires a non-empty provider credential",
+                self.provider
+            )));
+        }
+
+        let endpoint =
+            openai_compatible_chat_url(&self.default_base_url, credential.endpoint.as_deref())?;
+        self.transport.chat(
+            &self.provider,
+            &endpoint,
+            credential,
+            &openai_compatible_chat_body(&request),
+        )
     }
 }
 
@@ -355,6 +472,52 @@ impl OllamaTransport for HttpOllamaTransport {
             .read_to_end(&mut response)
             .map_err(ollama_transport_error)?;
         parse_http_ollama_response(&response)
+    }
+}
+
+impl OpenAiCompatibleTransport for HttpOpenAiCompatibleTransport {
+    fn chat(
+        &self,
+        provider: &str,
+        endpoint: &str,
+        credential: &ModelCredential,
+        body: &Value,
+    ) -> ChatModelResult {
+        let body = serde_json::to_string(body).map_err(|error| {
+            ChatModelError::InvalidRequest(format!(
+                "failed to encode {provider} chat request: {error}"
+            ))
+        })?;
+        let authorization = format!("Bearer {}", credential.token.trim());
+        let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
+        let response = agent
+            .post(endpoint)
+            .set("Accept", "application/json")
+            .set("Authorization", &authorization)
+            .set("Content-Type", "application/json")
+            .send_string(&body);
+
+        match response {
+            Ok(response) => {
+                let body = response
+                    .into_string()
+                    .map_err(|error| openai_compatible_transport_error(provider, error))?;
+                parse_openai_compatible_chat_body(provider, &body)
+            }
+            Err(ureq::Error::Status(status, response)) => {
+                let body = response.into_string().unwrap_or_default();
+                Err(ChatModelError::ProviderError {
+                    provider: provider.to_string(),
+                    message: openai_compatible_provider_error_message(provider, &body, status),
+                    retryable: status == 429 || status >= 500,
+                })
+            }
+            Err(ureq::Error::Transport(error)) => Err(ChatModelError::Transport {
+                provider: provider.to_string(),
+                message: error.to_string(),
+                retryable: true,
+            }),
+        }
     }
 }
 
@@ -482,6 +645,94 @@ fn ollama_chat_body(request: &ChatRequest) -> Value {
     body
 }
 
+fn openai_compatible_chat_body(request: &ChatRequest) -> Value {
+    let messages = request
+        .messages
+        .iter()
+        .map(openai_compatible_message_body)
+        .collect::<Vec<_>>();
+    let tools = request
+        .tools
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.input_schema,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut body = serde_json::json!({
+        "model": request.model.name,
+        "messages": messages,
+        "stream": false,
+    });
+    if !tools.is_empty() {
+        body["tools"] = Value::Array(tools);
+        body["tool_choice"] = Value::String("auto".to_string());
+    }
+    if let Some(temperature) = request.temperature {
+        body["temperature"] = serde_json::json!(temperature);
+    }
+    if let Some(max_output_tokens) = request.max_output_tokens {
+        body["max_tokens"] = serde_json::json!(max_output_tokens);
+    }
+    body
+}
+
+fn openai_compatible_message_body(message: &ChatMessage) -> Value {
+    let role = match message.role {
+        ChatMessageRole::System => "system",
+        ChatMessageRole::User | ChatMessageRole::Tool => "user",
+        ChatMessageRole::Assistant => "assistant",
+    };
+    let content = if message.role == ChatMessageRole::Tool {
+        normalized_tool_observation_content(&message.content)
+    } else {
+        message.content.clone()
+    };
+    serde_json::json!({
+        "role": role,
+        "content": content,
+    })
+}
+
+fn normalized_tool_observation_content(content: &str) -> String {
+    let trimmed = content.trim_start();
+    if trimmed.starts_with("Tool observations:") {
+        content.to_string()
+    } else {
+        format!("Tool observations:\n{content}")
+    }
+}
+
+fn openai_compatible_chat_url(
+    default_base_url: &str,
+    endpoint_override: Option<&str>,
+) -> Result<String, ChatModelError> {
+    let endpoint = endpoint_override
+        .map(str::trim)
+        .filter(|endpoint| !endpoint.is_empty())
+        .unwrap_or(default_base_url)
+        .trim_end_matches('/');
+
+    if !endpoint.starts_with("https://") {
+        return Err(ChatModelError::InvalidRequest(
+            "OpenAI-compatible runtime endpoints must use HTTPS".to_string(),
+        ));
+    }
+
+    if endpoint.ends_with("/chat/completions") {
+        Ok(endpoint.to_string())
+    } else {
+        Ok(format!("{endpoint}/chat/completions"))
+    }
+}
+
 fn chat_role_name(role: ChatMessageRole) -> &'static str {
     match role {
         ChatMessageRole::System => "system",
@@ -578,6 +829,26 @@ fn provider_error_message(body: &str, status: u16) -> String {
         .unwrap_or_else(|| format!("Ollama returned HTTP {status}"))
 }
 
+fn openai_compatible_transport_error(provider: &str, error: std::io::Error) -> ChatModelError {
+    ChatModelError::Transport {
+        provider: provider.to_string(),
+        message: error.to_string(),
+        retryable: true,
+    }
+}
+
+fn openai_compatible_provider_error_message(provider: &str, body: &str, status: u16) -> String {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value["error"]["message"]
+                .as_str()
+                .or_else(|| value["error"].as_str())
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| format!("{provider} returned HTTP {status}"))
+}
+
 fn parse_ollama_chat_body(body: &str) -> ChatModelResult {
     let mut deltas = Vec::new();
     let mut tool_calls = Vec::new();
@@ -654,7 +925,120 @@ fn parse_ollama_tool_calls(message: &Value) -> Result<Vec<ChatToolCall>, ChatMod
         .collect()
 }
 
+fn parse_openai_compatible_chat_body(provider: &str, body: &str) -> ChatModelResult {
+    let value: Value =
+        serde_json::from_str(body).map_err(|error| ChatModelError::InvalidProviderResponse {
+            provider: provider.to_string(),
+            message: format!("invalid JSON response: {error}"),
+        })?;
+    if let Some(message) = value["error"]["message"]
+        .as_str()
+        .or_else(|| value["error"].as_str())
+    {
+        return Err(ChatModelError::ProviderError {
+            provider: provider.to_string(),
+            message: message.to_string(),
+            retryable: false,
+        });
+    }
+
+    let choice = value["choices"]
+        .as_array()
+        .and_then(|choices| choices.first())
+        .ok_or_else(|| ChatModelError::InvalidProviderResponse {
+            provider: provider.to_string(),
+            message: "response did not include choices".to_string(),
+        })?;
+    let message = &choice["message"];
+    let text = openai_compatible_message_content(&message["content"]);
+    let tool_calls = parse_openai_compatible_tool_calls(provider, message)?;
+    if text.is_empty() && tool_calls.is_empty() {
+        return Err(ChatModelError::InvalidProviderResponse {
+            provider: provider.to_string(),
+            message: "response did not include assistant content or tool calls".to_string(),
+        });
+    }
+
+    let mut finish_reason = match choice["finish_reason"].as_str() {
+        Some("length") => ChatFinishReason::Length,
+        Some("tool_calls") => ChatFinishReason::ToolCalls,
+        Some("content_filter") => ChatFinishReason::Error,
+        _ => ChatFinishReason::Stop,
+    };
+    if !tool_calls.is_empty() {
+        finish_reason = ChatFinishReason::ToolCalls;
+    }
+
+    let deltas = if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![text.clone()]
+    };
+    Ok(ChatResponse {
+        text,
+        deltas,
+        finish_reason,
+        tool_calls,
+    })
+}
+
+fn openai_compatible_message_content(content: &Value) -> String {
+    if content.is_null() {
+        return String::new();
+    }
+    if let Some(text) = content.as_str() {
+        return text.to_string();
+    }
+    if let Some(parts) = content.as_array() {
+        return parts
+            .iter()
+            .filter_map(|part| {
+                part["text"]
+                    .as_str()
+                    .or_else(|| part["content"].as_str())
+                    .map(ToOwned::to_owned)
+            })
+            .collect::<Vec<_>>()
+            .concat();
+    }
+    String::new()
+}
+
+fn parse_openai_compatible_tool_calls(
+    provider: &str,
+    message: &Value,
+) -> Result<Vec<ChatToolCall>, ChatModelError> {
+    let Some(calls) = message["tool_calls"].as_array() else {
+        return Ok(Vec::new());
+    };
+
+    calls
+        .iter()
+        .map(|call| {
+            let function = &call["function"];
+            let name = function["name"].as_str().ok_or_else(|| {
+                ChatModelError::InvalidProviderResponse {
+                    provider: provider.to_string(),
+                    message: format!("{provider} tool call is missing function.name"),
+                }
+            })?;
+            Ok(ChatToolCall {
+                id: call["id"].as_str().map(ToOwned::to_owned),
+                name: name.to_string(),
+                arguments: parse_tool_arguments_for_provider(provider, &function["arguments"])?,
+            })
+        })
+        .collect()
+}
+
 fn parse_tool_arguments(arguments: &Value) -> Result<Value, ChatModelError> {
+    parse_tool_arguments_for_provider("ollama", arguments)
+}
+
+fn parse_tool_arguments_for_provider(
+    provider: &str,
+    arguments: &Value,
+) -> Result<Value, ChatModelError> {
     if arguments.is_null() {
         return Ok(serde_json::json!({}));
     }
@@ -662,8 +1046,8 @@ fn parse_tool_arguments(arguments: &Value) -> Result<Value, ChatModelError> {
     if let Some(text) = arguments.as_str() {
         return serde_json::from_str(text).map_err(|error| {
             ChatModelError::InvalidProviderResponse {
-                provider: "ollama".to_string(),
-                message: format!("Ollama tool call arguments are invalid JSON: {error}"),
+                provider: provider.to_string(),
+                message: format!("{provider} tool call arguments are invalid JSON: {error}"),
             }
         });
     }
@@ -689,6 +1073,32 @@ mod tests {
     impl OllamaTransport for StaticOllamaTransport {
         fn chat(&self, body: &Value) -> ChatModelResult {
             assert_eq!(body, &self.body);
+            self.response.clone()
+        }
+    }
+
+    #[derive(Debug)]
+    struct StaticOpenAiCompatibleTransport {
+        provider: String,
+        endpoint: String,
+        token: String,
+        body: Value,
+        response: ChatModelResult,
+    }
+
+    impl OpenAiCompatibleTransport for StaticOpenAiCompatibleTransport {
+        fn chat(
+            &self,
+            provider: &str,
+            endpoint: &str,
+            credential: &ModelCredential,
+            body: &Value,
+        ) -> ChatModelResult {
+            assert_eq!(provider, self.provider);
+            assert_eq!(endpoint, self.endpoint);
+            assert_eq!(credential.token, self.token);
+            assert_eq!(body, &self.body);
+            assert!(!body.to_string().contains(&self.token));
             self.response.clone()
         }
     }
@@ -823,6 +1233,140 @@ mod tests {
     }
 
     #[test]
+    fn default_client_routes_openai_requests_to_openai_compatible_adapter() {
+        let expected_body = serde_json::json!({
+            "model": "gpt-4.1",
+            "messages": [
+                { "role": "user", "content": "hello" }
+            ],
+            "stream": false
+        });
+        let client = DefaultChatModelClient {
+            ollama: OllamaChatModelClient::default(),
+            openai: OpenAiCompatibleChatModelClient::with_transport(
+                "openai",
+                "https://api.openai.com/v1",
+                Arc::new(StaticOpenAiCompatibleTransport {
+                    provider: "openai".to_string(),
+                    endpoint: "https://api.openai.com/v1/chat/completions".to_string(),
+                    token: "secret-openai-token".to_string(),
+                    body: expected_body,
+                    response: Ok(ChatResponse::from_text("hi from openai")),
+                }),
+            ),
+            openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            unavailable: UnavailableChatModelClient,
+        };
+        let request = ChatRequest::new(
+            ModelRef {
+                provider: "openai".to_string(),
+                name: "gpt-4.1".to_string(),
+            },
+            vec![ChatMessage::user("hello")],
+        )
+        .expect("request")
+        .with_model_credential(Some(ModelCredential {
+            provider: "openai".to_string(),
+            token: "secret-openai-token".to_string(),
+            endpoint: None,
+        }))
+        .expect("credential");
+
+        assert_eq!(
+            client.complete(request),
+            Ok(ChatResponse::from_text("hi from openai"))
+        );
+    }
+
+    #[test]
+    fn openai_compatible_client_requires_provider_credential() {
+        let client = OpenAiCompatibleChatModelClient::openai();
+        let request = ChatRequest::new(
+            ModelRef {
+                provider: "openai".to_string(),
+                name: "gpt-4.1".to_string(),
+            },
+            vec![ChatMessage::user("hello")],
+        )
+        .expect("request");
+
+        let error = client.complete(request).expect_err("credential required");
+
+        assert_eq!(error.code(), "invalid_request");
+    }
+
+    #[test]
+    fn openai_compatible_request_projects_tools_options_and_observations() {
+        let request = ChatRequest {
+            model: ModelRef {
+                provider: "openrouter".to_string(),
+                name: "anthropic/claude-3.5-sonnet".to_string(),
+            },
+            messages: vec![
+                ChatMessage::system("system"),
+                ChatMessage::user("user"),
+                ChatMessage::assistant("assistant"),
+                ChatMessage::tool("filesystem result"),
+            ],
+            tools: vec![ChatToolSpec {
+                name: "filesystem.list_files".to_string(),
+                description: "List files".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" }
+                    }
+                }),
+                risk_level: ToolRiskLevel::Low,
+                approval_policy: ApprovalPolicy::AutoApprove,
+            }],
+            model_credential: None,
+            temperature: Some(0.2),
+            max_output_tokens: Some(128),
+        };
+
+        let body = openai_compatible_chat_body(&request);
+
+        assert_eq!(body["model"], "anthropic/claude-3.5-sonnet");
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][3]["role"], "user");
+        assert_eq!(
+            body["messages"][3]["content"],
+            "Tool observations:\nfilesystem result"
+        );
+        assert_eq!(
+            body["tools"][0]["function"]["name"],
+            "filesystem.list_files"
+        );
+        assert_eq!(body["tool_choice"], "auto");
+        let temperature = body["temperature"].as_f64().expect("temperature");
+        assert!((temperature - 0.2).abs() < 0.000_001);
+        assert_eq!(body["max_tokens"], 128);
+    }
+
+    #[test]
+    fn openai_compatible_endpoint_normalization_requires_https() {
+        assert_eq!(
+            openai_compatible_chat_url("https://api.openai.com/v1", None)
+                .expect("default endpoint"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_compatible_chat_url(
+                "https://api.openai.com/v1",
+                Some("https://example.test/v1/")
+            )
+            .expect("override endpoint"),
+            "https://example.test/v1/chat/completions"
+        );
+
+        let error = openai_compatible_chat_url("https://api.openai.com/v1", Some("http://bad"))
+            .expect_err("http rejected");
+
+        assert_eq!(error.code(), "invalid_request");
+    }
+
+    #[test]
     fn ollama_request_projects_tools_and_options() {
         let request = ChatRequest {
             model: ModelRef {
@@ -942,6 +1486,68 @@ mod tests {
             }]
         );
         assert_eq!(response.finish_reason, ChatFinishReason::ToolCalls);
+    }
+
+    #[test]
+    fn parses_openai_compatible_text_response() {
+        let body = serde_json::json!({
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "hello from cloud"
+                    },
+                    "finish_reason": "stop"
+                }
+            ]
+        })
+        .to_string();
+
+        let response = parse_openai_compatible_chat_body("openai", &body).expect("response");
+
+        assert_eq!(response.text, "hello from cloud");
+        assert_eq!(response.deltas, vec!["hello from cloud"]);
+        assert_eq!(response.finish_reason, ChatFinishReason::Stop);
+    }
+
+    #[test]
+    fn parses_openai_compatible_tool_calls() {
+        let body = serde_json::json!({
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "filesystem.list_files",
+                                    "arguments": "{\"path\":\".\"}"
+                                }
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }
+            ]
+        })
+        .to_string();
+
+        let response = parse_openai_compatible_chat_body("openrouter", &body).expect("response");
+
+        assert_eq!(response.text, "");
+        assert!(response.deltas.is_empty());
+        assert_eq!(response.finish_reason, ChatFinishReason::ToolCalls);
+        assert_eq!(
+            response.tool_calls,
+            vec![ChatToolCall {
+                id: Some("call-1".to_string()),
+                name: "filesystem.list_files".to_string(),
+                arguments: serde_json::json!({ "path": "." }),
+            }]
+        );
     }
 
     #[test]

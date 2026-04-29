@@ -297,10 +297,21 @@ The Vertex provider accepts an optional region or endpoint override such as
 `global`, `us-east5`, `europe-west1`, or
 `https://us-east5-aiplatform.googleapis.com`.
 
-Runtime chat completion currently supports local Ollama models. By default Coddy
-connects to `http://127.0.0.1:11434/api/chat`; set `OLLAMA_HOST` to override the
-host, for example `OLLAMA_HOST=127.0.0.1:11434` or
+Runtime chat completion currently supports local Ollama models plus
+OpenAI-compatible chat execution for OpenAI and OpenRouter. By default Coddy
+connects to `http://127.0.0.1:11434/api/chat` for Ollama; set `OLLAMA_HOST` to
+override the host, for example `OLLAMA_HOST=127.0.0.1:11434` or
 `OLLAMA_HOST=http://localhost:11434`.
+
+OpenAI and OpenRouter chat execution use non-streaming `/chat/completions`
+requests from the Rust runtime. The Electron main process sends the selected
+provider credential to the CLI as a request-scoped environment payload; the
+token is not stored in renderer state and is redacted from Rust debug output.
+Custom OpenAI-compatible runtime endpoints must use HTTPS.
+
+Vertex and Azure model discovery are wired in the UI. Runtime chat adapters for
+Vertex partner models and Azure deployments remain planned so project, region,
+deployment and IAM behavior can be modeled explicitly.
 
 ## Development Workflow
 
