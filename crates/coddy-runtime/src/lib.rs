@@ -45,6 +45,15 @@ struct ModelBackedTurn<'a> {
     user_text: String,
 }
 
+struct ModelResponseContext<'a> {
+    session_id: Uuid,
+    run_id: Uuid,
+    selected_model: &'a ModelRef,
+    model_credential: Option<ModelCredential>,
+    system_prompt: &'a str,
+    goal: String,
+}
+
 impl CoddyRuntime {
     pub fn new(tool_registry: AgentToolRegistry) -> Self {
         let agent_runtime =
@@ -381,14 +390,15 @@ impl CoddyRuntime {
             user_text,
         } = turn;
 
+        let system_prompt = build_model_system_prompt(
+            context_policy,
+            session_context,
+            self.tool_registry.definitions(),
+        );
         let request = match ChatRequest::new(
             selected_model.clone(),
             vec![
-                ChatMessage::system(build_model_system_prompt(
-                    context_policy,
-                    session_context,
-                    self.tool_registry.definitions(),
-                )),
+                ChatMessage::system(system_prompt.clone()),
                 ChatMessage::user(user_text.clone()),
             ],
         ) {
@@ -413,11 +423,14 @@ impl CoddyRuntime {
 
         match self.chat_client.complete(request) {
             Ok(response) => self.assistant_response_from_model(
-                session_id,
-                run_id,
-                selected_model,
-                model_credential,
-                user_text,
+                ModelResponseContext {
+                    session_id,
+                    run_id,
+                    selected_model,
+                    model_credential,
+                    system_prompt: &system_prompt,
+                    goal: user_text,
+                },
                 response,
             ),
             Err(error) => AssistantResponse::from_text(model_error_message(
@@ -430,42 +443,27 @@ impl CoddyRuntime {
 
     fn assistant_response_from_model(
         &self,
-        session_id: Uuid,
-        run_id: Uuid,
-        selected_model: &ModelRef,
-        model_credential: Option<ModelCredential>,
-        goal: String,
+        context: ModelResponseContext<'_>,
         response: ChatResponse,
     ) -> AssistantResponse {
         if response.tool_calls.is_empty() {
             return AssistantResponse::from_chat_response(response);
         }
 
-        self.execute_model_tool_calls(
-            session_id,
-            run_id,
-            selected_model,
-            model_credential,
-            goal,
-            response,
-        )
+        self.execute_model_tool_calls(context, response)
     }
 
     fn execute_model_tool_calls(
         &self,
-        session_id: Uuid,
-        run_id: Uuid,
-        selected_model: &ModelRef,
-        model_credential: Option<ModelCredential>,
-        goal: String,
+        context: ModelResponseContext<'_>,
         response: ChatResponse,
     ) -> AssistantResponse {
         let Some(agent_runtime) = &self.agent_runtime else {
             return AssistantResponse::from_chat_response(response);
         };
 
-        let mut state = agent_runtime.start_run(session_id, goal.clone());
-        state.run_id = run_id;
+        let mut state = agent_runtime.start_run(context.session_id, context.goal.clone());
+        state.run_id = context.run_id;
         let mut observations = Vec::new();
         let mut executed_tool_calls = 0_usize;
 
@@ -503,8 +501,8 @@ impl CoddyRuntime {
                 Some(tool_name.clone()),
             );
             let call = ToolCall::new(
-                session_id,
-                run_id,
+                context.session_id,
+                context.run_id,
                 tool_name.clone(),
                 tool_call.arguments.clone(),
                 unix_ms_now(),
@@ -512,7 +510,7 @@ impl CoddyRuntime {
             let outcome = agent_runtime.execute_tool_call(&mut state, &call);
             executed_tool_calls += 1;
             for event in outcome.events {
-                self.publish_event_with_run_now(event, run_id);
+                self.publish_event_with_run_now(event, context.run_id);
             }
 
             let Some(result) = outcome.result else {
@@ -562,6 +560,7 @@ impl CoddyRuntime {
         }
         text.push_str("Tool observations:\n");
         text.push_str(&observations.join("\n"));
+        let text = redact_context_text(&text);
 
         let observation_response = AssistantResponse::from_text(text);
         if executed_tool_calls == 0 {
@@ -569,9 +568,10 @@ impl CoddyRuntime {
         }
 
         self.complete_after_tool_observations(
-            selected_model,
-            model_credential,
-            &goal,
+            context.selected_model,
+            context.model_credential,
+            context.system_prompt,
+            &context.goal,
             &response.text,
             &observation_response.text,
         )
@@ -582,14 +582,13 @@ impl CoddyRuntime {
         &self,
         selected_model: &ModelRef,
         model_credential: Option<ModelCredential>,
+        system_prompt: &str,
         user_text: &str,
         assistant_text: &str,
         observation_text: &str,
     ) -> Option<AssistantResponse> {
         let mut messages = vec![
-            ChatMessage::system(
-                "You are Coddy, a secure coding agent. Use tool observations to produce the final answer.",
-            ),
+            ChatMessage::system(build_tool_followup_system_prompt(system_prompt)),
             ChatMessage::user(user_text.to_string()),
         ];
         if !assistant_text.trim().is_empty() {
@@ -896,6 +895,18 @@ fn build_model_system_prompt(
     sections.join("\n\n")
 }
 
+fn build_tool_followup_system_prompt(base_prompt: &str) -> String {
+    let followup = [
+        "Tool observation follow-up:",
+        "- Treat tool observations as the latest grounded evidence.",
+        "- Do not claim files changed unless an edit/apply tool succeeded.",
+        "- If observations are incomplete or redacted, state the limitation briefly.",
+        "- Keep the final answer concise and include validation status when relevant.",
+    ]
+    .join("\n");
+    format!("{base_prompt}\n\n{followup}")
+}
+
 fn format_workspace_context(items: &[coddy_core::ContextItem]) -> String {
     if items.is_empty() {
         return "Workspace context: none loaded yet.".to_string();
@@ -1156,6 +1167,7 @@ fn default_workspace_root() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use coddy_agent::READ_FILE_TOOL;
     use coddy_client::CoddyClient;
     use coddy_core::{
         ApprovalPolicy, ModelRef, ModelRole, ReplEvent, ToolCategory, ToolPermission, ToolRiskLevel,
@@ -1814,6 +1826,10 @@ mod tests {
         assert_eq!(text, "The workspace contains a Rust source directory.");
         assert_eq!(captured_requests.len(), 2);
         assert!(captured_requests[1].tools.is_empty());
+        let followup_system_prompt = &captured_requests[1].messages[0].content;
+        assert!(followup_system_prompt.contains("Agent loop:"));
+        assert!(followup_system_prompt.contains("Security rules:"));
+        assert!(followup_system_prompt.contains("Context policy: WorkspaceOnly"));
         assert!(captured_requests[1].messages.iter().any(|message| {
             message.role == coddy_agent::ChatMessageRole::Tool
                 && message.content.contains("filesystem.list_files")
@@ -1827,6 +1843,67 @@ mod tests {
             &event.event,
             ReplEvent::ToolCompleted { name, .. } if name == LIST_FILES_TOOL
         )));
+    }
+
+    #[test]
+    fn ask_command_redacts_secret_like_tool_observations_before_model_followup() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write(".env", "OPENAI_API_KEY=sk-secret-token\n");
+        let (chat_client, requests) = QueuedChatClient::new(vec![
+            ChatResponse {
+                text: "I will inspect the requested file.".to_string(),
+                deltas: vec!["I will inspect the requested file.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-1".to_string()),
+                    name: READ_FILE_TOOL.to_string(),
+                    arguments: json!({ "path": ".env", "max_bytes": 120 }),
+                }],
+            },
+            ChatResponse::from_text("The file contains a redacted API key setting."),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect the env file".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        assert_eq!(captured_requests.len(), 2);
+        let tool_message = captured_requests[1]
+            .messages
+            .iter()
+            .find(|message| message.role == coddy_agent::ChatMessageRole::Tool)
+            .expect("tool observation message");
+
+        assert!(tool_message
+            .content
+            .contains("OPENAI_API_KEY=sk-[REDACTED]"));
+        assert!(!tool_message.content.contains("sk-secret-token"));
     }
 
     #[test]
