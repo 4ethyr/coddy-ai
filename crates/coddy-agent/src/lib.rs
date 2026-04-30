@@ -46,7 +46,10 @@ pub use shell_plan::{
     ShellApprovalState, ShellPlan, ShellPlanRequest, ShellPlanner, DEFAULT_SHELL_TIMEOUT_MS,
     MAX_SHELL_TIMEOUT_MS,
 };
-pub use subagent::{SubagentDefinition, SubagentMode, SubagentRegistry, SUBAGENT_LIST_TOOL};
+pub use subagent::{
+    SubagentDefinition, SubagentMode, SubagentRecommendation, SubagentRegistry, SUBAGENT_LIST_TOOL,
+    SUBAGENT_ROUTE_TOOL,
+};
 
 use coddy_core::{
     ApprovalPolicy, PermissionReply, PermissionRequest, ReplEvent, ToolCall, ToolCategory,
@@ -426,6 +429,63 @@ impl Default for AgentToolRegistry {
                                     "name": { "type": "string" },
                                     "description": { "type": "string" },
                                     "mode": { "type": "string" },
+                                    "allowedTools": {
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    },
+                                    "routingSignals": {
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    },
+                                    "timeoutMs": { "type": "integer" },
+                                    "maxContextTokens": { "type": "integer" },
+                                    "outputSchema": { "type": "object" }
+                                }
+                            }
+                        }
+                    }
+                }),
+                risk_level: ToolRiskLevel::Low,
+                permissions: vec![ToolPermission::DelegateSubagent],
+                timeout_ms: 2_000,
+                approval_policy: ApprovalPolicy::AutoApprove,
+            }),
+            local_tool_definition(LocalToolDefinitionSpec {
+                name: SUBAGENT_ROUTE_TOOL,
+                description: "Recommend focused subagent roles for a task using deterministic routing scores and safety metadata",
+                category: ToolCategory::Subagent,
+                input_schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["goal"],
+                    "properties": {
+                        "goal": { "type": "string" },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["read-only", "workspace-write", "evaluation"]
+                        },
+                        "limit": { "type": "integer", "minimum": 1 }
+                    }
+                }),
+                output_schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "goal": { "type": "string" },
+                        "mode": { "type": ["string", "null"] },
+                        "recommendations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": { "type": "string" },
+                                    "score": { "type": "integer" },
+                                    "mode": { "type": "string" },
+                                    "matchedSignals": {
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    },
+                                    "rationale": { "type": "string" },
                                     "allowedTools": {
                                         "type": "array",
                                         "items": { "type": "string" }
@@ -1205,7 +1265,7 @@ mod tests {
     fn agent_registry_defines_local_contracts_without_execution() {
         let registry = AgentToolRegistry::default();
 
-        assert_eq!(registry.definitions().len(), 7);
+        assert_eq!(registry.definitions().len(), 8);
         assert!(registry
             .get(&ToolName::new(LIST_FILES_TOOL).expect("tool name"))
             .is_some());
@@ -1232,6 +1292,17 @@ mod tests {
         assert_eq!(subagent_list.approval_policy, ApprovalPolicy::AutoApprove);
         assert_eq!(
             subagent_list.permissions,
+            vec![ToolPermission::DelegateSubagent]
+        );
+
+        let subagent_route = registry
+            .get(&ToolName::new(SUBAGENT_ROUTE_TOOL).expect("tool name"))
+            .expect("subagent route definition");
+        assert_eq!(subagent_route.category, ToolCategory::Subagent);
+        assert_eq!(subagent_route.risk_level, ToolRiskLevel::Low);
+        assert_eq!(subagent_route.approval_policy, ApprovalPolicy::AutoApprove);
+        assert_eq!(
+            subagent_route.permissions,
             vec![ToolPermission::DelegateSubagent]
         );
     }

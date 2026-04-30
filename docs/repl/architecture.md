@@ -136,9 +136,11 @@ mantendo `ReplTools` apenas como compatibilidade com clientes legados.
 Subagents ainda nao executam trabalho em paralelo. A primeira fundacao esta no
 crate `coddy-agent`: um registry declarativo exposto pela tool
 `subagent.list`, com papeis obrigatorios, modo de execucao, allowed tools,
-timeout, budget de contexto e schema de resposta. O proximo passo arquitetural e
-conectar esse registry a um executor com contexto isolado, eventos, auditoria e
-politicas herdadas do tool registry.
+sinais de roteamento, timeout, budget de contexto e schema de resposta. A tool
+`subagent.route` adiciona selecao deterministica e scoreada por intencao antes
+da execucao real. O proximo passo arquitetural e conectar esse registry a um
+executor com contexto isolado, eventos, auditoria e politicas herdadas do tool
+registry.
 
 ### `crates/coddy-core`
 

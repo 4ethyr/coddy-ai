@@ -126,9 +126,14 @@ policy. O Electron consome esse contrato pelo canal `repl:tools`.
 
 O catálogo atual inclui tools locais de filesystem, shell protegido e a fundação
 de subagents. A tool `subagent.list` é read-only/auto-approved e retorna os
-subagents declarativos disponíveis com modo, tools permitidas, timeout,
-orçamento de contexto e schema de resposta. Ela prepara a futura execução real
-de subagents sem acoplar a UI a um runtime paralelo prematuro.
+subagents declarativos disponíveis com modo, tools permitidas, sinais de
+roteamento, timeout, orçamento de contexto e schema de resposta.
+
+A tool `subagent.route` também é read-only/auto-approved e recebe `goal`,
+`mode` opcional e `limit` opcional. Ela retorna recomendações scoreadas com
+`score`, `matchedSignals`, rationale, allowed tools e output schema. Isso
+prepara a futura execução real de subagents com seleção mensurável, sem acoplar
+a UI a um runtime paralelo prematuro.
 
 ### Evals de harness
 

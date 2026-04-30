@@ -1511,6 +1511,7 @@ mod tests {
                 "filesystem.search_files",
                 "shell.run",
                 "subagent.list",
+                "subagent.route",
             ]
         );
 
@@ -1542,6 +1543,18 @@ mod tests {
             vec![ToolPermission::DelegateSubagent]
         );
         assert_eq!(subagent_list.approval_policy, ApprovalPolicy::AutoApprove);
+
+        let subagent_route = tools
+            .iter()
+            .find(|tool| tool.name == "subagent.route")
+            .expect("subagent route tool");
+        assert_eq!(subagent_route.category, ToolCategory::Subagent);
+        assert_eq!(subagent_route.risk_level, ToolRiskLevel::Low);
+        assert_eq!(
+            subagent_route.permissions,
+            vec![ToolPermission::DelegateSubagent]
+        );
+        assert_eq!(subagent_route.approval_policy, ApprovalPolicy::AutoApprove);
     }
 
     #[test]

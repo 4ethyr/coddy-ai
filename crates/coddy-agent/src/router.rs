@@ -16,7 +16,7 @@ use crate::{
     AgentError, AgentToolRegistry, EditPreview, ReadOnlyToolExecutor, ShellApprovalState,
     ShellExecutionConfig, ShellExecutor, ShellPlan, ShellPlanRequest, ShellPlanner, SubagentMode,
     SubagentRegistry, ToolExecution, APPLY_EDIT_TOOL, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL,
-    READ_FILE_TOOL, SEARCH_FILES_TOOL, SHELL_RUN_TOOL, SUBAGENT_LIST_TOOL,
+    READ_FILE_TOOL, SEARCH_FILES_TOOL, SHELL_RUN_TOOL, SUBAGENT_LIST_TOOL, SUBAGENT_ROUTE_TOOL,
 };
 
 #[derive(Debug, Clone)]
@@ -96,6 +96,7 @@ impl LocalToolRouter {
             APPLY_EDIT_TOOL => self.apply_permission_reply_tool(call),
             SHELL_RUN_TOOL => self.plan_or_execute_shell(call),
             SUBAGENT_LIST_TOOL => self.list_subagents(call),
+            SUBAGENT_ROUTE_TOOL => self.route_subagent(call),
             other => failed_outcome(
                 call.id,
                 call.tool_name.to_string(),
@@ -312,6 +313,59 @@ impl LocalToolRouter {
             ],
         })
     }
+
+    fn route_subagent(&self, call: &ToolCall) -> LocalToolRouteOutcome {
+        let started_at = unix_ms_now();
+        let mode = match optional_subagent_mode(&call.input) {
+            Ok(mode) => mode,
+            Err(error) => {
+                return failed_outcome(
+                    call.id,
+                    SUBAGENT_ROUTE_TOOL.to_string(),
+                    error.into_tool_error(),
+                );
+            }
+        };
+        let goal = call.input["goal"].as_str().unwrap_or_default();
+        let limit = optional_usize_field(&call.input, "limit").unwrap_or(3);
+        let recommendations = self.subagents.recommend(goal, mode, limit);
+        let recommendation_metadata = recommendations
+            .iter()
+            .map(|recommendation| recommendation.public_metadata())
+            .collect::<Vec<_>>();
+        let text = if recommendations.is_empty() {
+            "No subagent recommendation available.".to_string()
+        } else {
+            recommendations
+                .iter()
+                .map(|recommendation| format!("{} ({})", recommendation.name, recommendation.score))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let output = ToolOutput {
+            text,
+            metadata: json!({
+                "goal": goal,
+                "mode": mode.map(SubagentMode::as_str),
+                "recommendations": recommendation_metadata,
+            }),
+            truncated: false,
+        };
+        let result = ToolResult::succeeded(call.id, output, started_at, unix_ms_now());
+
+        LocalToolRouteOutcome::from_execution(ToolExecution {
+            result,
+            events: vec![
+                ReplEvent::ToolStarted {
+                    name: SUBAGENT_ROUTE_TOOL.to_string(),
+                },
+                ReplEvent::ToolCompleted {
+                    name: SUBAGENT_ROUTE_TOOL.to_string(),
+                    status: ToolStatus::Succeeded,
+                },
+            ],
+        })
+    }
 }
 
 impl LocalToolRouteOutcome {
@@ -406,6 +460,13 @@ fn optional_subagent_mode(input: &Value) -> Result<Option<SubagentMode>, AgentEr
     SubagentMode::parse(mode)
         .map(Some)
         .ok_or_else(|| AgentError::InvalidInput(format!("unsupported subagent mode: {mode}")))
+}
+
+fn optional_usize_field(input: &Value, field: &str) -> Option<usize> {
+    input
+        .get(field)
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
 }
 
 fn validate_tool_input(definition: &ToolDefinition, input: &Value) -> Result<(), AgentError> {
@@ -736,6 +797,34 @@ mod tests {
                 "filesystem.search_files"
             ])
         );
+    }
+
+    #[test]
+    fn routes_subagent_recommendations_as_scored_metadata() {
+        let workspace = TempWorkspace::new();
+        let router = LocalToolRouter::new(&workspace.path).expect("router");
+
+        let outcome = router.route(&call(
+            Uuid::new_v4(),
+            SUBAGENT_ROUTE_TOOL,
+            json!({
+                "goal": "run eval baseline score and regression harness for integrations",
+                "limit": 2
+            }),
+        ));
+
+        assert_eq!(outcome.status(), Some(ToolResultStatus::Succeeded));
+        let output = outcome.result.expect("result").output.expect("output");
+        let recommendations = output.metadata["recommendations"]
+            .as_array()
+            .expect("recommendations");
+        assert_eq!(recommendations.len(), 2);
+        assert_eq!(recommendations[0]["name"], json!("eval-runner"));
+        assert!(recommendations[0]["score"].as_u64().expect("score") >= 60);
+        assert!(recommendations[0]["matchedSignals"]
+            .as_array()
+            .expect("matched signals")
+            .contains(&json!("harness")));
     }
 
     #[test]
