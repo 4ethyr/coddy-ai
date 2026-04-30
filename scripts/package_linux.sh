@@ -16,11 +16,18 @@ case "$ARCH" in
 esac
 
 VERSION="$(node -p "require('$APP_DIR/package.json').version")"
-STAGE_DIR="$OUT_DIR/coddy-linux-$CODDY_ARCH"
 APPIMAGE_NAME="Coddy.AppImage"
 ASSET="$OUT_DIR/coddy-linux-$CODDY_ARCH.tar.gz"
+STAGE_PARENT="$(mktemp -d)"
+STAGE_DIR="$STAGE_PARENT/coddy-linux-$CODDY_ARCH"
+
+cleanup() {
+  rm -r "$STAGE_PARENT"
+}
+trap cleanup EXIT INT TERM
 
 mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/share/coddy" "$STAGE_DIR/share/applications"
+mkdir -p "$OUT_DIR"
 
 echo "Building Coddy backend..."
 cargo build --release -p coddy
@@ -65,7 +72,7 @@ DESKTOP
 
 chmod 755 "$STAGE_DIR/bin/coddy" "$STAGE_DIR/bin/coddy-desktop" "$STAGE_DIR/share/coddy/$APPIMAGE_NAME"
 
-tar -C "$OUT_DIR" -czf "$ASSET" "coddy-linux-$CODDY_ARCH"
+tar -C "$STAGE_PARENT" -czf "$ASSET" "coddy-linux-$CODDY_ARCH"
 sha256sum "$ASSET" > "$ASSET.sha256"
 
 echo "Built $ASSET"

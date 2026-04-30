@@ -56,6 +56,9 @@ jobs:
           npm run typecheck
           npm run typecheck:main
 
+      - name: Test local installer contract
+        run: ./scripts/test_install_local.sh
+
       - name: Build release bundle
         run: ./scripts/package_linux.sh
 

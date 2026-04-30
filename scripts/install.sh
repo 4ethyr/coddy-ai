@@ -91,6 +91,18 @@ fi
 tar -xzf "$archive" -C "$tmp_dir"
 payload="$tmp_dir/coddy-linux-$coddy_arch"
 
+require_payload_file() {
+  candidate="$1"
+  label="$2"
+  if [ ! -f "$candidate" ]; then
+    echo "Invalid Coddy archive: missing $label" >&2
+    exit 1
+  fi
+}
+
+require_payload_file "$payload/bin/coddy" "bin/coddy"
+require_payload_file "$payload/share/coddy/Coddy.AppImage" "share/coddy/Coddy.AppImage"
+
 mkdir -p "$BIN_DIR" "$APP_DIR" "$DESKTOP_DIR"
 cp "$payload/bin/coddy" "$BIN_DIR/coddy"
 cp "$payload/share/coddy/Coddy.AppImage" "$APP_DIR/Coddy.AppImage"

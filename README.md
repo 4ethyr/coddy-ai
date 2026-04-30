@@ -264,6 +264,14 @@ CODDY_DESKTOP_DIR=/tmp/coddy-install-test/share/applications \
 sh scripts/install.sh
 ```
 
+The repository also includes a fast installer contract smoke test that creates a
+minimal local archive and verifies the CLI launcher, desktop launcher, checksum
+flow, and desktop entry without network access:
+
+```bash
+./scripts/test_install_local.sh
+```
+
 ## Running the Local Stack
 
 Use separate terminals.
