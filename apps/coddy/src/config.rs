@@ -168,10 +168,7 @@ mod tests {
         let runtime_dir = unique_runtime_dir();
         let socket_path = socket_path_from_runtime_dir(runtime_dir.clone()).expect("socket path");
 
-        assert_eq!(
-            socket_path,
-            runtime_dir.join("coddy").join("daemon.sock")
-        );
+        assert_eq!(socket_path, runtime_dir.join("coddy").join("daemon.sock"));
         assert!(runtime_dir.join("coddy").exists());
 
         let _ = fs::remove_dir_all(runtime_dir);

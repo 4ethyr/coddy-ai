@@ -7,6 +7,11 @@ import { registerIpcHandlers, cleanupStreams } from './ipcBridge'
 import { startCoddyRuntimeProcess, stopCoddyRuntimeProcess } from './runtimeProcess'
 
 let mainWindow: BrowserWindow | null = null
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+
+if (!hasSingleInstanceLock) {
+  app.quit()
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -37,6 +42,8 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return
+
   const electronProcess = process as NodeJS.Process & {
     resourcesPath?: string
   }
@@ -53,6 +60,13 @@ app.whenReady().then(() => {
       createWindow()
     }
   })
+})
+
+app.on('second-instance', () => {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
 })
 
 app.on('window-all-closed', () => {

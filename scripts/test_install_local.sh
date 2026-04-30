@@ -45,6 +45,17 @@ if [ ! -x "$prefix/bin/coddy-desktop" ]; then
   exit 1
 fi
 
+desktop_output="$(HOME="$prefix/home" "$prefix/bin/coddy-desktop")"
+if ! printf '%s\n' "$desktop_output" | grep -Fq "Coddy Desktop started"; then
+  echo "Installed Coddy desktop launcher did not report startup" >&2
+  exit 1
+fi
+
+if ! grep -Fq "coddy desktop smoke" "$prefix/home/.local/state/coddy/coddy-desktop.log"; then
+  echo "Installed Coddy desktop launcher did not write AppImage output to the Coddy log" >&2
+  exit 1
+fi
+
 if ! grep -Fq "Exec=$prefix/bin/coddy-desktop" "$desktop_dir/ai.coddy.Coddy.desktop"; then
   echo "Desktop entry does not point at the installed launcher" >&2
   exit 1

@@ -17,7 +17,13 @@ use coddy_core::{
 use coddy_core::{ReplShellContext, ScreenAssistMode, SessionStatus};
 use coddy_ipc::CoddyResult;
 use serde::Deserialize;
-use std::{env, ffi::OsString, fs, path::PathBuf, process::Stdio};
+use std::{
+    env,
+    ffi::OsString,
+    fs,
+    path::{Path, PathBuf},
+    process::{Command as StdCommand, Stdio},
+};
 use tokio::net::UnixListener;
 use tokio::process::Command as TokioCommand;
 use tracing::{info, warn};
@@ -319,15 +325,12 @@ async fn main() -> Result<()> {
             if terminal {
                 run_terminal_repl(&config).await
             } else {
-                let result = send_repl_command(
+                open_desktop_ui_or_send_runtime_command(
                     &config,
-                    ReplCommand::OpenUi {
-                        mode: ReplMode::FloatingTerminal,
-                    },
+                    ReplMode::FloatingTerminal,
                     cli.speak,
                 )
-                .await?;
-                print_job_result(result)
+                .await
             }
         }
         Some(Command::Ask { text }) => {
@@ -404,15 +407,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::Ui {
             command: UiCommand::Open { mode },
-        }) => {
-            let result = send_repl_command(
-                &config,
-                ReplCommand::OpenUi { mode: mode.into() },
-                cli.speak,
-            )
-            .await?;
-            print_job_result(result)
-        }
+        }) => open_desktop_ui_or_send_runtime_command(&config, mode.into(), cli.speak).await,
         Some(Command::Screen {
             command: ScreenCommand::Explain { mode, policy },
         }) => {
@@ -551,6 +546,85 @@ async fn send_repl_command(
     );
 
     client.send_command(command, speak).await
+}
+
+async fn open_desktop_ui_or_send_runtime_command(
+    config: &CoddyRuntimeConfig,
+    mode: ReplMode,
+    speak: bool,
+) -> Result<()> {
+    if let Some(launcher) = launch_desktop_app()? {
+        println!("Coddy Desktop started: {}", launcher.display());
+        if let Ok(result) = send_repl_command(config, ReplCommand::OpenUi { mode }, speak).await {
+            print_job_result(result)?;
+        }
+        return Ok(());
+    }
+
+    let result = send_repl_command(config, ReplCommand::OpenUi { mode }, speak).await?;
+    print_job_result(result)
+}
+
+fn launch_desktop_app() -> Result<Option<PathBuf>> {
+    let Some(launcher) = resolve_desktop_launcher() else {
+        return Ok(None);
+    };
+
+    StdCommand::new(&launcher)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to start Coddy Desktop {}", launcher.display()))?;
+
+    Ok(Some(launcher))
+}
+
+fn resolve_desktop_launcher() -> Option<PathBuf> {
+    resolve_desktop_launcher_from(
+        env::var_os("CODDY_DESKTOP_BIN"),
+        env::current_exe().ok(),
+        env::var_os("HOME"),
+        env::var_os("PATH"),
+        Path::exists,
+    )
+}
+
+fn resolve_desktop_launcher_from(
+    explicit: Option<OsString>,
+    current_exe: Option<PathBuf>,
+    home: Option<OsString>,
+    path: Option<OsString>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let explicit = explicit
+        .map(PathBuf::from)
+        .filter(|candidate| exists(candidate));
+    if explicit.is_some() {
+        return explicit;
+    }
+
+    if let Some(current_exe) = current_exe {
+        if let Some(parent) = current_exe.parent() {
+            let sibling = parent.join("coddy-desktop");
+            if exists(&sibling) {
+                return Some(sibling);
+            }
+        }
+    }
+
+    if let Some(home) = home {
+        let local = PathBuf::from(home).join(".local/bin/coddy-desktop");
+        if exists(&local) {
+            return Some(local);
+        }
+    }
+
+    path.as_deref()
+        .into_iter()
+        .flat_map(env::split_paths)
+        .map(|dir| dir.join("coddy-desktop"))
+        .find(|candidate| exists(candidate))
 }
 
 async fn run_terminal_repl(config: &CoddyRuntimeConfig) -> Result<()> {
@@ -1272,8 +1346,8 @@ mod tests {
         let socket_path = root.join("nested").join("coddy.sock");
         std::fs::create_dir_all(socket_path.parent().expect("socket parent"))
             .expect("create socket parent");
-        let _listener = std::os::unix::net::UnixListener::bind(&socket_path)
-            .expect("bind live runtime socket");
+        let _listener =
+            std::os::unix::net::UnixListener::bind(&socket_path).expect("bind live runtime socket");
 
         let error = prepare_runtime_socket_path(&socket_path).expect_err("live socket rejected");
 
@@ -1324,6 +1398,38 @@ mod tests {
             }) => assert!(matches!(mode, CliReplMode::DesktopApp)),
             _ => panic!("unexpected command"),
         }
+    }
+
+    #[test]
+    fn desktop_launcher_resolution_prefers_explicit_env_path() {
+        let resolved = resolve_desktop_launcher_from(
+            Some(OsString::from("/opt/coddy/bin/coddy-desktop")),
+            Some(PathBuf::from("/home/demo/.local/bin/coddy")),
+            Some(OsString::from("/home/demo")),
+            Some(OsString::from("/usr/bin")),
+            |candidate| candidate == Path::new("/opt/coddy/bin/coddy-desktop"),
+        );
+
+        assert_eq!(
+            resolved,
+            Some(PathBuf::from("/opt/coddy/bin/coddy-desktop"))
+        );
+    }
+
+    #[test]
+    fn desktop_launcher_resolution_uses_installed_sibling() {
+        let resolved = resolve_desktop_launcher_from(
+            None,
+            Some(PathBuf::from("/home/demo/.local/bin/coddy")),
+            Some(OsString::from("/home/demo")),
+            Some(OsString::from("/usr/bin")),
+            |candidate| candidate == Path::new("/home/demo/.local/bin/coddy-desktop"),
+        );
+
+        assert_eq!(
+            resolved,
+            Some(PathBuf::from("/home/demo/.local/bin/coddy-desktop"))
+        );
     }
 
     #[test]

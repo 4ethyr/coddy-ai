@@ -112,7 +112,41 @@ cat > "$BIN_DIR/coddy-desktop" <<WRAPPER
 set -eu
 
 APPIMAGE="\${CODDY_APPIMAGE:-$APP_DIR/Coddy.AppImage}"
-exec "\$APPIMAGE" "\$@"
+LOG_DIR="\${XDG_STATE_HOME:-\$HOME/.local/state}/coddy"
+LOG_FILE="\$LOG_DIR/coddy-desktop.log"
+
+has_fuse2() {
+  if command -v ldconfig >/dev/null 2>&1 && ldconfig -p 2>/dev/null | grep -q 'libfuse.so.2'; then
+    return 0
+  fi
+  for candidate in /lib*/libfuse.so.2 /usr/lib*/libfuse.so.2 /lib/*/libfuse.so.2 /usr/lib/*/libfuse.so.2; do
+    if [ -e "\$candidate" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+mkdir -p "\$LOG_DIR"
+
+if ! has_fuse2; then
+  export APPIMAGE_EXTRACT_AND_RUN="\${APPIMAGE_EXTRACT_AND_RUN:-1}"
+fi
+
+export ELECTRON_DISABLE_SANDBOX="\${ELECTRON_DISABLE_SANDBOX:-1}"
+
+if [ "\${CODDY_DESKTOP_FOREGROUND:-0}" = "1" ]; then
+  exec "\$APPIMAGE" "\$@" >>"\$LOG_FILE" 2>&1
+fi
+
+if command -v setsid >/dev/null 2>&1 && setsid --help 2>/dev/null | grep -q -- ' --fork'; then
+  setsid -f "\$APPIMAGE" "\$@" >>"\$LOG_FILE" 2>&1 < /dev/null
+elif command -v setsid >/dev/null 2>&1; then
+  setsid "\$APPIMAGE" "\$@" >>"\$LOG_FILE" 2>&1 < /dev/null &
+else
+  nohup "\$APPIMAGE" "\$@" >>"\$LOG_FILE" 2>&1 < /dev/null &
+fi
+echo "Coddy Desktop started. Logs: \$LOG_FILE"
 WRAPPER
 
 cat > "$DESKTOP_DIR/ai.coddy.Coddy.desktop" <<DESKTOP

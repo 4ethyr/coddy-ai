@@ -260,10 +260,16 @@ After installation:
 coddy-desktop
 ```
 
-starts the Electron app and its bundled Rust runtime. CLI commands such as
-`coddy repl`, `coddy ui open`, `coddy ask`, and `coddy session snapshot` use the
-same local runtime socket while the desktop app or `coddy runtime serve` is
-running. For a terminal-only REPL, use:
+starts the Electron app and its bundled Rust runtime. On systems without
+`libfuse.so.2`, the launcher automatically uses AppImage extract-and-run mode
+and writes desktop logs to `~/.local/state/coddy/coddy-desktop.log` instead of
+printing the AppImage extraction list in the terminal.
+
+CLI commands such as `coddy repl` and `coddy ui open` launch/focus Coddy Desktop
+when the installed `coddy-desktop` launcher is available. `coddy ask`,
+`coddy session snapshot`, and other runtime commands use the same local runtime
+socket while the desktop app or `coddy runtime serve` is running. For a
+terminal-only REPL, use:
 
 ```bash
 coddy repl --terminal
