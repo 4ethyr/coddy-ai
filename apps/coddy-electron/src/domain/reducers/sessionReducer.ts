@@ -43,6 +43,23 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
     case 'SearchContextExtracted':
       return { ...session, status: 'BuildingContext' }
 
+    case 'ContextItemAdded': {
+      const { item } = (event as {
+        ContextItemAdded: { item: ReplSession['workspace_context'][number] }
+      }).ContextItemAdded
+      const existingIndex = session.workspace_context.findIndex(
+        (existing) => existing.id === item.id,
+      )
+      const workspace_context =
+        existingIndex >= 0
+          ? session.workspace_context.map((existing, index) =>
+              index === existingIndex ? item : existing,
+            )
+          : [...session.workspace_context, item]
+
+      return { ...session, status: 'BuildingContext', workspace_context }
+    }
+
     case 'TokenDelta': {
       const { text } = (event as { TokenDelta: { run_id: string; text: string } }).TokenDelta
       return { ...session, status: 'Streaming', streaming_text: session.streaming_text + text }

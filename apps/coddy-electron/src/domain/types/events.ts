@@ -2,6 +2,7 @@
 // Mirrors: crates/coddy-core/src/event.rs
 
 import type { ToolPermission, ToolRiskLevel } from './tools'
+import type { ContextItem } from './session'
 
 export type ShortcutSource = 'GnomeMediaKeys' | 'TauriGlobalShortcut' | 'Cli' | 'SystemdUserService'
 
@@ -73,6 +74,7 @@ export type ReplEvent =
   | { ModelSelected: { model: ModelRef; role: ModelRole } }
   | { SearchStarted: { query: string; provider: string } }
   | { SearchContextExtracted: { provider: string; organic_results: number; ai_overview_present: boolean } }
+  | { ContextItemAdded: { item: ContextItem } }
   | { TokenDelta: { run_id: string; text: string } }
   | { MessageAppended: { message: ReplMessage } }
   | { ToolStarted: { name: string } }
@@ -109,7 +111,7 @@ export interface ReplSessionSnapshotSession {
   selected_model: { provider: string; name: string }
   voice: { enabled: boolean; speaking: boolean; muted: boolean }
   screen_context: unknown
-  workspace_context: unknown[]
+  workspace_context: ContextItem[]
   messages: ReplMessage[]
   active_run: string | null
   tool_activity?: unknown[]

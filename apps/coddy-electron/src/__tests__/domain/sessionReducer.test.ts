@@ -130,6 +130,58 @@ describe('sessionReducer', () => {
     })
   })
 
+  describe('ContextItemAdded', () => {
+    it('adds workspace context and transitions to BuildingContext', () => {
+      const session = testSession()
+      const event: ReplEvent = {
+        ContextItemAdded: {
+          item: {
+            id: 'tool:filesystem.read_file:src/main.rs',
+            label: 'filesystem.read_file: src/main.rs',
+            sensitive: false,
+          },
+        },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result.status).toBe('BuildingContext')
+      expect(result.workspace_context).toEqual([
+        {
+          id: 'tool:filesystem.read_file:src/main.rs',
+          label: 'filesystem.read_file: src/main.rs',
+          sensitive: false,
+        },
+      ])
+    })
+
+    it('upserts existing workspace context by id', () => {
+      const session = testSession({
+        workspace_context: [
+          {
+            id: 'tool:filesystem.read_file:.env',
+            label: 'filesystem.read_file: .env',
+            sensitive: false,
+          },
+        ],
+      })
+      const event: ReplEvent = {
+        ContextItemAdded: {
+          item: {
+            id: 'tool:filesystem.read_file:.env',
+            label: 'filesystem.read_file: .env',
+            sensitive: true,
+          },
+        },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result.workspace_context).toHaveLength(1)
+      expect(result.workspace_context[0]?.sensitive).toBe(true)
+    })
+  })
+
   describe('TokenDelta', () => {
     it('transitions to Streaming', () => {
       const session = testSession({ active_run: 'run-001' })

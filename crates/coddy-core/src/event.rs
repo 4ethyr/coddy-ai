@@ -88,6 +88,9 @@ pub enum ReplEvent {
         organic_results: usize,
         ai_overview_present: bool,
     },
+    ContextItemAdded {
+        item: crate::ContextItem,
+    },
     TokenDelta {
         run_id: Uuid,
         text: String,

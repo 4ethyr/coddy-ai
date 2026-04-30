@@ -27,6 +27,15 @@ describe('Domain type contracts', () => {
         },
         SearchStarted: { SearchStarted: { query: 'Rust docs', provider: 'google' } },
         SearchContextExtracted: { SearchContextExtracted: { provider: 'google', organic_results: 5, ai_overview_present: false } },
+        ContextItemAdded: {
+          ContextItemAdded: {
+            item: {
+              id: 'tool:filesystem.read_file:src/main.rs',
+              label: 'filesystem.read_file: src/main.rs',
+              sensitive: false,
+            },
+          },
+        },
         TokenDelta: { TokenDelta: { run_id: 'run-1', text: 'Hello' } },
         MessageAppended: { MessageAppended: { message: { id: 'm1', role: 'user', text: 'hi' } } },
         ToolStarted: { ToolStarted: { name: 'search_web' } },
@@ -60,7 +69,7 @@ describe('Domain type contracts', () => {
         Error: { Error: { code: 'E001', message: 'Something went wrong' } },
       }
 
-      expect(Object.keys(events)).toHaveLength(26)
+      expect(Object.keys(events)).toHaveLength(27)
 
       // Verify each event is correctly typed
       for (const [key, event] of Object.entries(events)) {

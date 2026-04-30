@@ -141,6 +141,18 @@ impl ReplSession {
             crate::ReplEvent::SearchContextExtracted { .. } => {
                 self.status = SessionStatus::BuildingContext;
             }
+            crate::ReplEvent::ContextItemAdded { item } => {
+                if let Some(existing) = self
+                    .workspace_context
+                    .iter_mut()
+                    .find(|existing| existing.id == item.id)
+                {
+                    *existing = item.clone();
+                } else {
+                    self.workspace_context.push(item.clone());
+                }
+                self.status = SessionStatus::BuildingContext;
+            }
             crate::ReplEvent::TokenDelta { run_id, .. } => {
                 self.active_run.get_or_insert(*run_id);
                 self.status = SessionStatus::Streaming;
@@ -193,5 +205,38 @@ impl ReplSession {
                 self.status = SessionStatus::Error;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_item_added_upserts_workspace_context() {
+        let mut session = ReplSession::new(
+            ReplMode::DesktopApp,
+            crate::ModelRef {
+                provider: "openai".to_string(),
+                name: "gpt-test".to_string(),
+            },
+        );
+        let first = ContextItem {
+            id: "tool:filesystem.read_file:src/main.rs".to_string(),
+            label: "filesystem.read_file: src/main.rs".to_string(),
+            sensitive: false,
+        };
+        let updated = ContextItem {
+            id: first.id.clone(),
+            label: "filesystem.read_file: src/main.rs".to_string(),
+            sensitive: true,
+        };
+
+        session.apply_event(&crate::ReplEvent::ContextItemAdded { item: first });
+        session.apply_event(&crate::ReplEvent::ContextItemAdded { item: updated });
+
+        assert_eq!(session.workspace_context.len(), 1);
+        assert!(session.workspace_context[0].sensitive);
+        assert_eq!(session.status, SessionStatus::BuildingContext);
     }
 }

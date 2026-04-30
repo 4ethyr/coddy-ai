@@ -1,11 +1,13 @@
 use coddy_agent::{
     AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError, ChatRequest, ChatResponse,
     ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, LIST_FILES_TOOL,
+    READ_FILE_TOOL, SEARCH_FILES_TOOL,
 };
 use coddy_core::{
-    ApprovalPolicy, ContextPolicy, ModelCredential, ModelRef, ReplCommand, ReplEvent,
+    ApprovalPolicy, ContextItem, ContextPolicy, ModelCredential, ModelRef, ReplCommand, ReplEvent,
     ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode, ReplSession,
-    ReplSessionSnapshot, ToolCall, ToolDefinition, ToolName, ToolResultStatus, ToolRiskLevel,
+    ReplSessionSnapshot, ToolCall, ToolDefinition, ToolName, ToolOutput, ToolResultStatus,
+    ToolRiskLevel,
 };
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
@@ -581,6 +583,14 @@ impl CoddyRuntime {
 
             match result.status {
                 ToolResultStatus::Succeeded => {
+                    if let Some(output) = result.output.as_ref() {
+                        if let Some(item) = context_item_from_tool_output(&tool_name, output) {
+                            self.publish_event_with_run_now(
+                                ReplEvent::ContextItemAdded { item },
+                                context.run_id,
+                            );
+                        }
+                    }
                     let text = result
                         .output
                         .map(|output| {
@@ -940,6 +950,75 @@ fn build_tool_followup_system_prompt(base_prompt: &str) -> String {
     ]
     .join("\n");
     format!("{base_prompt}\n\n{followup}")
+}
+
+fn context_item_from_tool_output(tool_name: &ToolName, output: &ToolOutput) -> Option<ContextItem> {
+    let path = output.metadata.get("path").and_then(|value| value.as_str());
+    let item = match tool_name.as_str() {
+        LIST_FILES_TOOL => {
+            let path = path.unwrap_or(".");
+            ContextItem {
+                id: context_item_id(tool_name.as_str(), path),
+                label: format!("{}: {}", tool_name.as_str(), safe_context_label(path)),
+                sensitive: path_looks_sensitive(path),
+            }
+        }
+        READ_FILE_TOOL => {
+            let path = path?;
+            ContextItem {
+                id: context_item_id(tool_name.as_str(), path),
+                label: format!("{}: {}", tool_name.as_str(), safe_context_label(path)),
+                sensitive: path_looks_sensitive(path),
+            }
+        }
+        SEARCH_FILES_TOOL => {
+            let path = path.unwrap_or(".");
+            let query = output
+                .metadata
+                .get("query")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let safe_query = safe_context_label(query);
+            ContextItem {
+                id: context_item_id(tool_name.as_str(), &format!("{path}:{safe_query}")),
+                label: format!(
+                    "{}: {} query `{}`",
+                    tool_name.as_str(),
+                    safe_context_label(path),
+                    truncate_context_text(&safe_query, 80)
+                ),
+                sensitive: path_looks_sensitive(path) || safe_query != query,
+            }
+        }
+        _ => return None,
+    };
+    Some(item)
+}
+
+fn context_item_id(tool_name: &str, source: &str) -> String {
+    format!(
+        "tool:{tool_name}:{}",
+        truncate_context_text(&safe_context_label(source), 160)
+    )
+}
+
+fn safe_context_label(label: &str) -> String {
+    redact_context_text(label.trim())
+}
+
+fn path_looks_sensitive(path: &str) -> bool {
+    let normalized = path.to_ascii_lowercase();
+    normalized == ".env"
+        || normalized.ends_with("/.env")
+        || normalized.contains(".env.")
+        || normalized.contains("secret")
+        || normalized.contains("credential")
+        || normalized.contains("token")
+        || normalized.ends_with(".pem")
+        || normalized.ends_with(".p12")
+        || normalized.ends_with(".pfx")
+        || normalized.ends_with("id_rsa")
+        || normalized.ends_with("id_ed25519")
 }
 
 fn format_workspace_context(items: &[coddy_core::ContextItem]) -> String {
@@ -1942,6 +2021,66 @@ mod tests {
             .content
             .contains("OPENAI_API_KEY=sk-[REDACTED]"));
         assert!(!tool_message.content.contains("sk-secret-token"));
+    }
+
+    #[test]
+    fn ask_command_records_read_tool_context_without_secret_content() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write(".env", "OPENAI_API_KEY=sk-secret-token\n");
+        let (chat_client, _requests) = QueuedChatClient::new(vec![
+            ChatResponse {
+                text: "I will inspect the requested file.".to_string(),
+                deltas: vec!["I will inspect the requested file.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-1".to_string()),
+                    name: READ_FILE_TOOL.to_string(),
+                    arguments: json!({ "path": ".env", "max_bytes": 120 }),
+                }],
+            },
+            ChatResponse::from_text("The env file was inspected safely."),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect the env file".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let snapshot = runtime.snapshot();
+        let context_item = snapshot
+            .session
+            .workspace_context
+            .iter()
+            .find(|item| item.id == "tool:filesystem.read_file:.env")
+            .expect("read file context item");
+
+        assert_eq!(context_item.label, "filesystem.read_file: .env");
+        assert!(context_item.sensitive);
+        assert!(!context_item.label.contains("sk-secret-token"));
     }
 
     #[test]
