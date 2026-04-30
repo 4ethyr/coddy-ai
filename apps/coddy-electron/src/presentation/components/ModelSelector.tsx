@@ -394,7 +394,8 @@ function ProviderGroup({
               {provider.endpointLabel ?? 'Provider endpoint'}
             </span>
             <input
-              type="url"
+              type="text"
+              autoComplete="off"
               value={draft.endpoint}
               placeholder={provider.endpointPlaceholder ?? 'https://...'}
               onChange={(event) => onDraftChange('endpoint', event.target.value)}

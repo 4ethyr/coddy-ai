@@ -126,27 +126,42 @@ function createSimBridge(daemon: SimDaemon) {
         // ---- Commands ----
         case 'repl:ask': {
           const text = args[0] as string
-          // Simulate: daemon processes, emits events
           const runId = `run-${Date.now()}`
-          pushEvent(daemon, watchListeners, {
-            RunStarted: { run_id: runId },
-          })
+          const assistantText = `Echo: ${text}`
           pushEvent(daemon, watchListeners, {
             MessageAppended: {
               message: {
-                id: `msg-${Date.now()}`,
+                id: `msg-${daemon.currentSequence + 1}`,
                 role: 'user',
                 text,
               },
             },
           })
           pushEvent(daemon, watchListeners, {
-            TokenDelta: { run_id: runId, text: `Echo: ${text}` },
+            RunStarted: { run_id: runId },
+          })
+          pushEvent(daemon, watchListeners, {
+            IntentDetected: {
+              intent: 'AskTechnicalQuestion',
+              confidence: 0.8,
+            },
+          })
+          pushEvent(daemon, watchListeners, {
+            TokenDelta: { run_id: runId, text: assistantText },
+          })
+          pushEvent(daemon, watchListeners, {
+            MessageAppended: {
+              message: {
+                id: `msg-${daemon.currentSequence + 1}`,
+                role: 'assistant',
+                text: assistantText,
+              },
+            },
           })
           pushEvent(daemon, watchListeners, {
             RunCompleted: { run_id: runId },
           })
-          return Promise.resolve({ text: `Echo: ${text}` })
+          return Promise.resolve({ text: assistantText })
         }
 
         case 'voice:capture':
@@ -280,6 +295,7 @@ function pushEvent(
   listeners: Array<(data: unknown) => void>,
   event: ReplEvent,
 ): void {
+  applyEventToSnapshot(daemon, event)
   daemon.currentSequence++
   const envelope: ReplEventEnvelope = {
     sequence: daemon.currentSequence,
@@ -291,6 +307,35 @@ function pushEvent(
   daemon.events.push(envelope)
   for (const listener of listeners) {
     listener({ event: envelope, done: false, streamId: 'sim-stream' })
+  }
+}
+
+function applyEventToSnapshot(daemon: SimDaemon, event: ReplEvent): void {
+  if ('MessageAppended' in event) {
+    daemon.snapshotSession.messages.push(event.MessageAppended.message)
+    daemon.snapshotSession.streaming_text = ''
+    return
+  }
+
+  if ('RunStarted' in event) {
+    daemon.snapshotSession.active_run = event.RunStarted.run_id
+    daemon.snapshotSession.status = 'Thinking'
+    daemon.snapshotSession.streaming_text = ''
+    return
+  }
+
+  if ('TokenDelta' in event) {
+    daemon.snapshotSession.status = 'Streaming'
+    daemon.snapshotSession.streaming_text = `${
+      daemon.snapshotSession.streaming_text ?? ''
+    }${event.TokenDelta.text}`
+    return
+  }
+
+  if ('RunCompleted' in event) {
+    daemon.snapshotSession.active_run = null
+    daemon.snapshotSession.status = 'Idle'
+    daemon.snapshotSession.streaming_text = ''
   }
 }
 
@@ -507,6 +552,33 @@ describe('IPC integration', () => {
     it('sends text and returns result', async () => {
       const result = await client.ask('quem foi rousseau?')
       expect(result.text).toContain('rousseau')
+    })
+
+    it('streams and persists user and assistant messages through events', async () => {
+      const result = await client.ask('liste os arquivos')
+      const snapshot = await client.getSnapshot()
+      const batch = await client.getEventsAfter(0)
+
+      expect(result.text).toBe('Echo: liste os arquivos')
+      expect(
+        snapshot.session.messages.map((message) => [
+          message.role,
+          message.text,
+        ]),
+      ).toEqual([
+        ['user', 'liste os arquivos'],
+        ['assistant', 'Echo: liste os arquivos'],
+      ])
+      expect(snapshot.session.active_run).toBeNull()
+      expect(snapshot.session.status).toBe('Idle')
+      expect(batch.events.map((event) => Object.keys(event.event)[0])).toEqual([
+        'MessageAppended',
+        'RunStarted',
+        'IntentDetected',
+        'TokenDelta',
+        'MessageAppended',
+        'RunCompleted',
+      ])
     })
   })
 

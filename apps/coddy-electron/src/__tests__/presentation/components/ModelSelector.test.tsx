@@ -157,6 +157,37 @@ describe('ModelSelector', () => {
     })
   })
 
+  it('allows Vertex model loading with a region endpoint value', async () => {
+    const onLoadModels = vi.fn(modelLoader)
+    render(
+      <ModelSelector
+        model={{ provider: 'vertex', name: 'gemini-2.5-flash' }}
+        onLoadModels={onLoadModels}
+      />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Active model vertex/gemini-2.5-flash',
+      }),
+    )
+
+    const vertexGroup = providerGroup('Google Vertex')
+    await userEvent.type(
+      within(vertexGroup).getByPlaceholderText(
+        'global, us-east5 ou https://...',
+      ),
+      'us-east5',
+    )
+    await userEvent.click(within(vertexGroup).getByRole('button', { name: 'Load' }))
+
+    expect(onLoadModels).toHaveBeenCalledWith({
+      provider: 'vertex',
+      apiKey: undefined,
+      endpoint: 'us-east5',
+    })
+  })
+
   it('loads provider models with a request-scoped API key', async () => {
     const onLoadModels = vi.fn(modelLoader)
     const onSelect = vi.fn()
