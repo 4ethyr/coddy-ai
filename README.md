@@ -214,6 +214,56 @@ Build the Rust workspace:
 cargo build
 ```
 
+## Installable Linux Build
+
+Coddy can be packaged as a Linux desktop bundle containing:
+
+- the Rust `coddy` backend CLI;
+- the Electron/React frontend as an AppImage;
+- a `coddy-desktop` launcher;
+- a desktop entry for application menus.
+
+Build the local release bundle:
+
+```bash
+./scripts/package_linux.sh
+```
+
+The script produces:
+
+```text
+dist/coddy-linux-x64.tar.gz
+dist/coddy-linux-x64.tar.gz.sha256
+```
+
+For GitHub releases, upload those two files as release assets. Users can then
+install with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/4ethyr/coddy-ai/main/scripts/install.sh -o /tmp/coddy-install.sh
+sh /tmp/coddy-install.sh
+```
+
+To install a specific release tag:
+
+```bash
+CODDY_VERSION=v0.1.0 sh /tmp/coddy-install.sh
+```
+
+The installer writes only to the user's local prefix by default:
+`~/.local/bin`, `~/.local/share/coddy`, and
+`~/.local/share/applications`.
+
+For local/offline validation, point the installer at an existing release
+archive and an isolated prefix:
+
+```bash
+CODDY_ARCHIVE=dist/coddy-linux-x64.tar.gz \
+CODDY_INSTALL_PREFIX=/tmp/coddy-install-test \
+CODDY_DESKTOP_DIR=/tmp/coddy-install-test/share/applications \
+sh scripts/install.sh
+```
+
 ## Running the Local Stack
 
 Use separate terminals.
@@ -444,7 +494,7 @@ Near-term priorities:
 - add MCP client/server registry support;
 - implement subagent orchestration;
 - expand evals for coding-agent behavior and regression detection;
-- add packaged desktop builds and installer workflow.
+- add signed release artifacts and automatic update metadata.
 
 ## License
 

@@ -6,6 +6,7 @@ import { createInterface } from 'readline'
 import * as path from 'path'
 import { app, ipcMain, BrowserWindow, screen, safeStorage } from 'electron'
 import type { Rectangle } from 'electron'
+import { resolveCoddyBinaryPath } from './coddyBinary'
 import {
   listProviderModels,
   type ModelProviderListPayload,
@@ -18,8 +19,6 @@ import {
 } from './secureCredentialStore'
 import { buildRuntimeCredentialEnvironment } from './runtimeCredentialBridge'
 import { redactSensitiveLogText } from './sensitiveLogRedaction'
-
-const CODDY_BIN = process.env.CODDY_BIN || 'coddy'
 
 type ModelRef = {
   provider: string
@@ -75,7 +74,14 @@ type MultiagentEvalPayload = {
 // ---------------------------------------------------------------------------
 
 function coddySpawn(args: string[], env: Record<string, string> = {}): ChildProcess {
-  const child = spawn(CODDY_BIN, args, {
+  const electronProcess = process as NodeJS.Process & {
+    resourcesPath?: string
+  }
+  const child = spawn(resolveCoddyBinaryPath({
+    appPath: app.getAppPath(),
+    env: process.env,
+    resourcesPath: electronProcess.resourcesPath,
+  }), args, {
     env: {
       ...process.env,
       ...env,
