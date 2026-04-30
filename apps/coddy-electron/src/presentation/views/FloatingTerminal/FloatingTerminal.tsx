@@ -256,8 +256,15 @@ export function FloatingTerminal() {
                     key={activity.id}
                     className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-3"
                   >
-                    <span className="truncate">
-                      {activity.name} [{activity.mode}]
+                    <span className="flex min-w-0 flex-col">
+                      <span className="truncate">
+                        {activity.name} [{activity.mode}]
+                      </span>
+                      {activity.required_output_fields.length > 0 && (
+                        <span className="truncate text-[10px] uppercase tracking-[0.14em] text-muted">
+                          output: {formatRequiredOutputFields(activity.required_output_fields)}
+                        </span>
+                      )}
                     </span>
                     <span
                       className={
@@ -382,6 +389,12 @@ export function FloatingTerminal() {
       )}
     </main>
   )
+}
+
+function formatRequiredOutputFields(fields: string[]): string {
+  const visibleFields = fields.slice(0, 3).join(', ')
+  const remaining = fields.length > 3 ? ` +${fields.length - 3}` : ''
+  return `${visibleFields}${remaining}`
 }
 
 function SystemLine({ text }: { text: string }) {

@@ -5,6 +5,7 @@
 import type { ReplSession } from '@/domain/types/session'
 import type {
   ReplEvent,
+  SubagentHandoffPrepared,
   SubagentLifecycleStatus,
   SubagentLifecycleUpdate,
   ToolStatus,
@@ -125,8 +126,30 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
     case 'SubagentRouted':
       return { ...session, status: 'Thinking' }
 
-    case 'SubagentHandoffPrepared':
-      return { ...session, status: 'Thinking' }
+    case 'SubagentHandoffPrepared': {
+      const { handoff } = (event as {
+        SubagentHandoffPrepared: {
+          handoff: SubagentHandoffPrepared
+        }
+      }).SubagentHandoffPrepared
+      const previousActivity = session.subagent_activity ?? []
+      const activityId = `${handoff.name}:${handoff.mode}`
+      const existingIndex = previousActivity.findIndex(
+        (item) => item.id === activityId,
+      )
+      const activity = subagentActivityFromHandoffPrepared(
+        existingIndex >= 0 ? previousActivity[existingIndex] : undefined,
+        handoff,
+      )
+      const subagent_activity =
+        existingIndex >= 0
+          ? previousActivity.map((item, index) =>
+              index === existingIndex ? activity : item,
+            )
+          : [...previousActivity, activity]
+
+      return { ...session, status: 'Thinking', subagent_activity }
+    }
 
     case 'SubagentLifecycleUpdated': {
       const { update } = (event as {
@@ -276,7 +299,24 @@ function subagentActivityFromLifecycleUpdate(
     mode: update.mode,
     status,
     readiness_score: update.readiness_score,
+    required_output_fields: previous?.required_output_fields ?? [],
     reason,
+  }
+}
+
+function subagentActivityFromHandoffPrepared(
+  previous: ReplSession['subagent_activity'][number] | undefined,
+  handoff: SubagentHandoffPrepared,
+): ReplSession['subagent_activity'][number] {
+  const reason = handoffReadinessReason(handoff)
+  return {
+    id: `${handoff.name}:${handoff.mode}`,
+    name: handoff.name,
+    mode: handoff.mode,
+    status: reason ? 'Blocked' : previous?.status ?? 'Prepared',
+    readiness_score: handoff.readiness_score,
+    required_output_fields: handoff.required_output_fields,
+    reason: reason ?? previous?.reason ?? null,
   }
 }
 
@@ -309,6 +349,16 @@ function readinessBlockReason(update: SubagentLifecycleUpdate): string | null {
   if (update.reason) {
     reasons.push(update.reason)
   }
+
+  return reasons.length > 0 ? reasons.join('; ') : null
+}
+
+function handoffReadinessReason(handoff: SubagentHandoffPrepared): string | null {
+  const reasons: string[] = []
+  if (handoff.readiness_score < SUBAGENT_READY_SCORE) {
+    reasons.push(`readiness score ${handoff.readiness_score} is below execution threshold`)
+  }
+  reasons.push(...handoff.readiness_issues)
 
   return reasons.length > 0 ? reasons.join('; ') : null
 }

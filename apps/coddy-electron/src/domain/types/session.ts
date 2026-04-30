@@ -56,6 +56,7 @@ export interface SubagentActivity {
   mode: string
   status: SubagentLifecycleStatus
   readiness_score: number
+  required_output_fields: string[]
   reason: string | null
 }
 

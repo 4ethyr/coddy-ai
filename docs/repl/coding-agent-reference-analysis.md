@@ -783,7 +783,8 @@ Escopo entregue:
   estruturada como `Completed` somente quando todos os campos obrigatorios do
   schema foram retornados sem propriedades inesperadas;
 - `SubagentHandoffPrepared` agora preserva `required_output_fields`, alinhando
-  UI, runtime e futuro executor sobre o contrato de saida esperado;
+  UI, runtime e futuro executor sobre o contrato de saida esperado; o snapshot
+  e os paineis agentic exibem esse contrato por subagent;
 - o system prompt recebe um resumo do score, mas o evento preserva valores
   completos para observabilidade;
 - o frontend exibe a atividade de subagents no painel agentic mantendo o padrao

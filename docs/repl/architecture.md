@@ -163,7 +163,8 @@ malformado avance para execucao. A fundacao tambem inclui validacao de saida
 estruturada via `SubagentOutputContract`, permitindo que o futuro executor so
 publique `Completed` quando o JSON retornado cumprir o schema do handoff. O
 evento `SubagentHandoffPrepared` carrega `required_output_fields` para manter UI,
-runtime e executor alinhados no mesmo contrato.
+runtime e executor alinhados no mesmo contrato; `subagent_activity` preserva
+esses campos no snapshot e o frontend os exibe no painel agentic.
 
 ### `crates/coddy-core`
 

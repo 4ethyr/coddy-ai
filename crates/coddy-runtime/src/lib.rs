@@ -2409,6 +2409,16 @@ mod tests {
             SubagentLifecycleStatus::Prepared
         );
         assert_eq!(snapshot.session.subagent_activity[0].readiness_score, 100);
+        assert_eq!(
+            snapshot.session.subagent_activity[0].required_output_fields,
+            vec![
+                "score".to_string(),
+                "passed".to_string(),
+                "failedChecks".to_string(),
+                "metrics".to_string(),
+                "recommendations".to_string()
+            ]
+        );
     }
 
     #[test]

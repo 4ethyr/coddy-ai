@@ -94,6 +94,7 @@ describe('DesktopApp', () => {
           mode: 'read-only',
           status: 'Blocked',
           readiness_score: 80,
+          required_output_fields: ['riskLevel', 'findings'],
           reason: 'validation checklist is underspecified',
         },
       ],
@@ -102,7 +103,9 @@ describe('DesktopApp', () => {
     render(<DesktopApp />)
 
     expect(
-      screen.getByText('subagent.security-reviewer // Blocked // readiness=80'),
+      screen.getByText(
+        'subagent.security-reviewer // Blocked // readiness=80 // output=riskLevel, findings',
+      ),
     ).toBeInTheDocument()
   })
 })

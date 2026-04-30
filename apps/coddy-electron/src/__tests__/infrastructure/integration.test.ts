@@ -362,12 +362,18 @@ function applyEventToSnapshot(daemon: SimDaemon, event: ReplEvent): void {
 
   if ('SubagentLifecycleUpdated' in event) {
     const update = event.SubagentLifecycleUpdated.update
+    const activityId = `${update.name}:${update.mode}`
+    const current = (daemon.snapshotSession.subagent_activity ?? []) as Array<{
+      id: string
+      required_output_fields?: string[]
+    }>
+    const existingIndex = current.findIndex((item) => item.id === activityId)
+    const existingActivity = existingIndex >= 0 ? current[existingIndex] : undefined
     const activity = {
       ...update,
-      id: `${update.name}:${update.mode}`,
+      id: activityId,
+      required_output_fields: existingActivity?.required_output_fields ?? [],
     }
-    const current = (daemon.snapshotSession.subagent_activity ?? []) as Array<typeof activity>
-    const existingIndex = current.findIndex((item) => item.id === activity.id)
     daemon.snapshotSession.subagent_activity =
       existingIndex >= 0
         ? current.map((item, index) => (index === existingIndex ? activity : item))
@@ -590,6 +596,7 @@ describe('IPC integration', () => {
           mode: 'evaluation',
           status: 'Prepared',
           readiness_score: 100,
+          required_output_fields: [],
           reason: null,
         },
       ])

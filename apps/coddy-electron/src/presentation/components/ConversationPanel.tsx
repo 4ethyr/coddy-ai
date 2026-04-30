@@ -138,7 +138,7 @@ function PlanOfAttack({ session }: { session: ReplSession }) {
             subagentActivity.map((activity) => (
               <TaskStep
                 key={activity.id}
-                label={`subagent.${activity.name} // ${activity.status} // readiness=${activity.readiness_score}`}
+                label={`subagent.${activity.name} // ${activity.status} // readiness=${activity.readiness_score}${subagentOutputSuffix(activity.required_output_fields)}`}
                 state={subagentState(activity.status)}
               />
             ))
@@ -149,6 +149,13 @@ function PlanOfAttack({ session }: { session: ReplSession }) {
       </div>
     </section>
   )
+}
+
+function subagentOutputSuffix(fields: string[]): string {
+  if (fields.length === 0) return ''
+  const visibleFields = fields.slice(0, 3).join(', ')
+  const remaining = fields.length > 3 ? ` +${fields.length - 3}` : ''
+  return ` // output=${visibleFields}${remaining}`
 }
 
 function subagentState(

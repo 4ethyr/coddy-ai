@@ -60,6 +60,8 @@ pub struct SubagentActivity {
     pub mode: String,
     pub status: crate::SubagentLifecycleStatus,
     pub readiness_score: u8,
+    #[serde(default)]
+    pub required_output_fields: Vec<String>,
     pub reason: Option<String>,
 }
 
@@ -186,7 +188,18 @@ impl ReplSession {
             crate::ReplEvent::SubagentRouted { .. } => {
                 self.status = SessionStatus::Thinking;
             }
-            crate::ReplEvent::SubagentHandoffPrepared { .. } => {
+            crate::ReplEvent::SubagentHandoffPrepared { handoff } => {
+                let existing_index = self
+                    .subagent_activity
+                    .iter()
+                    .position(|existing| existing.id == SubagentActivity::id_for_handoff(handoff));
+                let previous = existing_index.and_then(|index| self.subagent_activity.get(index));
+                let activity = SubagentActivity::from_handoff_prepared(previous, handoff);
+                if let Some(index) = existing_index {
+                    self.subagent_activity[index] = activity;
+                } else {
+                    self.subagent_activity.push(activity);
+                }
                 self.status = SessionStatus::Thinking;
             }
             crate::ReplEvent::SubagentLifecycleUpdated { update } => {
@@ -256,6 +269,31 @@ impl ReplSession {
 }
 
 impl SubagentActivity {
+    fn from_handoff_prepared(
+        previous: Option<&Self>,
+        handoff: &crate::SubagentHandoffPrepared,
+    ) -> Self {
+        let reason = handoff_readiness_reason(handoff);
+        let status = reason
+            .as_ref()
+            .map(|_| crate::SubagentLifecycleStatus::Blocked)
+            .unwrap_or_else(|| {
+                previous
+                    .map(|activity| activity.status)
+                    .unwrap_or(crate::SubagentLifecycleStatus::Prepared)
+            });
+
+        Self {
+            id: Self::id_for_handoff(handoff),
+            name: handoff.name.clone(),
+            mode: handoff.mode.clone(),
+            status,
+            readiness_score: handoff.readiness_score,
+            required_output_fields: handoff.required_output_fields.clone(),
+            reason: reason.or_else(|| previous.and_then(|activity| activity.reason.clone())),
+        }
+    }
+
     fn from_lifecycle_update(
         previous: Option<&Self>,
         update: &crate::SubagentLifecycleUpdate,
@@ -271,12 +309,36 @@ impl SubagentActivity {
             mode: update.mode.clone(),
             status,
             readiness_score: update.readiness_score,
+            required_output_fields: previous
+                .map(|activity| activity.required_output_fields.clone())
+                .unwrap_or_default(),
             reason,
         }
     }
 
     fn id_for(update: &crate::SubagentLifecycleUpdate) -> String {
         format!("{}:{}", update.name, update.mode)
+    }
+
+    fn id_for_handoff(handoff: &crate::SubagentHandoffPrepared) -> String {
+        format!("{}:{}", handoff.name, handoff.mode)
+    }
+}
+
+fn handoff_readiness_reason(handoff: &crate::SubagentHandoffPrepared) -> Option<String> {
+    let mut reasons = Vec::new();
+    if handoff.readiness_score < SUBAGENT_READY_SCORE {
+        reasons.push(format!(
+            "readiness score {} is below execution threshold",
+            handoff.readiness_score
+        ));
+    }
+    reasons.extend(handoff.readiness_issues.iter().cloned());
+
+    if reasons.is_empty() {
+        None
+    } else {
+        Some(reasons.join("; "))
     }
 }
 
@@ -425,6 +487,60 @@ mod tests {
         );
         assert_eq!(session.subagent_activity[0].readiness_score, 80);
         assert_eq!(session.status, SessionStatus::Thinking);
+    }
+
+    #[test]
+    fn subagent_handoff_prepared_preserves_output_contract_in_activity() {
+        let mut session = ReplSession::new(
+            ReplMode::DesktopApp,
+            crate::ModelRef {
+                provider: "openai".to_string(),
+                name: "gpt-test".to_string(),
+            },
+        );
+
+        session.apply_event(&crate::ReplEvent::SubagentHandoffPrepared {
+            handoff: crate::SubagentHandoffPrepared {
+                name: "eval-runner".to_string(),
+                mode: "evaluation".to_string(),
+                approval_required: true,
+                allowed_tools: vec!["shell.run".to_string()],
+                required_output_fields: vec![
+                    "score".to_string(),
+                    "passed".to_string(),
+                    "failedChecks".to_string(),
+                ],
+                timeout_ms: 60_000,
+                max_context_tokens: 8_000,
+                validation_checklist: vec!["Report deterministic metrics.".to_string()],
+                safety_notes: vec!["Do not expose secrets.".to_string()],
+                readiness_score: 100,
+                readiness_issues: Vec::new(),
+            },
+        });
+        session.apply_event(&crate::ReplEvent::SubagentLifecycleUpdated {
+            update: crate::SubagentLifecycleUpdate {
+                name: "eval-runner".to_string(),
+                mode: "evaluation".to_string(),
+                status: crate::SubagentLifecycleStatus::Prepared,
+                readiness_score: 100,
+                reason: None,
+            },
+        });
+
+        assert_eq!(session.subagent_activity.len(), 1);
+        assert_eq!(
+            session.subagent_activity[0].required_output_fields,
+            vec![
+                "score".to_string(),
+                "passed".to_string(),
+                "failedChecks".to_string()
+            ]
+        );
+        assert_eq!(
+            session.subagent_activity[0].status,
+            crate::SubagentLifecycleStatus::Prepared
+        );
     }
 
     #[test]

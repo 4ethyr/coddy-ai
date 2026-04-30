@@ -63,6 +63,7 @@ describe('sessionReducer', () => {
             mode: 'evaluation',
             status: 'Prepared',
             readiness_score: 100,
+            required_output_fields: ['score', 'passed'],
             reason: null,
           },
         ],
@@ -562,6 +563,17 @@ describe('sessionReducer', () => {
 
       expect(result.status).toBe('Thinking')
       expect(result.tool_activity).toEqual(session.tool_activity)
+      expect(result.subagent_activity).toEqual([
+        {
+          id: 'eval-runner:evaluation',
+          name: 'eval-runner',
+          mode: 'evaluation',
+          status: 'Prepared',
+          readiness_score: 100,
+          required_output_fields: ['score', 'passed'],
+          reason: null,
+        },
+      ])
     })
 
     it('SubagentLifecycleUpdated upserts subagent activity without mutating tool activity', () => {
@@ -594,6 +606,7 @@ describe('sessionReducer', () => {
           mode: 'evaluation',
           status: 'Prepared',
           readiness_score: 100,
+          required_output_fields: [],
           reason: null,
         },
       ])
@@ -609,6 +622,7 @@ describe('sessionReducer', () => {
             mode: 'workspace-write',
             status: 'Prepared',
             readiness_score: 100,
+            required_output_fields: ['changedFiles', 'summary'],
             reason: null,
           },
         ],
@@ -634,6 +648,7 @@ describe('sessionReducer', () => {
           mode: 'workspace-write',
           status: 'Blocked',
           readiness_score: 80,
+          required_output_fields: ['changedFiles', 'summary'],
           reason: 'workspace-write handoff must include preview edit capability',
         },
       ])
@@ -662,6 +677,7 @@ describe('sessionReducer', () => {
           mode: 'workspace-write',
           status: 'Blocked',
           readiness_score: 100,
+          required_output_fields: [],
           reason: 'invalid subagent lifecycle transition: None -> Running',
         },
       ])
@@ -714,6 +730,7 @@ describe('sessionReducer', () => {
           mode: 'evaluation',
           status: 'Completed',
           readiness_score: 100,
+          required_output_fields: [],
           reason: null,
         },
       ])
