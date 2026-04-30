@@ -44,4 +44,36 @@ describe('SecureCredentialStore', () => {
     expect(writeFile).not.toHaveBeenCalled()
     await expect(store.get('openai')).resolves.toBeNull()
   })
+
+  it('roundtrips non-secret provider configuration with encrypted credentials', async () => {
+    let written = ''
+    const store = new SecureCredentialStore({
+      filePath: '/tmp/coddy-secure-credentials.json',
+      isEncryptionAvailable: () => true,
+      encryptString: (value) => Buffer.from(`encrypted:${value}`),
+      decryptString: (value) =>
+        value.toString('utf8').replace(/^encrypted:/, ''),
+      readFile: vi.fn(
+        async () => written || '{}',
+      ) as unknown as typeof import('fs').promises.readFile,
+      writeFile: vi.fn(async (_path, value) => {
+        written = String(value)
+      }),
+      mkdir: vi.fn().mockResolvedValue(undefined),
+      chmod: vi.fn().mockResolvedValue(undefined),
+    })
+
+    await store.save('azure', {
+      apiKey: 'azure-secret',
+      endpoint: ' https://coddy-resource.openai.azure.com ',
+      apiVersion: ' 2025-01-01-preview ',
+    })
+
+    expect(written).not.toContain('azure-secret')
+    expect(await store.get('azure')).toEqual({
+      apiKey: 'azure-secret',
+      endpoint: 'https://coddy-resource.openai.azure.com',
+      apiVersion: '2025-01-01-preview',
+    })
+  })
 })

@@ -43,6 +43,7 @@ describe('runtimeCredentialBridge', () => {
       get: vi.fn().mockResolvedValue({
         apiKey: 'azure-key',
         endpoint: 'https://coddy-resource.openai.azure.com',
+        apiVersion: '2025-01-01-preview',
       }),
     }
     const gcloudTokenProvider = vi.fn().mockResolvedValue('unused-token')
@@ -62,6 +63,9 @@ describe('runtimeCredentialBridge', () => {
       provider: 'azure',
       token: 'azure-key',
       endpoint: 'https://coddy-resource.openai.azure.com',
+      metadata: {
+        api_version: '2025-01-01-preview',
+      },
     })
   })
 

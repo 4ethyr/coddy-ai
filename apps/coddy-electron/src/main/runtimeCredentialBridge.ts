@@ -36,12 +36,17 @@ export async function buildRuntimeCredentialEnvironment(
   const stored = await credentialStore.get(provider)
   const storedToken = stored?.apiKey?.trim()
   const storedEndpoint = stored?.endpoint?.trim()
+  const storedApiVersion = stored?.apiVersion?.trim()
   const needsVertexMetadata =
     provider === 'vertex' && isVertexAnthropicRuntimeModel(model.name)
   if (storedToken) {
-    const metadata = needsVertexMetadata
-      ? await vertexRuntimeMetadata(storedEndpoint, gcloudProjectProvider)
-      : undefined
+    const metadata = await runtimeCredentialMetadata(
+      provider,
+      needsVertexMetadata,
+      storedEndpoint,
+      storedApiVersion,
+      gcloudProjectProvider,
+    )
     return ephemeralCredentialEnvironment({
       provider,
       token: storedToken,
@@ -54,9 +59,13 @@ export async function buildRuntimeCredentialEnvironment(
 
   const gcloudToken = await gcloudTokenProvider()
   if (!gcloudToken) return {}
-  const metadata = needsVertexMetadata
-    ? await vertexRuntimeMetadata(storedEndpoint, gcloudProjectProvider)
-    : undefined
+  const metadata = await runtimeCredentialMetadata(
+    provider,
+    needsVertexMetadata,
+    storedEndpoint,
+    storedApiVersion,
+    gcloudProjectProvider,
+  )
 
   return ephemeralCredentialEnvironment({
     provider,
@@ -87,6 +96,31 @@ function normalizeRuntimeCredentialProvider(
     return provider
   }
   return null
+}
+
+async function runtimeCredentialMetadata(
+  provider: ModelProviderId,
+  needsVertexMetadata: boolean,
+  endpoint: string | undefined,
+  apiVersion: string | undefined,
+  gcloudProjectProvider: GcloudProjectProvider,
+): Promise<Record<string, string> | undefined> {
+  if (provider === 'azure') {
+    return azureRuntimeMetadata(apiVersion)
+  }
+
+  if (needsVertexMetadata) {
+    return vertexRuntimeMetadata(endpoint, gcloudProjectProvider)
+  }
+
+  return undefined
+}
+
+function azureRuntimeMetadata(
+  apiVersion: string | undefined,
+): Record<string, string> | undefined {
+  const value = apiVersion?.trim()
+  return value ? { api_version: value } : undefined
 }
 
 async function vertexRuntimeMetadata(

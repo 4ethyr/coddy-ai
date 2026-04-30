@@ -57,6 +57,7 @@ export interface ModelProviderListPayload {
   provider: ModelProviderId
   apiKey?: string
   endpoint?: string
+  apiVersion?: string
   rememberCredential?: boolean
 }
 
@@ -102,6 +103,7 @@ const VERTEX_ADC_NOTICE =
   'Using Google Application Default Credentials for Vertex AI publisher models.'
 const VERTEX_GCLOUD_NOTICE =
   'Using local gcloud OAuth credentials for Vertex AI publisher models. The access token is short-lived and is not stored by Coddy.'
+const DEFAULT_AZURE_API_VERSION = '2024-10-21'
 const VERTEX_PUBLISHERS = [
   {
     id: 'google',
@@ -363,8 +365,9 @@ async function listAzureModels(
 ): Promise<ModelProviderListPayloadResult> {
   const apiKey = requireCredential(request)
   const endpoint = normalizeHttpsEndpoint(request.endpoint)
+  const apiVersion = normalizeAzureApiVersion(request.apiVersion)
   const data = await fetchJson(
-    `${endpoint}/openai/deployments?api-version=2024-10-21`,
+    `${endpoint}/openai/deployments?api-version=${apiVersion}`,
     {
       'api-key': apiKey,
     },
@@ -445,6 +448,19 @@ function normalizeHttpsEndpoint(endpoint: string | undefined): string {
   parsed.search = ''
   parsed.hash = ''
   return parsed.toString().replace(/\/$/, '')
+}
+
+function normalizeAzureApiVersion(apiVersion: string | undefined): string {
+  const value = apiVersion?.trim() || DEFAULT_AZURE_API_VERSION
+  if (
+    !value ||
+    value
+      .split('')
+      .some((character) => /\s/.test(character) || ['&', '?', '#'].includes(character))
+  ) {
+    throw new Error('Azure API version is invalid.')
+  }
+  return value
 }
 
 function normalizeVertexPublisherEndpoint(endpoint: string | undefined): string | null {

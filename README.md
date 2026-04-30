@@ -335,7 +335,9 @@ adapter executes selected deployments through:
 ```
 
 The Azure API key is sent with the `api-key` header. The selected model name is
-treated as the Azure deployment ID.
+treated as the Azure deployment ID. The UI defaults to API version
+`2024-10-21`, and an Azure API version override is stored only with the
+encrypted provider credential record when secure persistence is enabled.
 
 ## Development Workflow
 

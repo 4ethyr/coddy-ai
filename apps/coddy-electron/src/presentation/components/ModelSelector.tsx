@@ -46,11 +46,16 @@ type ProviderCredentialDraftMap = Partial<
     {
       apiKey: string
       endpoint: string
+      apiVersion: string
       rememberCredential: boolean
     }
   >
 >
-type CredentialDraftField = 'apiKey' | 'endpoint' | 'rememberCredential'
+type CredentialDraftField =
+  | 'apiKey'
+  | 'endpoint'
+  | 'apiVersion'
+  | 'rememberCredential'
 type CredentialDraftValue = string | boolean
 type MenuFrame = {
   top: number
@@ -125,6 +130,7 @@ export function ModelSelector({ model, onSelect, onLoadModels }: Props) {
         provider: provider.id,
         apiKey: draft.apiKey.trim() || undefined,
         endpoint: draft.endpoint.trim() || undefined,
+        apiVersion: draft.apiVersion.trim() || undefined,
         ...(draft.rememberCredential ? { rememberCredential: true } : {}),
       })
     } catch {
@@ -330,7 +336,12 @@ function ProviderGroup({
   models: readonly ModelCatalogEntry[]
   activeModel: ModelRef
   loadState?: ProviderLoadMap[ModelProviderId]
-  draft: { apiKey: string; endpoint: string; rememberCredential: boolean }
+  draft: {
+    apiKey: string
+    endpoint: string
+    apiVersion: string
+    rememberCredential: boolean
+  }
   onDraftChange: (field: CredentialDraftField, value: CredentialDraftValue) => void
   onLoad: () => void
   onSelect: (model: ModelRef) => void
@@ -399,6 +410,25 @@ function ProviderGroup({
               value={draft.endpoint}
               placeholder={provider.endpointPlaceholder ?? 'https://...'}
               onChange={(event) => onDraftChange('endpoint', event.target.value)}
+              className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-on-surface outline-none placeholder:text-on-surface-variant/45"
+            />
+          </label>
+        )}
+
+        {provider.supportsApiVersion && (
+          <label className="flex min-w-0 items-center gap-2 rounded border border-outline-variant/50 bg-surface-container/60 px-2 py-1.5 focus-within:border-primary/50">
+            <Icon name="settings" className="h-3.5 w-3.5 flex-shrink-0 text-primary/70" />
+            <span className="sr-only">
+              {provider.apiVersionLabel ?? 'API version'}
+            </span>
+            <input
+              type="text"
+              autoComplete="off"
+              value={draft.apiVersion}
+              placeholder={provider.apiVersionPlaceholder ?? 'API version'}
+              onChange={(event) =>
+                onDraftChange('apiVersion', event.target.value)
+              }
               className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-on-surface outline-none placeholder:text-on-surface-variant/45"
             />
           </label>
@@ -653,11 +683,17 @@ function findModelEntry(
 function getCredentialDraft(
   drafts: ProviderCredentialDraftMap,
   provider: ModelProviderId,
-): { apiKey: string; endpoint: string; rememberCredential: boolean } {
+): {
+  apiKey: string
+  endpoint: string
+  apiVersion: string
+  rememberCredential: boolean
+} {
   return (
     drafts[provider] ?? {
       apiKey: '',
       endpoint: '',
+      apiVersion: '',
       rememberCredential: false,
     }
   )

@@ -427,16 +427,23 @@ async function listProviderModelsWithSecureCredentials(
   const stored = await credentialStore.get(payload.provider)
   const apiKey = payload.apiKey?.trim() || stored?.apiKey
   const endpoint = payload.endpoint?.trim() || stored?.endpoint
+  const apiVersion = payload.apiVersion?.trim() || stored?.apiVersion
   const request: ModelProviderListPayload = {
     provider: payload.provider,
     ...(apiKey ? { apiKey } : {}),
     ...(endpoint ? { endpoint } : {}),
+    ...(apiVersion ? { apiVersion } : {}),
   }
 
   const result = await listProviderModels(request)
   if (result.error) return result
 
-  const storageRecord = getCredentialRecordToPersist(payload, stored, endpoint)
+  const storageRecord = getCredentialRecordToPersist(
+    payload,
+    stored,
+    endpoint,
+    apiVersion,
+  )
   if (!payload.rememberCredential || !storageRecord) return result
 
   return {
@@ -453,12 +460,14 @@ function getCredentialRecordToPersist(
   payload: ModelProviderListPayload,
   stored: ProviderCredentialRecord | null,
   endpoint: string | undefined,
+  apiVersion: string | undefined,
 ): ProviderCredentialRecord | null {
   const apiKey = payload.apiKey?.trim() || stored?.apiKey
   if (!apiKey) return null
   return {
     apiKey,
     ...(endpoint ? { endpoint } : {}),
+    ...(apiVersion ? { apiVersion } : {}),
   }
 }
 

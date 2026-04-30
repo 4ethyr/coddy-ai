@@ -438,4 +438,37 @@ describe('modelProviders', () => {
       }),
     )
   })
+
+  it('uses the requested Azure API version when listing deployments', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: [
+          {
+            id: 'gpt-4.1-coddy',
+            model: 'gpt-4.1',
+          },
+        ],
+      }),
+    )
+
+    const result = await listProviderModels(
+      {
+        provider: 'azure',
+        apiKey: 'azure-key',
+        endpoint: 'https://coddy-resource.openai.azure.com',
+        apiVersion: '2025-01-01-preview',
+      },
+      fetcher,
+    )
+
+    expect(result.error).toBeUndefined()
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://coddy-resource.openai.azure.com/openai/deployments?api-version=2025-01-01-preview',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'api-key': 'azure-key',
+        }),
+      }),
+    )
+  })
 })

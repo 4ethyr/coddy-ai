@@ -222,6 +222,44 @@ describe('ModelSelector', () => {
     })
   })
 
+  it('loads Azure deployments with endpoint and API version', async () => {
+    const onLoadModels = vi.fn(modelLoader)
+    render(
+      <ModelSelector
+        model={{ provider: 'azure', name: 'gpt-4.1-coddy' }}
+        onLoadModels={onLoadModels}
+      />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: 'Active model azure/gpt-4.1-coddy',
+      }),
+    )
+
+    const azureGroup = providerGroup('Azure OpenAI')
+    await userEvent.type(
+      within(azureGroup).getByPlaceholderText('api-key'),
+      'azure-key',
+    )
+    await userEvent.type(
+      within(azureGroup).getByPlaceholderText('https://resource.openai.azure.com'),
+      'https://coddy-resource.openai.azure.com',
+    )
+    await userEvent.type(
+      within(azureGroup).getByPlaceholderText('2024-10-21'),
+      '2025-01-01-preview',
+    )
+    await userEvent.click(within(azureGroup).getByRole('button', { name: 'Load' }))
+
+    expect(onLoadModels).toHaveBeenCalledWith({
+      provider: 'azure',
+      apiKey: 'azure-key',
+      endpoint: 'https://coddy-resource.openai.azure.com',
+      apiVersion: '2025-01-01-preview',
+    })
+  })
+
   it('can request secure credential persistence without keeping the token in the form', async () => {
     const onLoadModels = vi.fn(async (request: ModelProviderListRequest) => {
       const result = await modelLoader(request)

@@ -5,6 +5,7 @@ import type { ModelProviderId } from './modelProviders'
 export interface ProviderCredentialRecord {
   apiKey: string
   endpoint?: string
+  apiVersion?: string
 }
 
 export interface CredentialStorageResult {
@@ -118,10 +119,12 @@ function normalizeCredentialRecord(
   const record = value as Partial<ProviderCredentialRecord>
   const apiKey = record.apiKey?.trim()
   const endpoint = record.endpoint?.trim()
+  const apiVersion = record.apiVersion?.trim()
   if (!apiKey) return null
 
   return {
     apiKey,
     ...(endpoint ? { endpoint } : {}),
+    ...(apiVersion ? { apiVersion } : {}),
   }
 }

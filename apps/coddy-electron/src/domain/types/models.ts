@@ -32,6 +32,7 @@ export interface ModelProviderListRequest {
   provider: ModelProviderId
   apiKey?: string
   endpoint?: string
+  apiVersion?: string
   rememberCredential?: boolean
 }
 
@@ -63,9 +64,12 @@ export interface ModelProviderOption {
   credentialPlaceholder?: string
   endpointLabel?: string
   endpointPlaceholder?: string
+  apiVersionLabel?: string
+  apiVersionPlaceholder?: string
   requiresCredential: boolean
   allowsLocalCredential?: boolean
   requiresEndpoint?: boolean
+  supportsApiVersion?: boolean
   runtimeChat: RuntimeChatCapability
   models: readonly ModelCatalogEntry[]
 }
@@ -176,8 +180,11 @@ export const MODEL_PROVIDER_CATALOG: readonly ModelProviderOption[] = [
     credentialPlaceholder: 'api-key',
     endpointLabel: 'Azure endpoint',
     endpointPlaceholder: 'https://resource.openai.azure.com',
+    apiVersionLabel: 'Azure API version',
+    apiVersionPlaceholder: '2024-10-21',
     requiresCredential: true,
     requiresEndpoint: true,
+    supportsApiVersion: true,
     runtimeChat: AZURE_OPENAI_RUNTIME_CHAT,
     models: [],
   },
