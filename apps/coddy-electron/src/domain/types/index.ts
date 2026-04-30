@@ -28,6 +28,8 @@ export type {
   ProviderConnectionKind,
   RuntimeChatCapability,
   RuntimeChatSupport,
+  RuntimeTtsCapability,
+  RuntimeTtsRoute,
 } from './models'
 
 export {
@@ -35,6 +37,7 @@ export {
   getModelCatalogEntry,
   getModelProvider,
   getRuntimeChatCapability,
+  getRuntimeTtsCapability,
 } from './models'
 
 export type {

@@ -69,11 +69,18 @@ type MultiagentEvalPayload = {
   writeBaseline?: string
 }
 
+const VOICE_CAPTURE_TIMEOUT_MS = 120_000
+const VOICE_CAPTURE_KILL_GRACE_MS = 1_500
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function coddySpawn(args: string[], env: Record<string, string> = {}): ChildProcess {
+function coddySpawn(
+  args: string[],
+  env: Record<string, string> = {},
+  options: { detached?: boolean } = {},
+): ChildProcess {
   const electronProcess = process as NodeJS.Process & {
     resourcesPath?: string
   }
@@ -82,6 +89,7 @@ function coddySpawn(args: string[], env: Record<string, string> = {}): ChildProc
     env: process.env,
     resourcesPath: electronProcess.resourcesPath,
   }), args, {
+    detached: options.detached ?? false,
     env: {
       ...process.env,
       ...env,
@@ -122,6 +130,58 @@ async function readJson(child: ChildProcess): Promise<unknown> {
 
     child.on('error', reject)
   })
+}
+
+async function readJsonWithTimeout(
+  child: ChildProcess,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  try {
+    return await Promise.race([
+      readJson(child),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          terminateChild(child)
+          reject(new Error(timeoutMessage))
+        }, timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+function terminateChild(child: ChildProcess): void {
+  if (child.killed) return
+
+  const pid = child.pid
+  try {
+    if (process.platform !== 'win32' && pid) {
+      process.kill(-pid, 'SIGTERM')
+    } else {
+      child.kill('SIGTERM')
+    }
+  } catch {
+    child.kill('SIGTERM')
+  }
+
+  const killTimer = setTimeout(() => {
+    if (child.killed) return
+    try {
+      if (process.platform !== 'win32' && pid) {
+        process.kill(-pid, 'SIGKILL')
+      } else {
+        child.kill('SIGKILL')
+      }
+    } catch {
+      child.kill('SIGKILL')
+    }
+  }, VOICE_CAPTURE_KILL_GRACE_MS)
+  child.once('exit', () => clearTimeout(killTimer))
+  killTimer.unref?.()
 }
 
 // ---------------------------------------------------------------------------
@@ -299,12 +359,23 @@ export function registerIpcHandlers(): void {
       }
     }
 
-    const child = coddySpawn(['voice', '--overlay'])
+    const credentialEnv = await runtimeCredentialEnvironmentForActiveModel(
+      credentialStore,
+    )
+    const child = coddySpawn(
+      ['voice', '--overlay'],
+      credentialEnv,
+      { detached: true },
+    )
     activeVoiceCapture = child
     voiceCaptureCancelRequested = false
 
     try {
-      const raw = await readJson(child)
+      const raw = await readJsonWithTimeout(
+        child,
+        VOICE_CAPTURE_TIMEOUT_MS,
+        'voice capture timed out',
+      )
       return normalizeCommandResult(raw)
     } catch (err) {
       if (voiceCaptureCancelRequested) {
@@ -327,13 +398,16 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('voice:capture-cancel', async () => {
     if (activeVoiceCapture && !activeVoiceCapture.killed) {
       voiceCaptureCancelRequested = true
-      activeVoiceCapture.kill()
+      terminateChild(activeVoiceCapture)
     }
     return { ok: true }
   })
 
   ipcMain.handle('repl:voice-turn', async (_event, transcript: string) => {
-    return runCoddyCommand(['voice', '--transcript', transcript])
+    const credentialEnv = await runtimeCredentialEnvironmentForActiveModel(
+      credentialStore,
+    )
+    return runCoddyCommand(['voice', '--transcript', transcript], credentialEnv)
   })
 
   ipcMain.handle('repl:stop-speaking', async () => {
@@ -413,7 +487,7 @@ export function cleanupStreams(): void {
   }
   activeStreams.clear()
   if (activeVoiceCapture && !activeVoiceCapture.killed) {
-    activeVoiceCapture.kill()
+    terminateChild(activeVoiceCapture)
   }
   activeVoiceCapture = null
   voiceCaptureCancelRequested = false

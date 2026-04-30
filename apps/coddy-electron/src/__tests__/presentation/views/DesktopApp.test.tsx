@@ -83,6 +83,16 @@ describe('DesktopApp', () => {
     expect(screen.getByText('2048 tokens')).toBeInTheDocument()
   })
 
+  it('renders voice command control in desktop mode', async () => {
+    sessionContext.captureVoice.mockResolvedValue({ text: 'voice command' })
+
+    render(<DesktopApp />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Voice input' }))
+
+    expect(sessionContext.captureVoice).toHaveBeenCalledOnce()
+  })
+
   it('renders subagent lifecycle readiness in the desktop activity panel', () => {
     sessionContext.session = {
       ...sessionContext.session,
