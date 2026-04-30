@@ -181,7 +181,10 @@ aprovação, bloqueia readiness incompleto, aguarda aprovação quando necessár
 só então monta o plano de lifecycle `Prepared -> Approved -> Running`. O runtime
 já usa esse gate como preview de prontidão, mas publica apenas o primeiro estado
 seguro (`Prepared` ou `Blocked`); `Running` continua reservado para quando um
-executor dedicado realmente iniciar trabalho.
+executor dedicado realmente iniciar trabalho. O gate revalida o contrato
+reduzido recebido do runtime antes de planejar execução: nome obrigatório, modo
+conhecido, ferramentas permitidas, score exatamente 100 e aprovação obrigatória
+para ferramentas de escrita ou shell.
 
 ### Evals de harness
 

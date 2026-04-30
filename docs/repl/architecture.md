@@ -157,7 +157,9 @@ para estados executaveis; qualquer salto invalido vira `Blocked`. O
 planejar inicio de execucao sem side effects, aguardando aprovacao quando
 necessario e emitindo apenas a sequencia de lifecycle permitida. O runtime usa
 esse gate como preview e ainda nao publica `Running`, evitando sugerir execucao
-real antes de existir um executor isolado.
+real antes de existir um executor isolado. O gate tambem revalida modo,
+ferramentas, score e aprovacao para impedir que um contrato reduzido ou
+malformado avance para execucao.
 
 ### `crates/coddy-core`
 

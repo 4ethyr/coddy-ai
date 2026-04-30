@@ -1,6 +1,8 @@
 use coddy_core::{SubagentHandoffPrepared, SubagentLifecycleStatus, SubagentLifecycleUpdate};
 
-use crate::SubagentHandoffPlan;
+use crate::{
+    SubagentHandoffPlan, SubagentMode, APPLY_EDIT_TOOL, PREVIEW_EDIT_TOOL, SHELL_RUN_TOOL,
+};
 
 const READY_SCORE: u8 = 100;
 
@@ -22,6 +24,7 @@ pub struct SubagentExecutionStartPlan {
 pub struct SubagentExecutionHandoff {
     pub name: String,
     pub mode: String,
+    pub allowed_tools: Vec<String>,
     pub approval_required: bool,
     pub readiness_score: u8,
     pub readiness_issues: Vec<String>,
@@ -86,6 +89,7 @@ impl From<&SubagentHandoffPlan> for SubagentExecutionHandoff {
         Self {
             name: handoff.name.clone(),
             mode: handoff.mode.as_str().to_string(),
+            allowed_tools: handoff.allowed_tools.clone(),
             approval_required: handoff.approval_required,
             readiness_score: handoff.readiness_score,
             readiness_issues: handoff.readiness_issues.clone(),
@@ -98,6 +102,7 @@ impl From<&SubagentHandoffPrepared> for SubagentExecutionHandoff {
         Self {
             name: handoff.name.clone(),
             mode: handoff.mode.clone(),
+            allowed_tools: handoff.allowed_tools.clone(),
             approval_required: handoff.approval_required,
             readiness_score: handoff.readiness_score,
             readiness_issues: handoff.readiness_issues.clone(),
@@ -107,14 +112,63 @@ impl From<&SubagentHandoffPrepared> for SubagentExecutionHandoff {
 
 fn blocked_reason(handoff: &SubagentExecutionHandoff) -> Option<String> {
     let mut reasons = Vec::new();
+    let parsed_mode = SubagentMode::parse(&handoff.mode);
 
-    if handoff.readiness_score < READY_SCORE {
+    if handoff.name.trim().is_empty() {
+        reasons.push("subagent name is required".to_string());
+    }
+    if parsed_mode.is_none() {
+        reasons.push(format!("unknown subagent mode `{}`", handoff.mode));
+    }
+    if handoff.allowed_tools.is_empty() {
+        reasons.push("no allowed tools configured".to_string());
+    }
+    if handoff.readiness_score != READY_SCORE {
         reasons.push(format!(
-            "readiness score {} is below execution threshold",
-            handoff.readiness_score
+            "readiness score {} does not meet execution threshold {}",
+            handoff.readiness_score, READY_SCORE
         ));
     }
-    reasons.extend(handoff.readiness_issues.iter().cloned());
+    if handoff
+        .allowed_tools
+        .iter()
+        .any(|tool| tool == APPLY_EDIT_TOOL || tool == SHELL_RUN_TOOL)
+        && !handoff.approval_required
+    {
+        reasons.push("handoffs with mutating or shell tools must require approval".to_string());
+    }
+    if parsed_mode == Some(SubagentMode::ReadOnly)
+        && handoff.allowed_tools.iter().any(|tool| {
+            tool == APPLY_EDIT_TOOL || tool == PREVIEW_EDIT_TOOL || tool == SHELL_RUN_TOOL
+        })
+    {
+        reasons.push("read-only handoffs cannot include write or shell tools".to_string());
+    }
+    if parsed_mode == Some(SubagentMode::WorkspaceWrite)
+        && !handoff
+            .allowed_tools
+            .iter()
+            .any(|tool| tool == PREVIEW_EDIT_TOOL)
+    {
+        reasons.push("workspace-write handoff must include preview edit capability".to_string());
+    }
+    if parsed_mode == Some(SubagentMode::Evaluation)
+        && !handoff.approval_required
+        && handoff
+            .allowed_tools
+            .iter()
+            .any(|tool| tool == SHELL_RUN_TOOL)
+    {
+        reasons.push(format!(
+            "evaluation handoff with `{}` must require approval",
+            SHELL_RUN_TOOL
+        ));
+    }
+    for issue in &handoff.readiness_issues {
+        if !reasons.contains(issue) {
+            reasons.push(issue.clone());
+        }
+    }
 
     if reasons.is_empty() {
         None
@@ -140,7 +194,7 @@ fn lifecycle_update(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SubagentMode, SubagentRegistry};
+    use crate::{SubagentMode, SubagentRegistry, READ_FILE_TOOL};
 
     #[test]
     fn blocks_unready_handoffs_before_execution_start() {
@@ -163,8 +217,70 @@ mod tests {
         assert_eq!(
             plan.reason.as_deref(),
             Some(
-                "readiness score 80 is below execution threshold; workspace-write handoff must include preview edit capability"
+                "readiness score 80 does not meet execution threshold 100; workspace-write handoff must include preview edit capability"
             )
+        );
+    }
+
+    #[test]
+    fn blocks_handoffs_with_invalid_identity_or_mode() {
+        let handoff = SubagentExecutionHandoff {
+            name: " ".to_string(),
+            mode: "privileged".to_string(),
+            allowed_tools: vec![READ_FILE_TOOL.to_string()],
+            approval_required: false,
+            readiness_score: 100,
+            readiness_issues: Vec::new(),
+        };
+
+        let plan = SubagentExecutionGate.plan_start_for(&handoff, false);
+
+        assert_eq!(plan.status, SubagentExecutionStartStatus::Blocked);
+        assert_eq!(
+            plan.reason.as_deref(),
+            Some("subagent name is required; unknown subagent mode `privileged`")
+        );
+    }
+
+    #[test]
+    fn blocks_handoffs_with_inconsistent_tool_policy() {
+        let handoff = SubagentExecutionHandoff {
+            name: "reviewer".to_string(),
+            mode: "read-only".to_string(),
+            allowed_tools: vec![READ_FILE_TOOL.to_string(), APPLY_EDIT_TOOL.to_string()],
+            approval_required: false,
+            readiness_score: 100,
+            readiness_issues: Vec::new(),
+        };
+
+        let plan = SubagentExecutionGate.plan_start_for(&handoff, false);
+
+        assert_eq!(plan.status, SubagentExecutionStartStatus::Blocked);
+        assert_eq!(
+            plan.reason.as_deref(),
+            Some(
+                "handoffs with mutating or shell tools must require approval; read-only handoffs cannot include write or shell tools"
+            )
+        );
+    }
+
+    #[test]
+    fn blocks_handoffs_with_out_of_contract_readiness_score() {
+        let handoff = SubagentExecutionHandoff {
+            name: "explorer".to_string(),
+            mode: "read-only".to_string(),
+            allowed_tools: vec![READ_FILE_TOOL.to_string()],
+            approval_required: false,
+            readiness_score: 101,
+            readiness_issues: Vec::new(),
+        };
+
+        let plan = SubagentExecutionGate.plan_start_for(&handoff, false);
+
+        assert_eq!(plan.status, SubagentExecutionStartStatus::Blocked);
+        assert_eq!(
+            plan.reason.as_deref(),
+            Some("readiness score 101 does not meet execution threshold 100")
         );
     }
 

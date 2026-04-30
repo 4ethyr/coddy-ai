@@ -2456,7 +2456,7 @@ mod tests {
         assert_eq!(
             update.reason.as_deref(),
             Some(
-                "readiness score 80 is below execution threshold; workspace-write handoff must include preview edit capability"
+                "readiness score 80 does not meet execution threshold 100; workspace-write handoff must include preview edit capability"
             )
         );
     }
