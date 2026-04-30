@@ -1026,8 +1026,11 @@ fn format_workspace_context(items: &[coddy_core::ContextItem]) -> String {
         return "Workspace context: none loaded yet.".to_string();
     }
 
+    let mut recent = items.iter().rev().take(8).collect::<Vec<_>>();
+    recent.reverse();
+
     let mut lines = vec!["Workspace context:".to_string()];
-    for item in items.iter().take(8) {
+    for item in recent {
         let label = if item.sensitive {
             "[sensitive context item redacted]".to_string()
         } else {
@@ -1769,6 +1772,59 @@ mod tests {
             captured_requests[0].messages[1].content,
             "continue the implementation"
         );
+    }
+
+    #[test]
+    fn ask_command_prioritizes_recent_workspace_context_in_model_prompt() {
+        let request_id = Uuid::new_v4();
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("recent context accepted"));
+        let runtime =
+            CoddyRuntime::with_chat_client(AgentToolRegistry::default(), Arc::new(chat_client));
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+        for index in 1..=10 {
+            runtime.publish_event(
+                ReplEvent::ContextItemAdded {
+                    item: coddy_core::ContextItem {
+                        id: format!("context-{index}"),
+                        label: format!("src/context-{index}.rs"),
+                        sensitive: false,
+                    },
+                },
+                None,
+                1_775_000_000_100 + index,
+            );
+        }
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "use the latest context".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let system_prompt = &captured_requests[0].messages[0].content;
+
+        assert!(system_prompt.contains("src/context-10.rs"));
+        assert!(system_prompt.contains("src/context-3.rs"));
+        assert!(!system_prompt.contains("src/context-1.rs"));
+        assert!(!system_prompt.contains("src/context-2.rs"));
+        assert!(system_prompt.contains("2 additional context items omitted."));
     }
 
     #[test]
