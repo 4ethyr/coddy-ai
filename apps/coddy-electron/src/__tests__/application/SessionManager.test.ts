@@ -59,12 +59,58 @@ describe('SessionManager', () => {
     expect(client.getSnapshot).toHaveBeenCalledOnce()
     expect(client.getToolCatalog).toHaveBeenCalledOnce()
     expect(state.lastSequence).toBe(42)
+    expect(state.session.subagent_activity).toEqual([])
     expect(state.toolCatalog).toEqual([
       expect.objectContaining({
         name: 'filesystem.read_file',
         risk_level: 'Low',
         approval_policy: 'AutoApprove',
       }),
+    ])
+  })
+
+  it('keeps backend subagent lifecycle activity from snapshot', async () => {
+    const nextSnapshot = snapshot()
+    nextSnapshot.session.subagent_activity = [
+      {
+        id: 'eval-runner:evaluation',
+        name: 'eval-runner',
+        mode: 'evaluation',
+        status: 'Prepared',
+        readiness_score: 100,
+        reason: null,
+      },
+    ]
+    const client: ReplIpcClient = {
+      getSnapshot: vi.fn().mockResolvedValue(nextSnapshot),
+      getEventsAfter: vi.fn(),
+      getToolCatalog: vi.fn().mockResolvedValue([]),
+      listProviderModels: vi.fn(),
+      watchEvents: vi.fn(),
+      ask: vi.fn(),
+      voiceTurn: vi.fn(),
+      stopActiveRun: vi.fn(),
+      stopSpeaking: vi.fn(),
+      selectModel: vi.fn(),
+      openUi: vi.fn(),
+      captureAndExplain: vi.fn(),
+      dismissConfirmation: vi.fn(),
+      replyPermission: vi.fn(),
+      captureVoice: vi.fn(),
+      cancelVoiceCapture: vi.fn(),
+    }
+
+    const state = await initializeSession(client)
+
+    expect(state.session.subagent_activity).toEqual([
+      {
+        id: 'eval-runner:evaluation',
+        name: 'eval-runner',
+        mode: 'evaluation',
+        status: 'Prepared',
+        readiness_score: 100,
+        reason: null,
+      },
     ])
   })
 

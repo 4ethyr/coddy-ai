@@ -74,6 +74,7 @@ function createSimDaemon(): SimDaemon {
       messages: [],
       active_run: null,
       pending_permission: null,
+      subagent_activity: [],
     } satisfies ReplSessionSnapshotSession,
   }
 }
@@ -340,6 +341,7 @@ function applyEventToSnapshot(daemon: SimDaemon, event: ReplEvent): void {
     daemon.snapshotSession.active_run = event.RunStarted.run_id
     daemon.snapshotSession.status = 'Thinking'
     daemon.snapshotSession.streaming_text = ''
+    daemon.snapshotSession.subagent_activity = []
     return
   }
 
@@ -355,6 +357,21 @@ function applyEventToSnapshot(daemon: SimDaemon, event: ReplEvent): void {
     daemon.snapshotSession.active_run = null
     daemon.snapshotSession.status = 'Idle'
     daemon.snapshotSession.streaming_text = ''
+    return
+  }
+
+  if ('SubagentLifecycleUpdated' in event) {
+    const update = event.SubagentLifecycleUpdated.update
+    const activity = {
+      ...update,
+      id: `${update.name}:${update.mode}`,
+    }
+    const current = (daemon.snapshotSession.subagent_activity ?? []) as Array<typeof activity>
+    const existingIndex = current.findIndex((item) => item.id === activity.id)
+    daemon.snapshotSession.subagent_activity =
+      existingIndex >= 0
+        ? current.map((item, index) => (index === existingIndex ? activity : item))
+        : [...current, activity]
   }
 }
 
@@ -549,6 +566,33 @@ describe('IPC integration', () => {
       sim.pushLiveEvent({ VoiceListeningStarted: {} })
       const batch = await client.getEventsAfter(1)
       expect(batch.events).toHaveLength(0)
+    })
+
+    it('applies subagent lifecycle events into the session snapshot', async () => {
+      sim.pushLiveEvent({
+        SubagentLifecycleUpdated: {
+          update: {
+            name: 'eval-runner',
+            mode: 'evaluation',
+            status: 'Prepared',
+            readiness_score: 100,
+            reason: null,
+          },
+        },
+      })
+
+      const snapshot = await client.getSnapshot()
+
+      expect(snapshot.session.subagent_activity).toEqual([
+        {
+          id: 'eval-runner:evaluation',
+          name: 'eval-runner',
+          mode: 'evaluation',
+          status: 'Prepared',
+          readiness_score: 100,
+          reason: null,
+        },
+      ])
     })
   })
 

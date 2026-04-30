@@ -11,6 +11,8 @@ export type {
   ReplMessage,
   PermissionReply,
   PermissionRequest,
+  SubagentLifecycleStatus,
+  SubagentLifecycleUpdate,
   ReplEvent,
   ReplEventEnvelope,
   ReplSessionSnapshot,
@@ -40,6 +42,7 @@ export type {
   AssessmentPolicy as SessionAssessmentPolicy,
   VoiceState,
   ContextItem,
+  SubagentActivity,
   ScreenUnderstandingContext,
   ReplSession,
 } from './session'

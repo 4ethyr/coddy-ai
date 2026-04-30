@@ -51,6 +51,7 @@ export function FloatingTerminal() {
     () => loadSettings().modelThinking.animation,
   )
   const toolActivity = session.tool_activity ?? []
+  const subagentActivity = session.subagent_activity ?? []
 
   // Auto-scroll to bottom on new messages or streaming tokens
   useEffect(() => {
@@ -237,6 +238,38 @@ export function FloatingTerminal() {
                       }
                     >
                       {activity.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {subagentActivity.length > 0 && (
+            <div className="rounded-lg border border-primary/15 bg-surface-container/35 px-4 py-3 font-mono text-xs text-on-surface-variant backdrop-blur-md">
+              <div className="mb-2 uppercase tracking-[0.2em] text-primary/80">
+                agent.subagents
+              </div>
+              <div className="flex flex-col gap-1">
+                {subagentActivity.map((activity) => (
+                  <div
+                    key={activity.id}
+                    className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-3"
+                  >
+                    <span className="truncate">
+                      {activity.name} [{activity.mode}]
+                    </span>
+                    <span
+                      className={
+                        activity.status === 'Running'
+                          ? 'text-primary'
+                          : activity.status === 'Blocked'
+                            || activity.status === 'Failed'
+                            ? 'text-red-300'
+                            : 'text-emerald-300'
+                      }
+                    >
+                      {activity.status} // {activity.readiness_score}
                     </span>
                   </div>
                 ))}

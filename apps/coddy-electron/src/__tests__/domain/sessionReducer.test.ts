@@ -18,6 +18,7 @@ function testSession(overrides?: Partial<ReplSession>): ReplSession {
     active_run: null,
     pending_permission: null,
     tool_activity: [],
+    subagent_activity: [],
     streaming_text: '',
     ...overrides,
   }
@@ -49,8 +50,23 @@ describe('sessionReducer', () => {
   })
 
   describe('RunStarted', () => {
-    it('sets active_run, clears streaming_text, transitions to Thinking', () => {
-      const session = testSession({ streaming_text: 'previous tokens' })
+    it('sets active_run, clears run-local activity, transitions to Thinking', () => {
+      const session = testSession({
+        streaming_text: 'previous tokens',
+        tool_activity: [
+          { id: 'filesystem.read_file-1', name: 'filesystem.read_file', status: 'Succeeded' },
+        ],
+        subagent_activity: [
+          {
+            id: 'eval-runner:evaluation',
+            name: 'eval-runner',
+            mode: 'evaluation',
+            status: 'Prepared',
+            readiness_score: 100,
+            reason: null,
+          },
+        ],
+      })
       const event: ReplEvent = {
         RunStarted: { run_id: 'run-001' },
       }
@@ -61,6 +77,7 @@ describe('sessionReducer', () => {
       expect(result.status).toBe('Thinking')
       expect(result.streaming_text).toBe('')
       expect(result.tool_activity).toEqual([])
+      expect(result.subagent_activity).toEqual([])
     })
   })
 
@@ -514,6 +531,191 @@ describe('sessionReducer', () => {
 
       expect(result.status).toBe('Thinking')
       expect(result.tool_activity).toEqual(session.tool_activity)
+    })
+
+    it('SubagentHandoffPrepared keeps thinking state without mutating tool activity', () => {
+      const session = testSession({
+        status: 'Thinking',
+        tool_activity: [
+          { id: 'subagent.prepare-1', name: 'subagent.prepare', status: 'Succeeded' },
+        ],
+      })
+      const event: ReplEvent = {
+        SubagentHandoffPrepared: {
+          handoff: {
+            name: 'eval-runner',
+            mode: 'evaluation',
+            approval_required: true,
+            allowed_tools: ['filesystem.read_file', 'shell.run'],
+            timeout_ms: 60000,
+            max_context_tokens: 8000,
+            validation_checklist: ['Use deterministic checks'],
+            safety_notes: ['Do not expose secrets'],
+            readiness_score: 100,
+            readiness_issues: [],
+          },
+        },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result.status).toBe('Thinking')
+      expect(result.tool_activity).toEqual(session.tool_activity)
+    })
+
+    it('SubagentLifecycleUpdated upserts subagent activity without mutating tool activity', () => {
+      const session = testSession({
+        status: 'Thinking',
+        tool_activity: [
+          { id: 'subagent.prepare-1', name: 'subagent.prepare', status: 'Succeeded' },
+        ],
+      })
+      const event: ReplEvent = {
+        SubagentLifecycleUpdated: {
+          update: {
+            name: 'eval-runner',
+            mode: 'evaluation',
+            status: 'Prepared',
+            readiness_score: 100,
+            reason: null,
+          },
+        },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result.status).toBe('Thinking')
+      expect(result.tool_activity).toEqual(session.tool_activity)
+      expect(result.subagent_activity).toEqual([
+        {
+          id: 'eval-runner:evaluation',
+          name: 'eval-runner',
+          mode: 'evaluation',
+          status: 'Prepared',
+          readiness_score: 100,
+          reason: null,
+        },
+      ])
+    })
+
+    it('SubagentLifecycleUpdated replaces existing subagent activity by role and mode', () => {
+      const session = testSession({
+        status: 'Thinking',
+        subagent_activity: [
+          {
+            id: 'coder:workspace-write',
+            name: 'coder',
+            mode: 'workspace-write',
+            status: 'Prepared',
+            readiness_score: 100,
+            reason: null,
+          },
+        ],
+      })
+      const event: ReplEvent = {
+        SubagentLifecycleUpdated: {
+          update: {
+            name: 'coder',
+            mode: 'workspace-write',
+            status: 'Blocked',
+            readiness_score: 80,
+            reason: 'workspace-write handoff must include preview edit capability',
+          },
+        },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result.subagent_activity).toEqual([
+        {
+          id: 'coder:workspace-write',
+          name: 'coder',
+          mode: 'workspace-write',
+          status: 'Blocked',
+          readiness_score: 80,
+          reason: 'workspace-write handoff must include preview edit capability',
+        },
+      ])
+    })
+
+    it('SubagentLifecycleUpdated blocks Running without prior approval', () => {
+      const session = testSession({ status: 'Thinking' })
+      const event: ReplEvent = {
+        SubagentLifecycleUpdated: {
+          update: {
+            name: 'coder',
+            mode: 'workspace-write',
+            status: 'Running',
+            readiness_score: 100,
+            reason: null,
+          },
+        },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result.subagent_activity).toEqual([
+        {
+          id: 'coder:workspace-write',
+          name: 'coder',
+          mode: 'workspace-write',
+          status: 'Blocked',
+          readiness_score: 100,
+          reason: 'invalid subagent lifecycle transition: None -> Running',
+        },
+      ])
+    })
+
+    it('SubagentLifecycleUpdated blocks executable statuses below readiness threshold', () => {
+      const session = testSession({ status: 'Thinking' })
+      const event: ReplEvent = {
+        SubagentLifecycleUpdated: {
+          update: {
+            name: 'coder',
+            mode: 'workspace-write',
+            status: 'Prepared',
+            readiness_score: 80,
+            reason: 'missing preview edit capability',
+          },
+        },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result.subagent_activity[0]).toMatchObject({
+        status: 'Blocked',
+        readiness_score: 80,
+        reason: 'readiness score 80 is below execution threshold; missing preview edit capability',
+      })
+    })
+
+    it('SubagentLifecycleUpdated allows prepared approved running completed sequence', () => {
+      const events: ReplEvent[] = ['Prepared', 'Approved', 'Running', 'Completed'].map(
+        (status) => ({
+          SubagentLifecycleUpdated: {
+            update: {
+              name: 'eval-runner',
+              mode: 'evaluation',
+              status: status as 'Prepared' | 'Approved' | 'Running' | 'Completed',
+              readiness_score: 100,
+              reason: null,
+            },
+          },
+        }),
+      )
+
+      const result = reduceEvents(testSession({ status: 'Thinking' }), events)
+
+      expect(result.subagent_activity).toEqual([
+        {
+          id: 'eval-runner:evaluation',
+          name: 'eval-runner',
+          mode: 'evaluation',
+          status: 'Completed',
+          readiness_score: 100,
+          reason: null,
+        },
+      ])
     })
 
     it('PermissionRequested transitions to AwaitingToolApproval and stores the request', () => {

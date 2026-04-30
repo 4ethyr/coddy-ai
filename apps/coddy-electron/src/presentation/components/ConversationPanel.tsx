@@ -107,7 +107,9 @@ export function ConversationPanel({
 
 function PlanOfAttack({ session }: { session: ReplSession }) {
   const toolActivity = session.tool_activity ?? []
+  const subagentActivity = session.subagent_activity ?? []
   const hasToolActivity = toolActivity.length > 0
+  const hasSubagentActivity = subagentActivity.length > 0
 
   return (
     <section className="desktop-glass-panel overflow-hidden rounded-xl">
@@ -132,10 +134,32 @@ function PlanOfAttack({ session }: { session: ReplSession }) {
           ) : (
             <TaskStep label="No tools used in this run" state="pending" />
           )}
+          {hasSubagentActivity ? (
+            subagentActivity.map((activity) => (
+              <TaskStep
+                key={activity.id}
+                label={`subagent.${activity.name} // ${activity.status} // readiness=${activity.readiness_score}`}
+                state={subagentState(activity.status)}
+              />
+            ))
+          ) : (
+            <TaskStep label="No subagent handoff prepared" state="pending" />
+          )}
         </div>
       </div>
     </section>
   )
+}
+
+function subagentState(
+  status: ReplSession['subagent_activity'][number]['status'],
+): 'done' | 'active' | 'pending' | 'blocked' {
+  if (status === 'Running') return 'active'
+  if (status === 'Blocked' || status === 'Failed') return 'blocked'
+  if (status === 'Prepared' || status === 'Approved' || status === 'Completed') {
+    return 'done'
+  }
+  return 'pending'
 }
 
 function TaskStep({
@@ -143,7 +167,7 @@ function TaskStep({
   state,
 }: {
   label: string
-  state: 'done' | 'active' | 'pending'
+  state: 'done' | 'active' | 'pending' | 'blocked'
 }) {
   return (
     <div className="relative flex gap-4 pb-3 last:pb-0">
@@ -154,13 +178,19 @@ function TaskStep({
         className={`z-10 mt-1.5 flex h-3 w-3 shrink-0 items-center justify-center rounded-full border ${
           state === 'active'
             ? 'border-primary bg-surface-dim shadow-[0_0_8px_rgba(0,219,233,0.6)]'
+            : state === 'blocked'
+              ? 'border-red-300/70 bg-red-400/10'
             : 'border-outline-variant bg-surface-dim'
         }`}
       >
         {state !== 'pending' && (
           <span
             className={`h-1.5 w-1.5 rounded-full ${
-              state === 'active' ? 'bg-primary' : 'bg-outline'
+              state === 'active'
+                ? 'bg-primary'
+                : state === 'blocked'
+                  ? 'bg-red-300'
+                  : 'bg-outline'
             }`}
           />
         )}
@@ -169,6 +199,8 @@ function TaskStep({
         className={`font-mono text-sm ${
           state === 'active'
             ? 'font-bold text-primary'
+            : state === 'blocked'
+              ? 'text-red-300'
             : state === 'done'
               ? 'text-on-surface-variant/60 line-through'
               : 'text-on-surface-variant/45'

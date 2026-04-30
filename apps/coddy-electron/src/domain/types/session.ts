@@ -6,6 +6,7 @@ import type {
   ReplMessage,
   ModelRef,
   PermissionRequest,
+  SubagentLifecycleStatus,
   ToolStatus,
 } from './events'
 
@@ -49,6 +50,15 @@ export interface ToolActivity {
   status: ToolActivityStatus
 }
 
+export interface SubagentActivity {
+  id: string
+  name: string
+  mode: string
+  status: SubagentLifecycleStatus
+  readiness_score: number
+  reason: string | null
+}
+
 export interface ScreenUnderstandingContext {
   source_app: string | null
   visible_text: string
@@ -69,6 +79,7 @@ export interface ReplSession {
   active_run: string | null
   pending_permission: PermissionRequest | null
   tool_activity: ToolActivity[]
+  subagent_activity: SubagentActivity[]
   /** Frontend-only: text being accumulated from TokenDelta events */
   streaming_text: string
 }
@@ -87,6 +98,7 @@ export function createInitialSession(mode: ReplMode, model: ModelRef): ReplSessi
     active_run: null,
     pending_permission: null,
     tool_activity: [],
+    subagent_activity: [],
     streaming_text: '',
   }
 }
