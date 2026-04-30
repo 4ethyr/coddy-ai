@@ -52,8 +52,8 @@ pub use subagent::{
     SubagentRegistry, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
 };
 pub use subagent_executor::{
-    SubagentExecutionGate, SubagentExecutionHandoff, SubagentExecutionStartPlan,
-    SubagentExecutionStartStatus,
+    SubagentExecutionCompletionPlan, SubagentExecutionGate, SubagentExecutionHandoff,
+    SubagentExecutionStartPlan, SubagentExecutionStartStatus, SubagentOutputContract,
 };
 
 use coddy_core::{

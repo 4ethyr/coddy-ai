@@ -186,6 +186,13 @@ reduzido recebido do runtime antes de planejar execução: nome obrigatório, mo
 conhecido, ferramentas permitidas, score exatamente 100 e aprovação obrigatória
 para ferramentas de escrita ou shell.
 
+O mesmo módulo expõe `SubagentOutputContract` e
+`SubagentExecutionCompletionPlan` para o futuro executor isolado. Essa validação
+checa se a saída estruturada do subagent é um objeto JSON, contém todos os
+campos obrigatórios do schema e não inclui campos extras quando
+`additionalProperties` está desativado; falhas geram lifecycle `Failed` em vez
+de `Completed`.
+
 ### Evals de harness
 
 O crate `coddy-agent` possui `EvalRunner` para casos determinísticos de

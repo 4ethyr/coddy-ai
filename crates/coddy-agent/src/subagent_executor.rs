@@ -1,4 +1,5 @@
 use coddy_core::{SubagentHandoffPrepared, SubagentLifecycleStatus, SubagentLifecycleUpdate};
+use serde_json::Value;
 
 use crate::{
     SubagentHandoffPlan, SubagentMode, APPLY_EDIT_TOOL, PREVIEW_EDIT_TOOL, SHELL_RUN_TOOL,
@@ -28,6 +29,24 @@ pub struct SubagentExecutionHandoff {
     pub approval_required: bool,
     pub readiness_score: u8,
     pub readiness_issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentOutputContract {
+    pub name: String,
+    pub mode: String,
+    pub readiness_score: u8,
+    pub required_fields: Vec<String>,
+    pub additional_properties_allowed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentExecutionCompletionPlan {
+    pub accepted: bool,
+    pub missing_fields: Vec<String>,
+    pub unexpected_fields: Vec<String>,
+    pub reason: Option<String>,
+    pub lifecycle_update: SubagentLifecycleUpdate,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -82,6 +101,35 @@ impl SubagentExecutionGate {
             ],
         }
     }
+
+    pub fn plan_completion(
+        &self,
+        contract: &SubagentOutputContract,
+        output: &Value,
+    ) -> SubagentExecutionCompletionPlan {
+        let validation = validate_output_contract(contract, output);
+        let accepted = validation.reason.is_none();
+        let status = if accepted {
+            SubagentLifecycleStatus::Completed
+        } else {
+            SubagentLifecycleStatus::Failed
+        };
+        let lifecycle_update = SubagentLifecycleUpdate {
+            name: contract.name.clone(),
+            mode: contract.mode.clone(),
+            status,
+            readiness_score: contract.readiness_score,
+            reason: validation.reason.clone(),
+        };
+
+        SubagentExecutionCompletionPlan {
+            accepted,
+            missing_fields: validation.missing_fields,
+            unexpected_fields: validation.unexpected_fields,
+            reason: validation.reason,
+            lifecycle_update,
+        }
+    }
 }
 
 impl From<&SubagentHandoffPlan> for SubagentExecutionHandoff {
@@ -106,6 +154,18 @@ impl From<&SubagentHandoffPrepared> for SubagentExecutionHandoff {
             approval_required: handoff.approval_required,
             readiness_score: handoff.readiness_score,
             readiness_issues: handoff.readiness_issues.clone(),
+        }
+    }
+}
+
+impl From<&SubagentHandoffPlan> for SubagentOutputContract {
+    fn from(handoff: &SubagentHandoffPlan) -> Self {
+        Self {
+            name: handoff.name.clone(),
+            mode: handoff.mode.as_str().to_string(),
+            readiness_score: handoff.readiness_score,
+            required_fields: required_output_fields(&handoff.output_schema),
+            additional_properties_allowed: additional_properties_allowed(&handoff.output_schema),
         }
     }
 }
@@ -177,6 +237,91 @@ fn blocked_reason(handoff: &SubagentExecutionHandoff) -> Option<String> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OutputValidation {
+    missing_fields: Vec<String>,
+    unexpected_fields: Vec<String>,
+    reason: Option<String>,
+}
+
+fn validate_output_contract(contract: &SubagentOutputContract, output: &Value) -> OutputValidation {
+    let Some(object) = output.as_object() else {
+        return OutputValidation {
+            missing_fields: contract.required_fields.clone(),
+            unexpected_fields: Vec::new(),
+            reason: Some("subagent output must be a JSON object".to_string()),
+        };
+    };
+
+    let mut reasons = Vec::new();
+    let missing_fields = contract
+        .required_fields
+        .iter()
+        .filter(|field| !object.contains_key(*field))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_fields.is_empty() {
+        reasons.push(format!(
+            "missing required output fields: {}",
+            missing_fields.join(", ")
+        ));
+    }
+
+    let unexpected_fields = if contract.additional_properties_allowed {
+        Vec::new()
+    } else {
+        object
+            .keys()
+            .filter(|field| !contract.required_fields.contains(field))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    if !unexpected_fields.is_empty() {
+        reasons.push(format!(
+            "unexpected output fields: {}",
+            unexpected_fields.join(", ")
+        ));
+    }
+
+    if contract.readiness_score != READY_SCORE {
+        reasons.push(format!(
+            "readiness score {} does not meet completion threshold {}",
+            contract.readiness_score, READY_SCORE
+        ));
+    }
+
+    OutputValidation {
+        missing_fields,
+        unexpected_fields,
+        reason: if reasons.is_empty() {
+            None
+        } else {
+            Some(reasons.join("; "))
+        },
+    }
+}
+
+fn required_output_fields(schema: &Value) -> Vec<String> {
+    schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|fields| {
+            fields
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn additional_properties_allowed(schema: &Value) -> bool {
+    schema
+        .get("additionalProperties")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
 fn lifecycle_update(
     handoff: &SubagentExecutionHandoff,
     status: SubagentLifecycleStatus,
@@ -195,6 +340,7 @@ fn lifecycle_update(
 mod tests {
     use super::*;
     use crate::{SubagentMode, SubagentRegistry, READ_FILE_TOOL};
+    use serde_json::json;
 
     #[test]
     fn blocks_unready_handoffs_before_execution_start() {
@@ -384,6 +530,68 @@ mod tests {
                 SubagentLifecycleStatus::Approved,
                 SubagentLifecycleStatus::Running,
             ]
+        );
+    }
+
+    #[test]
+    fn accepts_subagent_completion_that_matches_output_contract() {
+        let handoff = SubagentRegistry::default()
+            .prepare_handoff("coder", "implement a focused parser fix")
+            .expect("handoff");
+        let contract = SubagentOutputContract::from(&handoff);
+        let output = json!({
+            "changedFiles": ["src/parser.rs"],
+            "summary": "Implemented the parser fix.",
+            "testsAdded": ["parser_handles_edge_case"],
+            "risks": [],
+            "nextSteps": []
+        });
+
+        let plan = SubagentExecutionGate.plan_completion(&contract, &output);
+
+        assert!(plan.accepted);
+        assert!(plan.reason.is_none());
+        assert!(plan.missing_fields.is_empty());
+        assert!(plan.unexpected_fields.is_empty());
+        assert_eq!(
+            plan.lifecycle_update.status,
+            SubagentLifecycleStatus::Completed
+        );
+    }
+
+    #[test]
+    fn fails_subagent_completion_with_missing_or_unexpected_output_fields() {
+        let handoff = SubagentRegistry::default()
+            .prepare_handoff("reviewer", "review the current diff")
+            .expect("handoff");
+        let contract = SubagentOutputContract::from(&handoff);
+        let output = json!({
+            "approved": false,
+            "issues": [],
+            "suggestions": [],
+            "extraNarrative": "free-form output should stay out of structured reports"
+        });
+
+        let plan = SubagentExecutionGate.plan_completion(&contract, &output);
+
+        assert!(!plan.accepted);
+        assert_eq!(
+            plan.missing_fields,
+            vec![
+                "blockingProblems".to_string(),
+                "nonBlockingProblems".to_string()
+            ]
+        );
+        assert_eq!(plan.unexpected_fields, vec!["extraNarrative".to_string()]);
+        assert_eq!(
+            plan.reason.as_deref(),
+            Some(
+                "missing required output fields: blockingProblems, nonBlockingProblems; unexpected output fields: extraNarrative"
+            )
+        );
+        assert_eq!(
+            plan.lifecycle_update.status,
+            SubagentLifecycleStatus::Failed
         );
     }
 }

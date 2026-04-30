@@ -779,6 +779,9 @@ Escopo entregue:
   effects, bloqueando readiness incompleto e aguardando aprovacao quando
   necessario; o runtime usa esse gate como preview, publicando somente
   `Prepared` ou `Blocked` ate existir execucao isolada real;
+- `SubagentOutputContract` prepara a validacao de conclusao, marcando a saida
+  estruturada como `Completed` somente quando todos os campos obrigatorios do
+  schema foram retornados sem propriedades inesperadas;
 - o system prompt recebe um resumo do score, mas o evento preserva valores
   completos para observabilidade;
 - o frontend exibe a atividade de subagents no painel agentic mantendo o padrao
