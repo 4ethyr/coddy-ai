@@ -1,7 +1,8 @@
 use coddy_agent::{
     AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError, ChatRequest, ChatResponse,
-    ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, LIST_FILES_TOOL,
-    PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL, SUBAGENT_PREPARE_TOOL,
+    ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, SubagentExecutionGate,
+    SubagentExecutionHandoff, SubagentExecutionStartPlan, SubagentExecutionStartStatus,
+    LIST_FILES_TOOL, PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL, SUBAGENT_PREPARE_TOOL,
     SUBAGENT_ROUTE_TOOL,
 };
 use coddy_core::{
@@ -706,12 +707,23 @@ impl CoddyRuntime {
             return None;
         }
         let output = result.output.as_ref()?;
+        let mut execution_gate_context = None;
         if let Some(handoff) = subagent_handoff_prepared_from_output(output) {
-            let update = subagent_lifecycle_update_from_handoff(&handoff);
+            let execution_handoff = SubagentExecutionHandoff::from(&handoff);
+            let execution_plan = SubagentExecutionGate.plan_start_for(&execution_handoff, false);
+            let update = execution_plan
+                .lifecycle_updates
+                .first()
+                .cloned()
+                .unwrap_or_else(|| subagent_lifecycle_blocked_update(&handoff));
             self.publish_event_with_run_now(ReplEvent::SubagentHandoffPrepared { handoff }, run_id);
             self.publish_event_with_run_now(ReplEvent::SubagentLifecycleUpdated { update }, run_id);
+            execution_gate_context = Some(format_subagent_execution_gate_context(&execution_plan));
         }
-        Some(format_subagent_handoff_context(output))
+        Some(match execution_gate_context {
+            Some(context) => format!("{}\n\n{context}", format_subagent_handoff_context(output)),
+            None => format_subagent_handoff_context(output),
+        })
     }
 
     fn execute_model_tool_round(
@@ -1385,6 +1397,36 @@ fn format_subagent_handoff_context(output: &ToolOutput) -> String {
     .join("\n")
 }
 
+fn format_subagent_execution_gate_context(plan: &SubagentExecutionStartPlan) -> String {
+    let status = match plan.status {
+        SubagentExecutionStartStatus::AwaitingApproval => "awaiting approval",
+        SubagentExecutionStartStatus::ReadyToStart => "ready to start",
+        SubagentExecutionStartStatus::Blocked => "blocked",
+    };
+    let lifecycle = if plan.lifecycle_updates.is_empty() {
+        "none".to_string()
+    } else {
+        plan.lifecycle_updates
+            .iter()
+            .map(|update| format!("{:?}", update.status))
+            .collect::<Vec<_>>()
+            .join(" -> ")
+    };
+    let reason = plan.reason.as_deref().unwrap_or("none");
+
+    [
+        "Subagent execution gate preview:".to_string(),
+        "- This is a readiness decision only; no subagent execution has started.".to_string(),
+        format!("- Gate status: {status}."),
+        format!("- Lifecycle plan: {lifecycle}."),
+        format!(
+            "- Reason: {}.",
+            truncate_context_text(&redact_context_text(reason), 240)
+        ),
+    ]
+    .join("\n")
+}
+
 fn subagent_handoff_prepared_from_output(output: &ToolOutput) -> Option<SubagentHandoffPrepared> {
     let handoff = output.metadata.get("handoff")?.as_object()?;
     let name = handoff.get("name")?.as_str()?.to_string();
@@ -1430,31 +1472,13 @@ fn subagent_handoff_prepared_from_output(output: &ToolOutput) -> Option<Subagent
     })
 }
 
-fn subagent_lifecycle_update_from_handoff(
-    handoff: &SubagentHandoffPrepared,
-) -> SubagentLifecycleUpdate {
-    let ready = handoff.readiness_score == 100 && handoff.readiness_issues.is_empty();
-    let reason = if ready {
-        None
-    } else if handoff.readiness_issues.is_empty() {
-        Some(format!(
-            "readiness score {} is below execution threshold",
-            handoff.readiness_score
-        ))
-    } else {
-        Some(handoff.readiness_issues.join("; "))
-    };
-
+fn subagent_lifecycle_blocked_update(handoff: &SubagentHandoffPrepared) -> SubagentLifecycleUpdate {
     SubagentLifecycleUpdate {
         name: handoff.name.clone(),
         mode: handoff.mode.clone(),
-        status: if ready {
-            SubagentLifecycleStatus::Prepared
-        } else {
-            SubagentLifecycleStatus::Blocked
-        },
+        status: SubagentLifecycleStatus::Blocked,
         readiness_score: handoff.readiness_score,
-        reason,
+        reason: Some("execution gate did not return a lifecycle update".to_string()),
     }
 }
 
@@ -2314,6 +2338,9 @@ mod tests {
         assert!(system_prompt.contains("Prepared `eval-runner` in evaluation mode"));
         assert!(system_prompt.contains("Readiness score: 100"));
         assert!(system_prompt.contains("Validation checklist:"));
+        assert!(system_prompt.contains("Subagent execution gate preview:"));
+        assert!(system_prompt.contains("no subagent execution has started"));
+        assert!(system_prompt.contains("Gate status: awaiting approval"));
         assert!(events.iter().any(|event| matches!(
             &event.event,
             ReplEvent::ToolStarted { name } if name == SUBAGENT_ROUTE_TOOL
@@ -2354,6 +2381,11 @@ mod tests {
                     && update.status == SubagentLifecycleStatus::Prepared
                     && update.readiness_score == 100
                     && update.reason.is_none()
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::SubagentLifecycleUpdated { update }
+                if update.status == SubagentLifecycleStatus::Running
         )));
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.session.subagent_activity.len(), 1);
@@ -2414,14 +2446,18 @@ mod tests {
             ],
         };
 
-        let update = subagent_lifecycle_update_from_handoff(&handoff);
+        let execution_handoff = SubagentExecutionHandoff::from(&handoff);
+        let plan = SubagentExecutionGate.plan_start_for(&execution_handoff, true);
+        let update = plan.lifecycle_updates.first().expect("blocked update");
 
         assert_eq!(update.name, "coder");
         assert_eq!(update.status, SubagentLifecycleStatus::Blocked);
         assert_eq!(update.readiness_score, 80);
         assert_eq!(
             update.reason.as_deref(),
-            Some("workspace-write handoff must include preview edit capability")
+            Some(
+                "readiness score 80 is below execution threshold; workspace-write handoff must include preview edit capability"
+            )
         );
     }
 

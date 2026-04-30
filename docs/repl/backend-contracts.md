@@ -176,11 +176,12 @@ exigem readiness 100; transições fora desse caminho são materializadas como
 de declarar execução sem preparação e aprovação prévias.
 
 O crate `coddy-agent` também contém `SubagentExecutionGate`, uma fundação sem
-side effects para o executor real. Ele recebe um `SubagentHandoffPlan` e uma
-decisão de aprovação, bloqueia readiness incompleto, aguarda aprovação quando
-necessário e só então monta o plano de lifecycle
-`Prepared -> Approved -> Running`. Essa camada ainda não executa modelo nem
-ferramentas em paralelo; ela fixa o contrato que o executor real deverá seguir.
+side effects para o executor real. Ele recebe um handoff e uma decisão de
+aprovação, bloqueia readiness incompleto, aguarda aprovação quando necessário e
+só então monta o plano de lifecycle `Prepared -> Approved -> Running`. O runtime
+já usa esse gate como preview de prontidão, mas publica apenas o primeiro estado
+seguro (`Prepared` ou `Blocked`); `Running` continua reservado para quando um
+executor dedicado realmente iniciar trabalho.
 
 ### Evals de harness
 

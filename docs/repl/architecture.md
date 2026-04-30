@@ -155,7 +155,9 @@ event replay e UI. A politica de transicao e propositalmente conservadora:
 para estados executaveis; qualquer salto invalido vira `Blocked`. O
 `SubagentExecutionGate` no `coddy-agent` ja materializa o proximo contrato:
 planejar inicio de execucao sem side effects, aguardando aprovacao quando
-necessario e emitindo apenas a sequencia de lifecycle permitida.
+necessario e emitindo apenas a sequencia de lifecycle permitida. O runtime usa
+esse gate como preview e ainda nao publica `Running`, evitando sugerir execucao
+real antes de existir um executor isolado.
 
 ### `crates/coddy-core`
 

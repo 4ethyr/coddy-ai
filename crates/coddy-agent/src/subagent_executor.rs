@@ -1,4 +1,4 @@
-use coddy_core::{SubagentLifecycleStatus, SubagentLifecycleUpdate};
+use coddy_core::{SubagentHandoffPrepared, SubagentLifecycleStatus, SubagentLifecycleUpdate};
 
 use crate::SubagentHandoffPlan;
 
@@ -18,6 +18,15 @@ pub struct SubagentExecutionStartPlan {
     pub lifecycle_updates: Vec<SubagentLifecycleUpdate>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentExecutionHandoff {
+    pub name: String,
+    pub mode: String,
+    pub approval_required: bool,
+    pub readiness_score: u8,
+    pub readiness_issues: Vec<String>,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct SubagentExecutionGate;
 
@@ -25,6 +34,15 @@ impl SubagentExecutionGate {
     pub fn plan_start(
         &self,
         handoff: &SubagentHandoffPlan,
+        approval_granted: bool,
+    ) -> SubagentExecutionStartPlan {
+        let handoff = SubagentExecutionHandoff::from(handoff);
+        self.plan_start_for(&handoff, approval_granted)
+    }
+
+    pub fn plan_start_for(
+        &self,
+        handoff: &SubagentExecutionHandoff,
         approval_granted: bool,
     ) -> SubagentExecutionStartPlan {
         if let Some(reason) = blocked_reason(handoff) {
@@ -63,7 +81,31 @@ impl SubagentExecutionGate {
     }
 }
 
-fn blocked_reason(handoff: &SubagentHandoffPlan) -> Option<String> {
+impl From<&SubagentHandoffPlan> for SubagentExecutionHandoff {
+    fn from(handoff: &SubagentHandoffPlan) -> Self {
+        Self {
+            name: handoff.name.clone(),
+            mode: handoff.mode.as_str().to_string(),
+            approval_required: handoff.approval_required,
+            readiness_score: handoff.readiness_score,
+            readiness_issues: handoff.readiness_issues.clone(),
+        }
+    }
+}
+
+impl From<&SubagentHandoffPrepared> for SubagentExecutionHandoff {
+    fn from(handoff: &SubagentHandoffPrepared) -> Self {
+        Self {
+            name: handoff.name.clone(),
+            mode: handoff.mode.clone(),
+            approval_required: handoff.approval_required,
+            readiness_score: handoff.readiness_score,
+            readiness_issues: handoff.readiness_issues.clone(),
+        }
+    }
+}
+
+fn blocked_reason(handoff: &SubagentExecutionHandoff) -> Option<String> {
     let mut reasons = Vec::new();
 
     if handoff.readiness_score < READY_SCORE {
@@ -82,13 +124,13 @@ fn blocked_reason(handoff: &SubagentHandoffPlan) -> Option<String> {
 }
 
 fn lifecycle_update(
-    handoff: &SubagentHandoffPlan,
+    handoff: &SubagentExecutionHandoff,
     status: SubagentLifecycleStatus,
     reason: Option<String>,
 ) -> SubagentLifecycleUpdate {
     SubagentLifecycleUpdate {
         name: handoff.name.clone(),
-        mode: handoff.mode.as_str().to_string(),
+        mode: handoff.mode.clone(),
         status,
         readiness_score: handoff.readiness_score,
         reason,
@@ -183,6 +225,38 @@ mod tests {
 
         assert_eq!(handoff.mode, SubagentMode::ReadOnly);
         assert!(!handoff.approval_required);
+        assert_eq!(plan.status, SubagentExecutionStartStatus::ReadyToStart);
+        assert_eq!(
+            plan.lifecycle_updates
+                .iter()
+                .map(|update| update.status)
+                .collect::<Vec<_>>(),
+            vec![
+                SubagentLifecycleStatus::Prepared,
+                SubagentLifecycleStatus::Approved,
+                SubagentLifecycleStatus::Running,
+            ]
+        );
+    }
+
+    #[test]
+    fn accepts_core_handoff_contracts_from_runtime() {
+        let handoff = SubagentHandoffPrepared {
+            name: "security-reviewer".to_string(),
+            mode: "read-only".to_string(),
+            approval_required: false,
+            allowed_tools: vec!["filesystem.read_file".to_string()],
+            timeout_ms: 60_000,
+            max_context_tokens: 8_000,
+            validation_checklist: vec!["Ground findings in evidence.".to_string()],
+            safety_notes: vec!["Do not expose secrets.".to_string()],
+            readiness_score: 100,
+            readiness_issues: Vec::new(),
+        };
+        let execution_handoff = SubagentExecutionHandoff::from(&handoff);
+
+        let plan = SubagentExecutionGate.plan_start_for(&execution_handoff, false);
+
         assert_eq!(plan.status, SubagentExecutionStartStatus::ReadyToStart);
         assert_eq!(
             plan.lifecycle_updates

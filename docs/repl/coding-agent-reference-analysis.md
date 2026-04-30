@@ -777,7 +777,8 @@ Escopo entregue:
   `None -> Running` ou readiness abaixo de 100 viram `Blocked`;
 - `SubagentExecutionGate` cria o plano de inicio do executor real sem side
   effects, bloqueando readiness incompleto e aguardando aprovacao quando
-  necessario;
+  necessario; o runtime usa esse gate como preview, publicando somente
+  `Prepared` ou `Blocked` ate existir execucao isolada real;
 - o system prompt recebe um resumo do score, mas o evento preserva valores
   completos para observabilidade;
 - o frontend exibe a atividade de subagents no painel agentic mantendo o padrao
