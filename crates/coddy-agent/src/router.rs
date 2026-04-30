@@ -36,6 +36,7 @@ pub struct LocalToolRouter {
     shell_executor: ShellExecutor,
     subagents: SubagentRegistry,
     pending_edits: Arc<Mutex<HashMap<Uuid, EditPreview>>>,
+    pending_sensitive_reads: Arc<Mutex<HashMap<Uuid, ToolCall>>>,
     pending_shells: Arc<Mutex<HashMap<Uuid, ShellPlan>>>,
 }
 
@@ -56,6 +57,7 @@ impl LocalToolRouter {
             shell_executor: ShellExecutor::with_config(workspace_root, shell_config)?,
             subagents: SubagentRegistry::default(),
             pending_edits: Arc::new(Mutex::new(HashMap::new())),
+            pending_sensitive_reads: Arc::new(Mutex::new(HashMap::new())),
             pending_shells: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -78,6 +80,13 @@ impl LocalToolRouter {
             .len()
     }
 
+    pub fn pending_sensitive_read_count(&self) -> usize {
+        self.pending_sensitive_reads
+            .lock()
+            .expect("pending sensitive reads mutex poisoned")
+            .len()
+    }
+
     pub fn route(&self, call: &ToolCall) -> LocalToolRouteOutcome {
         let Some(definition) = self.registry.get(&call.tool_name) else {
             return failed_outcome(
@@ -91,9 +100,10 @@ impl LocalToolRouter {
         }
 
         match call.tool_name.as_str() {
-            LIST_FILES_TOOL | READ_FILE_TOOL | SEARCH_FILES_TOOL => {
+            LIST_FILES_TOOL | SEARCH_FILES_TOOL => {
                 LocalToolRouteOutcome::from_execution(self.filesystem.execute_with_events(call))
             }
+            READ_FILE_TOOL => self.plan_or_execute_read_file(call),
             PREVIEW_EDIT_TOOL => self.preview_edit(call),
             APPLY_EDIT_TOOL => self.apply_permission_reply_tool(call),
             SHELL_RUN_TOOL => self.plan_or_execute_shell(call),
@@ -127,6 +137,16 @@ impl LocalToolRouter {
             return LocalToolRouteOutcome::from_execution_with_prefix(execution, vec![reply_event]);
         }
 
+        if let Some(call) = self
+            .pending_sensitive_reads
+            .lock()
+            .expect("pending sensitive reads mutex poisoned")
+            .remove(&request_id)
+        {
+            let execution = self.execute_sensitive_read_reply(&call, reply);
+            return LocalToolRouteOutcome::from_execution_with_prefix(execution, vec![reply_event]);
+        }
+
         if let Some(plan) = self
             .pending_shells
             .lock()
@@ -156,6 +176,68 @@ impl LocalToolRouter {
                 },
             ],
             permission_request: None,
+        }
+    }
+
+    fn plan_or_execute_read_file(&self, call: &ToolCall) -> LocalToolRouteOutcome {
+        match self.filesystem.sensitive_read_permission_request(call) {
+            Ok(Some(permission_request)) => {
+                self.pending_sensitive_reads
+                    .lock()
+                    .expect("pending sensitive reads mutex poisoned")
+                    .insert(permission_request.id, call.clone());
+                LocalToolRouteOutcome {
+                    result: None,
+                    events: vec![ReplEvent::PermissionRequested {
+                        request: permission_request.clone(),
+                    }],
+                    permission_request: Some(permission_request),
+                }
+            }
+            Ok(None) => {
+                LocalToolRouteOutcome::from_execution(self.filesystem.execute_with_events(call))
+            }
+            Err(error) => {
+                failed_outcome(call.id, READ_FILE_TOOL.to_string(), error.into_tool_error())
+            }
+        }
+    }
+
+    fn execute_sensitive_read_reply(
+        &self,
+        call: &ToolCall,
+        reply: PermissionReply,
+    ) -> ToolExecution {
+        match reply {
+            PermissionReply::Reject => {
+                let path = call.input["path"].as_str().unwrap_or("<unknown>");
+                let started_at = unix_ms_now();
+                let result = ToolResult::denied(
+                    call.id,
+                    ToolError::new(
+                        "permission_rejected",
+                        format!("permission was rejected for sensitive read: {path}"),
+                        false,
+                    ),
+                    started_at,
+                    unix_ms_now(),
+                );
+                ToolExecution {
+                    result,
+                    events: vec![
+                        ReplEvent::ToolStarted {
+                            name: READ_FILE_TOOL.to_string(),
+                        },
+                        ReplEvent::ToolCompleted {
+                            name: READ_FILE_TOOL.to_string(),
+                            status: ToolStatus::Denied,
+                        },
+                    ],
+                }
+            }
+            PermissionReply::Once | PermissionReply::Always => {
+                self.filesystem.execute_with_events(call)
+            }
         }
     }
 
@@ -974,6 +1056,64 @@ mod tests {
             outcome.result.expect("result").output.expect("output").text,
             "# Coddy\n"
         );
+    }
+
+    #[test]
+    fn sensitive_read_requires_permission_then_executes_redacted_on_reply() {
+        let workspace = TempWorkspace::new();
+        workspace.write(".env", "OPENAI_API_KEY=sk-secret-token\nPUBLIC_FLAG=true\n");
+        let router = LocalToolRouter::new(&workspace.path).expect("router");
+        let session_id = Uuid::new_v4();
+
+        let outcome = router.route(&call(session_id, READ_FILE_TOOL, json!({ "path": ".env" })));
+
+        assert!(outcome.result.is_none());
+        let request = outcome.permission_request.expect("permission request");
+        assert_eq!(request.tool_name.as_str(), READ_FILE_TOOL);
+        assert_eq!(
+            request.permission,
+            coddy_core::ToolPermission::ReadWorkspace
+        );
+        assert_eq!(request.patterns, vec![".env"]);
+        assert_eq!(request.risk_level, coddy_core::ToolRiskLevel::High);
+        assert_eq!(request.metadata["reason"], json!("sensitive_file_read"));
+        assert_eq!(router.pending_sensitive_read_count(), 1);
+        assert!(outcome
+            .events
+            .iter()
+            .any(|event| matches!(event, ReplEvent::PermissionRequested { .. })));
+
+        let approved = router.reply_permission(request.id, PermissionReply::Once);
+
+        assert_eq!(approved.status(), Some(ToolResultStatus::Succeeded));
+        let output = approved.result.expect("result").output.expect("output");
+        assert_eq!(output.text, "OPENAI_API_KEY=[REDACTED]\nPUBLIC_FLAG=true");
+        assert_eq!(output.metadata["sensitive"], json!(true));
+        assert_eq!(router.pending_sensitive_read_count(), 0);
+        assert!(matches!(
+            approved.events.first(),
+            Some(ReplEvent::PermissionReplied { request_id, reply })
+                if *request_id == request.id && *reply == PermissionReply::Once
+        ));
+    }
+
+    #[test]
+    fn sensitive_read_rejection_denies_without_reading_file() {
+        let workspace = TempWorkspace::new();
+        workspace.write(".env", "OPENAI_API_KEY=sk-secret-token\n");
+        let router = LocalToolRouter::new(&workspace.path).expect("router");
+        let session_id = Uuid::new_v4();
+
+        let outcome = router.route(&call(session_id, READ_FILE_TOOL, json!({ "path": ".env" })));
+        let request = outcome.permission_request.expect("permission request");
+
+        let rejected = router.reply_permission(request.id, PermissionReply::Reject);
+
+        assert_eq!(rejected.status(), Some(ToolResultStatus::Denied));
+        let error = rejected.result.expect("result").error.expect("error");
+        assert_eq!(error.code, "permission_rejected");
+        assert!(error.message.contains("sensitive read"));
+        assert_eq!(router.pending_sensitive_read_count(), 0);
     }
 
     #[test]

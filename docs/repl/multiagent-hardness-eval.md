@@ -22,7 +22,7 @@ cargo test -p coddy-ipc -p coddy-agent -p coddy-runtime
 Result:
 
 - `coddy`: 44 passed
-- `coddy-agent`: 143 passed
+- `coddy-agent`: 145 passed
 - `coddy-ipc`: 22 passed
 - repository boundaries: 2 passed
 - `coddy-runtime`: 38 passed
@@ -484,6 +484,33 @@ Validation:
 - `npm run build`: passed.
 - `cargo test -p coddy-agent -p coddy-runtime`: passed.
 
+### Battery 20: Sensitive Read Approval Gate
+
+Goal: prevent model-initiated reads of sensitive workspace files from opening the file before the
+user explicitly approves the access.
+
+Implemented result:
+
+- `LocalToolRouter` now intercepts `filesystem.read_file` calls targeting sensitive paths such as
+  `.env` before delegating to the filesystem executor.
+- Sensitive reads create a `PermissionRequested` event with `ReadWorkspace`, `High` risk,
+  `sensitive_file_read` metadata and the exact workspace-relative pattern.
+- Pending sensitive reads are stored separately from edit and shell approvals.
+- `Once` and `Always` execute the original read through the existing filesystem executor, preserving
+  redaction and read tracking.
+- `Reject` returns a denied tool result and does not read the file.
+- The runtime now stops the model tool loop when a sensitive read approval is pending instead of
+  sending a fake observation back to the model.
+- After approval, the runtime publishes the safe context item for the redacted read output.
+
+Validation:
+
+- `cargo test -p coddy-agent sensitive_read`: 2 tests passed.
+- `cargo test -p coddy-runtime sensitive_file`: 1 test passed.
+- `cargo test -p coddy-runtime`: 38 tests passed.
+- `cargo test -p coddy -p coddy-agent -p coddy-runtime -p coddy-ipc`: passed.
+- `cargo clippy -p coddy -p coddy-agent -p coddy-runtime -p coddy-ipc --all-targets -- -D warnings`: passed.
+
 ## Current Assessment
 
 The multiagent harness is now measurable before execution. It can compose a team plan, expose
@@ -498,12 +525,12 @@ metrics when present. The runtime now also exposes a safe `subagent.reduce_outpu
 turns can validate declared subagent outputs through the same reducer before responding. The
 Electron frontend now also has a dedicated E2E smoke for the model-selection, message, tool
 approval and subagent-activity path, using the production React app and IPC client contract against
-a simulated backend.
+a simulated backend. Sensitive workspace reads now require approval before file access, then still
+pass through source-level redaction after approval.
 
 Remaining gaps:
 
 - no real isolated subagent executor yet;
-- sensitive path reads should be guarded before tool execution, not only redacted after observation;
 - multiagent output consolidation exists as a deterministic reducer and local validation tool, but
   isolated subagent sessions still need to feed it real generated outputs automatically.
 - the E2E smoke validates renderer behavior and IPC contracts, but not a spawned Electron window

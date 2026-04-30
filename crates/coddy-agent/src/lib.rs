@@ -812,6 +812,40 @@ impl ReadOnlyToolExecutor {
         }
     }
 
+    pub fn sensitive_read_permission_request(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<PermissionRequest>, AgentError> {
+        let path = required_string_field(&call.input, "path")?;
+        let file_path = self.workspace.resolve_existing(path)?;
+        if !file_path.is_file() {
+            return Err(AgentError::NotFile(
+                self.workspace.relative_display(&file_path),
+            ));
+        }
+        let relative_path = self.workspace.relative_display(&file_path);
+        if !path_looks_sensitive(&relative_path) {
+            return Ok(None);
+        }
+
+        PermissionRequest::new(
+            call.session_id,
+            call.run_id,
+            Some(call.id),
+            ToolName::new(READ_FILE_TOOL).expect("built-in tool name is valid"),
+            ToolPermission::ReadWorkspace,
+            vec![relative_path.clone()],
+            ToolRiskLevel::High,
+            json!({
+                "path": relative_path,
+                "reason": "sensitive_file_read",
+            }),
+            call.requested_at_unix_ms,
+        )
+        .map(Some)
+        .map_err(|error| AgentError::PermissionContract(error.to_string()))
+    }
+
     pub fn execute_with_events(&self, call: &ToolCall) -> ToolExecution {
         let result = self.execute(call);
         let events = vec![

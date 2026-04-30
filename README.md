@@ -358,6 +358,7 @@ cargo test
 cd apps/coddy-electron
 npm test -- modelProviders ModelSelector
 npm test
+npm run test:e2e
 npm run typecheck
 npm run typecheck:main
 npm run lint
@@ -381,6 +382,7 @@ Electron frontend:
 ```bash
 cd apps/coddy-electron
 npm test
+npm run test:e2e
 npm run typecheck
 npm run typecheck:main
 npm run lint
