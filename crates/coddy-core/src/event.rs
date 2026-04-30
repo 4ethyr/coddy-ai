@@ -51,12 +51,18 @@ pub struct SubagentHandoffPrepared {
     pub approval_required: bool,
     pub allowed_tools: Vec<String>,
     pub required_output_fields: Vec<String>,
+    #[serde(default = "default_true")]
+    pub output_additional_properties_allowed: bool,
     pub timeout_ms: u64,
     pub max_context_tokens: u32,
     pub validation_checklist: Vec<String>,
     pub safety_notes: Vec<String>,
     pub readiness_score: u8,
     pub readiness_issues: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]

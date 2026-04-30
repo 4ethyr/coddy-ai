@@ -300,6 +300,8 @@ function subagentActivityFromLifecycleUpdate(
     status,
     readiness_score: update.readiness_score,
     required_output_fields: previous?.required_output_fields ?? [],
+    output_additional_properties_allowed:
+      previous?.output_additional_properties_allowed ?? true,
     reason,
   }
 }
@@ -316,6 +318,8 @@ function subagentActivityFromHandoffPrepared(
     status: reason ? 'Blocked' : previous?.status ?? 'Prepared',
     readiness_score: handoff.readiness_score,
     required_output_fields: handoff.required_output_fields,
+    output_additional_properties_allowed:
+      handoff.output_additional_properties_allowed,
     reason: reason ?? previous?.reason ?? null,
   }
 }

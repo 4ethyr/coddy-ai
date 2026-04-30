@@ -79,6 +79,7 @@ describe('SessionManager', () => {
         status: 'Prepared',
         readiness_score: 100,
         required_output_fields: ['score', 'passed'],
+        output_additional_properties_allowed: false,
         reason: null,
       },
     ]
@@ -111,6 +112,7 @@ describe('SessionManager', () => {
         status: 'Prepared',
         readiness_score: 100,
         required_output_fields: ['score', 'passed'],
+        output_additional_properties_allowed: false,
         reason: null,
       },
     ])

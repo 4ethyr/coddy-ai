@@ -57,6 +57,7 @@ export interface SubagentActivity {
   status: SubagentLifecycleStatus
   readiness_score: number
   required_output_fields: string[]
+  output_additional_properties_allowed: boolean
   reason: string | null
 }
 

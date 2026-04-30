@@ -64,6 +64,7 @@ describe('sessionReducer', () => {
             status: 'Prepared',
             readiness_score: 100,
             required_output_fields: ['score', 'passed'],
+            output_additional_properties_allowed: false,
             reason: null,
           },
         ],
@@ -549,6 +550,7 @@ describe('sessionReducer', () => {
             approval_required: true,
             allowed_tools: ['filesystem.read_file', 'shell.run'],
             required_output_fields: ['score', 'passed'],
+            output_additional_properties_allowed: false,
             timeout_ms: 60000,
             max_context_tokens: 8000,
             validation_checklist: ['Use deterministic checks'],
@@ -571,6 +573,7 @@ describe('sessionReducer', () => {
           status: 'Prepared',
           readiness_score: 100,
           required_output_fields: ['score', 'passed'],
+          output_additional_properties_allowed: false,
           reason: null,
         },
       ])
@@ -607,6 +610,7 @@ describe('sessionReducer', () => {
           status: 'Prepared',
           readiness_score: 100,
           required_output_fields: [],
+          output_additional_properties_allowed: true,
           reason: null,
         },
       ])
@@ -623,6 +627,7 @@ describe('sessionReducer', () => {
             status: 'Prepared',
             readiness_score: 100,
             required_output_fields: ['changedFiles', 'summary'],
+            output_additional_properties_allowed: false,
             reason: null,
           },
         ],
@@ -649,6 +654,7 @@ describe('sessionReducer', () => {
           status: 'Blocked',
           readiness_score: 80,
           required_output_fields: ['changedFiles', 'summary'],
+          output_additional_properties_allowed: false,
           reason: 'workspace-write handoff must include preview edit capability',
         },
       ])
@@ -678,6 +684,7 @@ describe('sessionReducer', () => {
           status: 'Blocked',
           readiness_score: 100,
           required_output_fields: [],
+          output_additional_properties_allowed: true,
           reason: 'invalid subagent lifecycle transition: None -> Running',
         },
       ])
@@ -731,6 +738,7 @@ describe('sessionReducer', () => {
           status: 'Completed',
           readiness_score: 100,
           required_output_fields: [],
+          output_additional_properties_allowed: true,
           reason: null,
         },
       ])

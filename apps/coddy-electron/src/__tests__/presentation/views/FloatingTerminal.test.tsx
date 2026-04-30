@@ -97,6 +97,7 @@ describe('FloatingTerminal', () => {
           status: 'Prepared',
           readiness_score: 100,
           required_output_fields: ['score', 'passed'],
+          output_additional_properties_allowed: false,
           reason: null,
         },
       ],
@@ -106,7 +107,7 @@ describe('FloatingTerminal', () => {
 
     expect(screen.getByText('agent.subagents')).toBeInTheDocument()
     expect(screen.getByText('eval-runner [evaluation]')).toBeInTheDocument()
-    expect(screen.getByText('output: score, passed')).toBeInTheDocument()
+    expect(screen.getByText('output: score, passed // strict')).toBeInTheDocument()
     expect(screen.getByText('Prepared // 100')).toBeInTheDocument()
   })
 

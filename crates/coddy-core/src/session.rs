@@ -62,6 +62,8 @@ pub struct SubagentActivity {
     pub readiness_score: u8,
     #[serde(default)]
     pub required_output_fields: Vec<String>,
+    #[serde(default = "default_true")]
+    pub output_additional_properties_allowed: bool,
     pub reason: Option<String>,
 }
 
@@ -290,6 +292,7 @@ impl SubagentActivity {
             status,
             readiness_score: handoff.readiness_score,
             required_output_fields: handoff.required_output_fields.clone(),
+            output_additional_properties_allowed: handoff.output_additional_properties_allowed,
             reason: reason.or_else(|| previous.and_then(|activity| activity.reason.clone())),
         }
     }
@@ -312,6 +315,9 @@ impl SubagentActivity {
             required_output_fields: previous
                 .map(|activity| activity.required_output_fields.clone())
                 .unwrap_or_default(),
+            output_additional_properties_allowed: previous
+                .map(|activity| activity.output_additional_properties_allowed)
+                .unwrap_or(true),
             reason,
         }
     }
@@ -323,6 +329,10 @@ impl SubagentActivity {
     fn id_for_handoff(handoff: &crate::SubagentHandoffPrepared) -> String {
         format!("{}:{}", handoff.name, handoff.mode)
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn handoff_readiness_reason(handoff: &crate::SubagentHandoffPrepared) -> Option<String> {
@@ -510,6 +520,7 @@ mod tests {
                     "passed".to_string(),
                     "failedChecks".to_string(),
                 ],
+                output_additional_properties_allowed: false,
                 timeout_ms: 60_000,
                 max_context_tokens: 8_000,
                 validation_checklist: vec!["Report deterministic metrics.".to_string()],
@@ -537,6 +548,7 @@ mod tests {
                 "failedChecks".to_string()
             ]
         );
+        assert!(!session.subagent_activity[0].output_additional_properties_allowed);
         assert_eq!(
             session.subagent_activity[0].status,
             crate::SubagentLifecycleStatus::Prepared

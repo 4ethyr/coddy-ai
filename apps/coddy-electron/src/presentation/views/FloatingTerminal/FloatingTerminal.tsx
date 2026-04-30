@@ -262,7 +262,10 @@ export function FloatingTerminal() {
                       </span>
                       {activity.required_output_fields.length > 0 && (
                         <span className="truncate text-[10px] uppercase tracking-[0.14em] text-muted">
-                          output: {formatRequiredOutputFields(activity.required_output_fields)}
+                          output: {formatRequiredOutputFields(
+                            activity.required_output_fields,
+                            activity.output_additional_properties_allowed,
+                          )}
                         </span>
                       )}
                     </span>
@@ -391,10 +394,14 @@ export function FloatingTerminal() {
   )
 }
 
-function formatRequiredOutputFields(fields: string[]): string {
+function formatRequiredOutputFields(
+  fields: string[],
+  additionalPropertiesAllowed: boolean,
+): string {
   const visibleFields = fields.slice(0, 3).join(', ')
   const remaining = fields.length > 3 ? ` +${fields.length - 3}` : ''
-  return `${visibleFields}${remaining}`
+  const strictness = additionalPropertiesAllowed ? 'open' : 'strict'
+  return `${visibleFields}${remaining} // ${strictness}`
 }
 
 function SystemLine({ text }: { text: string }) {

@@ -194,7 +194,9 @@ campos obrigatórios do schema e não inclui campos extras quando
 de `Completed`.
 
 O evento `SubagentHandoffPrepared` também expõe `required_output_fields`,
-derivado de `outputSchema.required`, para que frontend, snapshot e executor
+derivado de `outputSchema.required`, e
+`output_additional_properties_allowed`, derivado de
+`outputSchema.additionalProperties`, para que frontend, snapshot e executor
 trabalhem com o mesmo contrato de saída. `ReplSession.subagent_activity`
 preserva esses campos após replay e reconnect, e os updates de lifecycle mantêm
 o contrato já preparado em vez de descartá-lo.

@@ -158,6 +158,18 @@ impl From<&SubagentHandoffPrepared> for SubagentExecutionHandoff {
     }
 }
 
+impl From<&SubagentHandoffPrepared> for SubagentOutputContract {
+    fn from(handoff: &SubagentHandoffPrepared) -> Self {
+        Self {
+            name: handoff.name.clone(),
+            mode: handoff.mode.clone(),
+            readiness_score: handoff.readiness_score,
+            required_fields: handoff.required_output_fields.clone(),
+            additional_properties_allowed: handoff.output_additional_properties_allowed,
+        }
+    }
+}
+
 impl From<&SubagentHandoffPlan> for SubagentOutputContract {
     fn from(handoff: &SubagentHandoffPlan) -> Self {
         Self {
@@ -509,6 +521,7 @@ mod tests {
             approval_required: false,
             allowed_tools: vec!["filesystem.read_file".to_string()],
             required_output_fields: vec!["summary".to_string()],
+            output_additional_properties_allowed: false,
             timeout_ms: 60_000,
             max_context_tokens: 8_000,
             validation_checklist: vec!["Ground findings in evidence.".to_string()],
@@ -531,6 +544,41 @@ mod tests {
                 SubagentLifecycleStatus::Approved,
                 SubagentLifecycleStatus::Running,
             ]
+        );
+    }
+
+    #[test]
+    fn builds_output_contract_from_core_handoff() {
+        let handoff = SubagentHandoffPrepared {
+            name: "explorer".to_string(),
+            mode: "read-only".to_string(),
+            approval_required: false,
+            allowed_tools: vec![READ_FILE_TOOL.to_string()],
+            required_output_fields: vec!["summary".to_string(), "risks".to_string()],
+            output_additional_properties_allowed: false,
+            timeout_ms: 60_000,
+            max_context_tokens: 8_000,
+            validation_checklist: vec!["Ground findings in repository evidence.".to_string()],
+            safety_notes: vec!["Do not expose secrets.".to_string()],
+            readiness_score: 100,
+            readiness_issues: Vec::new(),
+        };
+
+        let contract = SubagentOutputContract::from(&handoff);
+        let plan = SubagentExecutionGate.plan_completion(
+            &contract,
+            &json!({
+                "summary": "Mapped the repository.",
+                "risks": [],
+                "extra": "not allowed"
+            }),
+        );
+
+        assert!(!plan.accepted);
+        assert_eq!(plan.unexpected_fields, vec!["extra".to_string()]);
+        assert_eq!(
+            plan.reason.as_deref(),
+            Some("unexpected output fields: extra")
         );
     }
 

@@ -1440,12 +1440,13 @@ fn subagent_handoff_prepared_from_output(output: &ToolOutput) -> Option<Subagent
         .and_then(|value| value.as_bool())
         .unwrap_or(true);
     let allowed_tools = array_string_values(handoff.get("allowedTools"), 16);
-    let required_output_fields = array_string_values(
-        handoff
-            .get("outputSchema")
-            .and_then(|schema| schema.get("required")),
-        32,
-    );
+    let output_schema = handoff.get("outputSchema");
+    let required_output_fields =
+        array_string_values(output_schema.and_then(|schema| schema.get("required")), 32);
+    let output_additional_properties_allowed = output_schema
+        .and_then(|schema| schema.get("additionalProperties"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
     let timeout_ms = handoff
         .get("timeoutMs")
         .and_then(|value| value.as_u64())
@@ -1470,6 +1471,7 @@ fn subagent_handoff_prepared_from_output(output: &ToolOutput) -> Option<Subagent
         approval_required,
         allowed_tools,
         required_output_fields,
+        output_additional_properties_allowed,
         timeout_ms,
         max_context_tokens,
         validation_checklist,
@@ -2379,6 +2381,7 @@ mod tests {
                     && handoff.readiness_score == 100
                     && handoff.readiness_issues.is_empty()
                     && handoff.allowed_tools.iter().any(|tool| tool == "shell.run")
+                    && !handoff.output_additional_properties_allowed
                     && handoff.required_output_fields == [
                         "score".to_string(),
                         "passed".to_string(),
@@ -2419,6 +2422,7 @@ mod tests {
                 "recommendations".to_string()
             ]
         );
+        assert!(!snapshot.session.subagent_activity[0].output_additional_properties_allowed);
     }
 
     #[test]
@@ -2448,6 +2452,7 @@ mod tests {
         assert_eq!(handoff.validation_checklist[0].len(), 220);
         assert_eq!(handoff.readiness_issues[0].len(), 220);
         assert!(handoff.required_output_fields.is_empty());
+        assert!(handoff.output_additional_properties_allowed);
 
         let preview = format_subagent_handoff_context(&output);
         assert!(preview.contains("Readiness score: 80"));
@@ -2462,6 +2467,7 @@ mod tests {
             approval_required: true,
             allowed_tools: vec!["filesystem.apply_edit".to_string()],
             required_output_fields: vec!["changedFiles".to_string(), "summary".to_string()],
+            output_additional_properties_allowed: false,
             timeout_ms: 60_000,
             max_context_tokens: 8_000,
             validation_checklist: vec!["Preview edits before applying.".to_string()],
