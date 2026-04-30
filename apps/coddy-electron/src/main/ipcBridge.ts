@@ -17,6 +17,7 @@ import {
   type ProviderCredentialRecord,
 } from './secureCredentialStore'
 import { buildRuntimeCredentialEnvironment } from './runtimeCredentialBridge'
+import { redactSensitiveLogText } from './sensitiveLogRedaction'
 
 const CODDY_BIN = process.env.CODDY_BIN || 'coddy'
 
@@ -77,7 +78,9 @@ function coddySpawn(args: string[], env: Record<string, string> = {}): ChildProc
   })
 
   child.stderr?.on('data', (chunk: Buffer) => {
-    console.error(`[coddy stderr] ${chunk.toString().trim()}`)
+    console.error(
+      `[coddy stderr] ${redactSensitiveLogText(chunk.toString().trim())}`,
+    )
   })
 
   return child
