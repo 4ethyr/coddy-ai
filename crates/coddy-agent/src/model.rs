@@ -112,6 +112,7 @@ pub struct DefaultChatModelClient {
     ollama: OllamaChatModelClient,
     openai: OpenAiCompatibleChatModelClient,
     openrouter: OpenAiCompatibleChatModelClient,
+    gemini_api: GeminiApiChatModelClient,
     vertex_anthropic: VertexAnthropicChatModelClient,
     unavailable: UnavailableChatModelClient,
 }
@@ -147,6 +148,26 @@ trait OpenAiCompatibleTransport: std::fmt::Debug + Send + Sync {
     fn chat(
         &self,
         provider: &str,
+        endpoint: &str,
+        credential: &ModelCredential,
+        body: &Value,
+    ) -> ChatModelResult;
+}
+
+#[derive(Debug, Clone)]
+pub struct GeminiApiChatModelClient {
+    base_url: String,
+    transport: Arc<dyn GeminiApiTransport>,
+}
+
+#[derive(Debug, Clone)]
+struct HttpGeminiApiTransport {
+    timeout: Duration,
+}
+
+trait GeminiApiTransport: std::fmt::Debug + Send + Sync {
+    fn generate_content(
+        &self,
         endpoint: &str,
         credential: &ModelCredential,
         body: &Value,
@@ -306,6 +327,7 @@ impl Default for DefaultChatModelClient {
             ollama: OllamaChatModelClient::default(),
             openai: OpenAiCompatibleChatModelClient::openai(),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            gemini_api: GeminiApiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::default(),
             unavailable: UnavailableChatModelClient,
         }
@@ -387,6 +409,37 @@ impl HttpOpenAiCompatibleTransport {
     }
 }
 
+impl Default for GeminiApiChatModelClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GeminiApiChatModelClient {
+    pub fn new() -> Self {
+        Self {
+            base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
+            transport: Arc::new(HttpGeminiApiTransport::new()),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_transport(base_url: impl Into<String>, transport: Arc<dyn GeminiApiTransport>) -> Self {
+        Self {
+            base_url: base_url.into(),
+            transport,
+        }
+    }
+}
+
+impl HttpGeminiApiTransport {
+    fn new() -> Self {
+        Self {
+            timeout: Duration::from_secs(120),
+        }
+    }
+}
+
 impl Default for VertexAnthropicChatModelClient {
     fn default() -> Self {
         Self::new()
@@ -420,7 +473,10 @@ impl ChatModelClient for DefaultChatModelClient {
             "ollama" => self.ollama.complete(request),
             "openai" => self.openai.complete(request),
             "openrouter" => self.openrouter.complete(request),
-            "vertex" => self.vertex_anthropic.complete(request),
+            "vertex" if is_vertex_anthropic_model(&request.model.name) => {
+                self.vertex_anthropic.complete(request)
+            }
+            "vertex" => self.gemini_api.complete(request),
             _ => self.unavailable.complete(request),
         }
     }
@@ -481,6 +537,42 @@ impl ChatModelClient for OpenAiCompatibleChatModelClient {
             credential,
             &openai_compatible_chat_body(&request),
         )
+    }
+}
+
+impl ChatModelClient for GeminiApiChatModelClient {
+    fn complete(&self, request: ChatRequest) -> ChatModelResult {
+        if request.model.provider != "vertex" || is_vertex_anthropic_model(&request.model.name) {
+            return Err(ChatModelError::UnsupportedModel {
+                provider: request.model.provider,
+                model: request.model.name,
+            });
+        }
+
+        let credential = request.model_credential.as_ref().ok_or_else(|| {
+            ChatModelError::InvalidRequest(
+                "Gemini API chat execution requires a Google API key".to_string(),
+            )
+        })?;
+        let token = credential.token.trim();
+        if token.is_empty() {
+            return Err(ChatModelError::InvalidRequest(
+                "Gemini API chat execution requires a non-empty Google API key".to_string(),
+            ));
+        }
+        if looks_like_google_oauth_token(token) {
+            return Err(ChatModelError::InvalidRequest(
+                "Gemini API chat execution requires a Google API key; OAuth/ADC credentials are only wired for Vertex Claude".to_string(),
+            ));
+        }
+
+        let endpoint = gemini_api_generate_content_url(
+            &self.base_url,
+            credential.endpoint.as_deref(),
+            &request.model.name,
+        )?;
+        self.transport
+            .generate_content(&endpoint, credential, &gemini_api_chat_body(&request)?)
     }
 }
 
@@ -599,6 +691,46 @@ impl OpenAiCompatibleTransport for HttpOpenAiCompatibleTransport {
             }
             Err(ureq::Error::Transport(error)) => Err(ChatModelError::Transport {
                 provider: provider.to_string(),
+                message: error.to_string(),
+                retryable: true,
+            }),
+        }
+    }
+}
+
+impl GeminiApiTransport for HttpGeminiApiTransport {
+    fn generate_content(
+        &self,
+        endpoint: &str,
+        credential: &ModelCredential,
+        body: &Value,
+    ) -> ChatModelResult {
+        let body = serde_json::to_string(body).map_err(|error| {
+            ChatModelError::InvalidRequest(format!("failed to encode Gemini API request: {error}"))
+        })?;
+        let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
+        let response = agent
+            .post(endpoint)
+            .set("Accept", "application/json")
+            .set("Content-Type", "application/json")
+            .set("x-goog-api-key", credential.token.trim())
+            .send_string(&body);
+
+        match response {
+            Ok(response) => {
+                let body = response.into_string().map_err(gemini_api_transport_error)?;
+                parse_gemini_api_response(&body)
+            }
+            Err(ureq::Error::Status(status, response)) => {
+                let body = response.into_string().unwrap_or_default();
+                Err(ChatModelError::ProviderError {
+                    provider: "vertex".to_string(),
+                    message: gemini_api_provider_error_message(&body, status),
+                    retryable: status == 429 || status >= 500,
+                })
+            }
+            Err(ureq::Error::Transport(error)) => Err(ChatModelError::Transport {
+                provider: "vertex".to_string(),
                 message: error.to_string(),
                 retryable: true,
             }),
@@ -861,6 +993,161 @@ fn openai_compatible_chat_url(
     } else {
         Ok(format!("{endpoint}/chat/completions"))
     }
+}
+
+fn gemini_api_chat_body(request: &ChatRequest) -> Result<Value, ChatModelError> {
+    let (system_instruction, contents) = gemini_api_contents(&request.messages)?;
+    let function_declarations = request
+        .tools
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.input_schema,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut body = serde_json::json!({
+        "contents": contents,
+    });
+    if let Some(system_instruction) = system_instruction {
+        body["systemInstruction"] = serde_json::json!({
+            "parts": [
+                { "text": system_instruction }
+            ]
+        });
+    }
+    if !function_declarations.is_empty() {
+        body["tools"] = serde_json::json!([
+            {
+                "functionDeclarations": function_declarations
+            }
+        ]);
+    }
+    if request.temperature.is_some() || request.max_output_tokens.is_some() {
+        let mut generation_config = serde_json::Map::new();
+        if let Some(temperature) = request.temperature {
+            generation_config.insert("temperature".to_string(), serde_json::json!(temperature));
+        }
+        if let Some(max_output_tokens) = request.max_output_tokens {
+            generation_config.insert(
+                "maxOutputTokens".to_string(),
+                serde_json::json!(max_output_tokens),
+            );
+        }
+        body["generationConfig"] = Value::Object(generation_config);
+    }
+    Ok(body)
+}
+
+fn gemini_api_contents(
+    messages: &[ChatMessage],
+) -> Result<(Option<String>, Vec<Value>), ChatModelError> {
+    let mut system = Vec::new();
+    let mut normalized = Vec::<(String, String)>::new();
+
+    for message in messages {
+        match message.role {
+            ChatMessageRole::System => system.push(message.content.trim().to_string()),
+            ChatMessageRole::User => normalized.push(("user".to_string(), message.content.clone())),
+            ChatMessageRole::Assistant => {
+                normalized.push(("model".to_string(), message.content.clone()))
+            }
+            ChatMessageRole::Tool => normalized.push((
+                "user".to_string(),
+                normalized_tool_observation_content(&message.content),
+            )),
+        }
+    }
+
+    let mut collapsed = Vec::<(String, String)>::new();
+    for (role, content) in normalized {
+        if content.trim().is_empty() {
+            continue;
+        }
+        if let Some((last_role, last_content)) = collapsed.last_mut() {
+            if *last_role == role {
+                last_content.push_str("\n\n");
+                last_content.push_str(&content);
+                continue;
+            }
+        }
+        collapsed.push((role, content));
+    }
+
+    if collapsed.is_empty() || collapsed[0].0 != "user" {
+        return Err(ChatModelError::InvalidRequest(
+            "Gemini API requests require at least one user message".to_string(),
+        ));
+    }
+
+    let contents = collapsed
+        .into_iter()
+        .map(|(role, content)| {
+            serde_json::json!({
+                "role": role,
+                "parts": [
+                    { "text": content }
+                ]
+            })
+        })
+        .collect();
+    let system = system
+        .into_iter()
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let system = if system.is_empty() {
+        None
+    } else {
+        Some(system)
+    };
+    Ok((system, contents))
+}
+
+fn gemini_api_generate_content_url(
+    default_base_url: &str,
+    endpoint_override: Option<&str>,
+    model: &str,
+) -> Result<String, ChatModelError> {
+    let base_url = match endpoint_override.map(str::trim) {
+        Some(endpoint) if endpoint.starts_with("https://") => endpoint,
+        Some(endpoint) if endpoint.contains("://") => {
+            return Err(ChatModelError::InvalidRequest(
+                "Gemini API runtime endpoint must use HTTPS".to_string(),
+            ));
+        }
+        _ => default_base_url,
+    }
+    .trim_end_matches('/');
+    if !base_url.starts_with("https://") {
+        return Err(ChatModelError::InvalidRequest(
+            "Gemini API runtime endpoint must use HTTPS".to_string(),
+        ));
+    }
+
+    let model = model.trim();
+    validate_gemini_model_name(model)?;
+    let model = model.strip_prefix("models/").unwrap_or(model);
+    Ok(format!("{base_url}/models/{model}:generateContent"))
+}
+
+fn validate_gemini_model_name(model: &str) -> Result<(), ChatModelError> {
+    if model.is_empty()
+        || model.chars().any(|character| character.is_whitespace())
+        || (model.contains('/') && !model.starts_with("models/"))
+    {
+        return Err(ChatModelError::InvalidRequest(
+            "Gemini API model name is invalid".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn looks_like_google_oauth_token(token: &str) -> bool {
+    token.starts_with("ya29.") || token.to_ascii_lowercase().starts_with("bearer ")
 }
 
 fn vertex_anthropic_chat_body(request: &ChatRequest) -> Result<Value, ChatModelError> {
@@ -1153,6 +1440,26 @@ fn openai_compatible_provider_error_message(provider: &str, body: &str, status: 
         .unwrap_or_else(|| format!("{provider} returned HTTP {status}"))
 }
 
+fn gemini_api_transport_error(error: std::io::Error) -> ChatModelError {
+    ChatModelError::Transport {
+        provider: "vertex".to_string(),
+        message: error.to_string(),
+        retryable: true,
+    }
+}
+
+fn gemini_api_provider_error_message(body: &str, status: u16) -> String {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value["error"]["message"]
+                .as_str()
+                .or_else(|| value["error"].as_str())
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| format!("Gemini API returned HTTP {status}"))
+}
+
 fn vertex_anthropic_transport_error(error: std::io::Error) -> ChatModelError {
     ChatModelError::Transport {
         provider: "vertex".to_string(),
@@ -1355,6 +1662,87 @@ fn parse_openai_compatible_tool_calls(
         .collect()
 }
 
+fn parse_gemini_api_response(body: &str) -> ChatModelResult {
+    let value: Value =
+        serde_json::from_str(body).map_err(|error| ChatModelError::InvalidProviderResponse {
+            provider: "vertex".to_string(),
+            message: format!("invalid JSON response: {error}"),
+        })?;
+    if let Some(message) = value["error"]["message"]
+        .as_str()
+        .or_else(|| value["error"].as_str())
+    {
+        return Err(ChatModelError::ProviderError {
+            provider: "vertex".to_string(),
+            message: message.to_string(),
+            retryable: false,
+        });
+    }
+
+    let candidate = value["candidates"]
+        .as_array()
+        .and_then(|candidates| candidates.first())
+        .ok_or_else(|| ChatModelError::InvalidProviderResponse {
+            provider: "vertex".to_string(),
+            message: "response did not include candidates".to_string(),
+        })?;
+    let parts = candidate["content"]["parts"].as_array().ok_or_else(|| {
+        ChatModelError::InvalidProviderResponse {
+            provider: "vertex".to_string(),
+            message: "response candidate did not include content parts".to_string(),
+        }
+    })?;
+
+    let mut text_parts = Vec::new();
+    let mut tool_calls = Vec::new();
+    for part in parts {
+        if let Some(text) = part["text"].as_str() {
+            if !text.is_empty() {
+                text_parts.push(text.to_string());
+            }
+        }
+        if let Some(function_call) = part.get("functionCall") {
+            let name = function_call["name"].as_str().ok_or_else(|| {
+                ChatModelError::InvalidProviderResponse {
+                    provider: "vertex".to_string(),
+                    message: "Gemini API function call is missing name".to_string(),
+                }
+            })?;
+            tool_calls.push(ChatToolCall {
+                id: None,
+                name: name.to_string(),
+                arguments: parse_tool_arguments_for_provider("vertex", &function_call["args"])?,
+            });
+        }
+    }
+
+    if text_parts.is_empty() && tool_calls.is_empty() {
+        return Err(ChatModelError::InvalidProviderResponse {
+            provider: "vertex".to_string(),
+            message: "response did not include assistant content or tool calls".to_string(),
+        });
+    }
+
+    let mut finish_reason = match candidate["finishReason"].as_str() {
+        Some("MAX_TOKENS") => ChatFinishReason::Length,
+        Some("SAFETY") | Some("RECITATION") | Some("BLOCKLIST") | Some("PROHIBITED_CONTENT") => {
+            ChatFinishReason::Error
+        }
+        _ => ChatFinishReason::Stop,
+    };
+    if !tool_calls.is_empty() {
+        finish_reason = ChatFinishReason::ToolCalls;
+    }
+    let text = text_parts.concat();
+
+    Ok(ChatResponse {
+        text,
+        deltas: text_parts,
+        finish_reason,
+        tool_calls,
+    })
+}
+
 fn parse_vertex_anthropic_response(body: &str) -> ChatModelResult {
     let value: Value =
         serde_json::from_str(body).map_err(|error| ChatModelError::InvalidProviderResponse {
@@ -1501,6 +1889,30 @@ mod tests {
             assert_eq!(credential.token, self.token);
             assert_eq!(body, &self.body);
             assert!(!body.to_string().contains(&self.token));
+            self.response.clone()
+        }
+    }
+
+    #[derive(Debug)]
+    struct StaticGeminiApiTransport {
+        endpoint: String,
+        token: String,
+        body: Value,
+        response: ChatModelResult,
+    }
+
+    impl GeminiApiTransport for StaticGeminiApiTransport {
+        fn generate_content(
+            &self,
+            endpoint: &str,
+            credential: &ModelCredential,
+            body: &Value,
+        ) -> ChatModelResult {
+            assert_eq!(endpoint, self.endpoint);
+            assert_eq!(credential.token, self.token);
+            assert_eq!(body, &self.body);
+            assert!(!body.to_string().contains(&self.token));
+            assert!(!endpoint.contains(&self.token));
             self.response.clone()
         }
     }
@@ -1681,6 +2093,7 @@ mod tests {
                 }),
             ),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            gemini_api: GeminiApiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::default(),
             unavailable: UnavailableChatModelClient,
         };
@@ -1795,6 +2208,171 @@ mod tests {
     }
 
     #[test]
+    fn default_client_routes_vertex_gemini_requests_to_gemini_api_adapter() {
+        let expected_body = serde_json::json!({
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        { "text": "hello" }
+                    ]
+                }
+            ],
+            "systemInstruction": {
+                "parts": [
+                    { "text": "system" }
+                ]
+            }
+        });
+        let client = DefaultChatModelClient {
+            ollama: OllamaChatModelClient::default(),
+            openai: OpenAiCompatibleChatModelClient::openai(),
+            openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            gemini_api: GeminiApiChatModelClient::with_transport(
+                "https://generativelanguage.googleapis.com/v1beta",
+                Arc::new(StaticGeminiApiTransport {
+                    endpoint: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent".to_string(),
+                    token: "AIza-gemini-key".to_string(),
+                    body: expected_body,
+                    response: Ok(ChatResponse::from_text("hi from gemini")),
+                }),
+            ),
+            vertex_anthropic: VertexAnthropicChatModelClient::default(),
+            unavailable: UnavailableChatModelClient,
+        };
+        let request = ChatRequest::new(
+            ModelRef {
+                provider: "vertex".to_string(),
+                name: "gemini-2.5-flash".to_string(),
+            },
+            vec![ChatMessage::system("system"), ChatMessage::user("hello")],
+        )
+        .expect("request")
+        .with_model_credential(Some(ModelCredential {
+            provider: "vertex".to_string(),
+            token: "AIza-gemini-key".to_string(),
+            endpoint: None,
+            metadata: Default::default(),
+        }))
+        .expect("credential");
+
+        assert_eq!(
+            client.complete(request),
+            Ok(ChatResponse::from_text("hi from gemini"))
+        );
+    }
+
+    #[test]
+    fn gemini_api_rejects_oauth_credentials() {
+        let client = GeminiApiChatModelClient::default();
+        let request = ChatRequest::new(
+            ModelRef {
+                provider: "vertex".to_string(),
+                name: "gemini-2.5-flash".to_string(),
+            },
+            vec![ChatMessage::user("hello")],
+        )
+        .expect("request")
+        .with_model_credential(Some(ModelCredential {
+            provider: "vertex".to_string(),
+            token: "ya29.oauth-token".to_string(),
+            endpoint: None,
+            metadata: Default::default(),
+        }))
+        .expect("credential");
+
+        let error = client.complete(request).expect_err("api key required");
+
+        assert_eq!(error.code(), "invalid_request");
+    }
+
+    #[test]
+    fn gemini_api_request_projects_tools_options_and_observations() {
+        let request = ChatRequest {
+            model: ModelRef {
+                provider: "vertex".to_string(),
+                name: "gemini-2.5-pro".to_string(),
+            },
+            messages: vec![
+                ChatMessage::system("system one"),
+                ChatMessage::system("system two"),
+                ChatMessage::user("user"),
+                ChatMessage::assistant("assistant"),
+                ChatMessage::tool("filesystem result"),
+            ],
+            tools: vec![ChatToolSpec {
+                name: "filesystem.list_files".to_string(),
+                description: "List files".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" }
+                    }
+                }),
+                risk_level: ToolRiskLevel::Low,
+                approval_policy: ApprovalPolicy::AutoApprove,
+            }],
+            model_credential: None,
+            temperature: Some(0.2),
+            max_output_tokens: Some(128),
+        };
+
+        let body = gemini_api_chat_body(&request).expect("body");
+
+        assert_eq!(
+            body["systemInstruction"]["parts"][0]["text"],
+            "system one\n\nsystem two"
+        );
+        assert_eq!(body["contents"][0]["role"], "user");
+        assert_eq!(body["contents"][1]["role"], "model");
+        assert_eq!(body["contents"][2]["role"], "user");
+        assert_eq!(
+            body["contents"][2]["parts"][0]["text"],
+            "Tool observations:\nfilesystem result"
+        );
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"][0]["name"],
+            "filesystem.list_files"
+        );
+        let temperature = body["generationConfig"]["temperature"]
+            .as_f64()
+            .expect("temperature");
+        assert!((temperature - 0.2).abs() < 0.000_001);
+        assert_eq!(body["generationConfig"]["maxOutputTokens"], 128);
+    }
+
+    #[test]
+    fn gemini_api_endpoint_uses_generate_content_without_key_in_url() {
+        assert_eq!(
+            gemini_api_generate_content_url(
+                "https://generativelanguage.googleapis.com/v1beta",
+                None,
+                "models/gemini-2.5-flash",
+            )
+            .expect("url"),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        );
+        assert_eq!(
+            gemini_api_generate_content_url(
+                "https://generativelanguage.googleapis.com/v1beta",
+                Some("us-east5"),
+                "gemini-2.5-flash",
+            )
+            .expect("region ignored for Gemini API"),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        );
+
+        let error = gemini_api_generate_content_url(
+            "https://generativelanguage.googleapis.com/v1beta",
+            Some("http://bad"),
+            "gemini-2.5-flash",
+        )
+        .expect_err("http endpoint rejected");
+
+        assert_eq!(error.code(), "invalid_request");
+    }
+
+    #[test]
     fn default_client_routes_vertex_claude_requests_to_vertex_anthropic_adapter() {
         let expected_body = serde_json::json!({
             "anthropic_version": "vertex-2023-10-16",
@@ -1809,6 +2387,7 @@ mod tests {
             ollama: OllamaChatModelClient::default(),
             openai: OpenAiCompatibleChatModelClient::openai(),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            gemini_api: GeminiApiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::with_transport(Arc::new(
                 StaticVertexAnthropicTransport {
                     endpoint: "https://us-east5-aiplatform.googleapis.com/v1/projects/coddy-dev/locations/us-east5/publishers/anthropic/models/claude-sonnet-4-5@20250929:rawPredict".to_string(),
@@ -2111,6 +2690,68 @@ mod tests {
             response.tool_calls,
             vec![ChatToolCall {
                 id: Some("call-1".to_string()),
+                name: "filesystem.list_files".to_string(),
+                arguments: serde_json::json!({ "path": "." }),
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_gemini_api_text_response() {
+        let body = serde_json::json!({
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            { "text": "hello" },
+                            { "text": " from gemini" }
+                        ]
+                    },
+                    "finishReason": "STOP"
+                }
+            ]
+        })
+        .to_string();
+
+        let response = parse_gemini_api_response(&body).expect("response");
+
+        assert_eq!(response.text, "hello from gemini");
+        assert_eq!(response.deltas, vec!["hello", " from gemini"]);
+        assert_eq!(response.finish_reason, ChatFinishReason::Stop);
+    }
+
+    #[test]
+    fn parses_gemini_api_function_calls() {
+        let body = serde_json::json!({
+            "candidates": [
+                {
+                    "content": {
+                        "role": "model",
+                        "parts": [
+                            {
+                                "functionCall": {
+                                    "name": "filesystem.list_files",
+                                    "args": { "path": "." }
+                                }
+                            }
+                        ]
+                    },
+                    "finishReason": "STOP"
+                }
+            ]
+        })
+        .to_string();
+
+        let response = parse_gemini_api_response(&body).expect("response");
+
+        assert_eq!(response.text, "");
+        assert!(response.deltas.is_empty());
+        assert_eq!(response.finish_reason, ChatFinishReason::ToolCalls);
+        assert_eq!(
+            response.tool_calls,
+            vec![ChatToolCall {
+                id: None,
                 name: "filesystem.list_files".to_string(),
                 arguments: serde_json::json!({ "path": "." }),
             }]

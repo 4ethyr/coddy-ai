@@ -91,6 +91,32 @@ describe('runtimeCredentialBridge', () => {
     })
   })
 
+  it('does not resolve gcloud project metadata for Gemini API-key runtime calls', async () => {
+    const store = {
+      get: vi.fn().mockResolvedValue({
+        apiKey: 'AIza-gemini-key',
+        endpoint: 'us-east5',
+      }),
+    }
+    const gcloudTokenProvider = vi.fn().mockResolvedValue('unused-token')
+    const gcloudProjectProvider = vi.fn().mockResolvedValue('coddy-dev')
+
+    const env = await buildRuntimeCredentialEnvironment(
+      { provider: 'vertex', name: 'gemini-2.5-flash' },
+      store,
+      gcloudTokenProvider,
+      gcloudProjectProvider,
+    )
+
+    expect(gcloudTokenProvider).not.toHaveBeenCalled()
+    expect(gcloudProjectProvider).not.toHaveBeenCalled()
+    expect(JSON.parse(env[CODDY_EPHEMERAL_MODEL_CREDENTIAL_ENV] ?? '{}')).toEqual({
+      provider: 'vertex',
+      token: 'AIza-gemini-key',
+      endpoint: 'us-east5',
+    })
+  })
+
   it('returns an empty environment when no cloud credential is available', async () => {
     const store = { get: vi.fn().mockResolvedValue(null) }
     const gcloudTokenProvider = vi.fn().mockResolvedValue(null)

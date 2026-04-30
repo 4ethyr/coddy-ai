@@ -36,11 +36,12 @@ export async function buildRuntimeCredentialEnvironment(
   const stored = await credentialStore.get(provider)
   const storedToken = stored?.apiKey?.trim()
   const storedEndpoint = stored?.endpoint?.trim()
+  const needsVertexMetadata =
+    provider === 'vertex' && isVertexAnthropicRuntimeModel(model.name)
   if (storedToken) {
-    const metadata =
-      provider === 'vertex'
-        ? await vertexRuntimeMetadata(storedEndpoint, gcloudProjectProvider)
-        : undefined
+    const metadata = needsVertexMetadata
+      ? await vertexRuntimeMetadata(storedEndpoint, gcloudProjectProvider)
+      : undefined
     return ephemeralCredentialEnvironment({
       provider,
       token: storedToken,
@@ -53,7 +54,9 @@ export async function buildRuntimeCredentialEnvironment(
 
   const gcloudToken = await gcloudTokenProvider()
   if (!gcloudToken) return {}
-  const metadata = await vertexRuntimeMetadata(storedEndpoint, gcloudProjectProvider)
+  const metadata = needsVertexMetadata
+    ? await vertexRuntimeMetadata(storedEndpoint, gcloudProjectProvider)
+    : undefined
 
   return ephemeralCredentialEnvironment({
     provider,
@@ -108,4 +111,8 @@ function vertexRegionFromEndpoint(endpoint: string | undefined): string | null {
   const value = endpoint?.trim()
   if (!value || value.startsWith('https://')) return null
   return /^[a-z0-9-]+$/i.test(value) ? value : null
+}
+
+function isVertexAnthropicRuntimeModel(model: string): boolean {
+  return model.trim().startsWith('claude-')
 }

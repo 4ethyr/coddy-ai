@@ -59,7 +59,16 @@ Google API keys list Gemini API models through:
 https://generativelanguage.googleapis.com/v1beta/models
 ```
 
-These keys do not list Anthropic Claude models in Vertex AI Model Garden.
+At runtime, Gemini API-key models use the non-streaming `generateContent`
+endpoint:
+
+```text
+https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
+```
+
+The API key is sent with `x-goog-api-key`; Coddy does not place the key in the
+request URL. These keys do not list or execute Anthropic Claude models in Vertex
+AI Model Garden.
 
 ### Claude on Vertex AI
 
@@ -300,11 +309,11 @@ The Vertex provider accepts an optional region or endpoint override such as
 `global`, `us-east5`, `europe-west1`, or
 `https://us-east5-aiplatform.googleapis.com`.
 
-Runtime chat completion currently supports local Ollama models,
-OpenAI-compatible chat execution for OpenAI/OpenRouter, and Anthropic Claude
-partner models through Vertex AI `rawPredict`. By default Coddy connects to
-`http://127.0.0.1:11434/api/chat` for Ollama; set `OLLAMA_HOST` to override the
-host, for example `OLLAMA_HOST=127.0.0.1:11434` or
+Runtime chat completion currently supports local Ollama models, Gemini API-key
+models, OpenAI-compatible chat execution for OpenAI/OpenRouter, and Anthropic
+Claude partner models through Vertex AI `rawPredict`. By default Coddy connects
+to `http://127.0.0.1:11434/api/chat` for Ollama; set `OLLAMA_HOST` to override
+the host, for example `OLLAMA_HOST=127.0.0.1:11434` or
 `OLLAMA_HOST=http://localhost:11434`.
 
 OpenAI and OpenRouter chat execution use non-streaming `/chat/completions`
@@ -316,9 +325,10 @@ Custom OpenAI-compatible runtime endpoints must use HTTPS.
 Vertex Claude execution uses Google OAuth/ADC/gcloud credentials, the active
 gcloud project, and the selected Vertex region. Claude model IDs must use the
 Vertex Anthropic form, for example `claude-sonnet-4-5@20250929`. Gemini API-key
-models are still discovery-only until the Gemini runtime adapter is wired.
-Azure model discovery is wired in the UI, while the Azure runtime adapter remains
-planned so deployment behavior can be modeled explicitly.
+execution is intentionally separate from Vertex Claude: OAuth/ADC credentials
+are rejected by the Gemini API adapter so credential type mistakes surface
+clearly. Azure model discovery is wired in the UI, while the Azure runtime
+adapter remains planned so deployment behavior can be modeled explicitly.
 
 ## Development Workflow
 
