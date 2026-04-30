@@ -920,10 +920,18 @@ fn prepare_runtime_socket_path(socket_path: &std::path::Path) -> Result<()> {
             .with_context(|| format!("failed to create socket dir {}", parent.display()))?;
     }
     if socket_path.exists() {
-        anyhow::bail!(
-            "Coddy runtime socket already exists: {}. Stop the running daemon or choose --socket.",
-            socket_path.display()
-        );
+        if std::os::unix::net::UnixStream::connect(socket_path).is_ok() {
+            anyhow::bail!(
+                "Coddy runtime socket already exists and is accepting connections: {}. Stop the running runtime or choose --socket.",
+                socket_path.display()
+            );
+        }
+        fs::remove_file(socket_path).with_context(|| {
+            format!(
+                "failed to remove stale Coddy runtime socket {}",
+                socket_path.display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -1244,18 +1252,32 @@ mod tests {
     }
 
     #[test]
-    fn runtime_socket_preparation_creates_parent_without_overwriting_existing_socket() {
+    fn runtime_socket_preparation_creates_parent_and_removes_stale_socket() {
         let root = std::env::temp_dir().join(format!("coddy-runtime-cli-{}", uuid::Uuid::new_v4()));
         let socket_path = root.join("nested").join("coddy.sock");
 
         prepare_runtime_socket_path(&socket_path).expect("prepare missing socket path");
         assert!(root.join("nested").exists());
 
-        std::fs::write(&socket_path, "").expect("create existing socket placeholder");
-        let error =
-            prepare_runtime_socket_path(&socket_path).expect_err("existing socket rejected");
+        std::fs::write(&socket_path, "").expect("create stale socket placeholder");
+        prepare_runtime_socket_path(&socket_path).expect("remove stale socket placeholder");
 
-        assert!(error.to_string().contains("already exists"));
+        assert!(!socket_path.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_socket_preparation_rejects_live_runtime_socket() {
+        let root = std::env::temp_dir().join(format!("coddy-runtime-cli-{}", uuid::Uuid::new_v4()));
+        let socket_path = root.join("nested").join("coddy.sock");
+        std::fs::create_dir_all(socket_path.parent().expect("socket parent"))
+            .expect("create socket parent");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket_path)
+            .expect("bind live runtime socket");
+
+        let error = prepare_runtime_socket_path(&socket_path).expect_err("live socket rejected");
+
+        assert!(error.to_string().contains("accepting connections"));
         let _ = std::fs::remove_dir_all(root);
     }
 

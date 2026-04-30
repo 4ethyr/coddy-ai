@@ -254,6 +254,21 @@ The installer writes only to the user's local prefix by default:
 `~/.local/bin`, `~/.local/share/coddy`, and
 `~/.local/share/applications`.
 
+After installation:
+
+```bash
+coddy-desktop
+```
+
+starts the Electron app and its bundled Rust runtime. CLI commands such as
+`coddy repl`, `coddy ui open`, `coddy ask`, and `coddy session snapshot` use the
+same local runtime socket while the desktop app or `coddy runtime serve` is
+running. For a terminal-only REPL, use:
+
+```bash
+coddy repl --terminal
+```
+
 For local/offline validation, point the installer at an existing release
 archive and an isolated prefix:
 
@@ -285,11 +300,15 @@ values:
 
 Use separate terminals.
 
-### 1. Start the Coddy runtime
+### 1. Start the Coddy runtime manually
 
 ```bash
 ./target/debug/coddy runtime serve --socket /tmp/coddy-repl-dev.sock
 ```
+
+This manual runtime is useful for backend development. The Electron app also
+starts a bundled runtime automatically; when running both together, use
+`CODDY_DAEMON_SOCKET` to point Electron and CLI commands at the manual socket.
 
 ### 2. Start the Vite renderer
 

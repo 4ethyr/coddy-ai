@@ -4,6 +4,7 @@
 import { app, BrowserWindow } from 'electron'
 import * as path from 'path'
 import { registerIpcHandlers, cleanupStreams } from './ipcBridge'
+import { startCoddyRuntimeProcess, stopCoddyRuntimeProcess } from './runtimeProcess'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -36,6 +37,14 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  const electronProcess = process as NodeJS.Process & {
+    resourcesPath?: string
+  }
+  startCoddyRuntimeProcess({
+    appPath: app.getAppPath(),
+    env: process.env,
+    resourcesPath: electronProcess.resourcesPath,
+  })
   registerIpcHandlers()
   createWindow()
 
@@ -48,6 +57,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   cleanupStreams()
+  stopCoddyRuntimeProcess()
   if (process.platform !== 'darwin') {
     app.quit()
   }
@@ -55,4 +65,5 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   cleanupStreams()
+  stopCoddyRuntimeProcess()
 })

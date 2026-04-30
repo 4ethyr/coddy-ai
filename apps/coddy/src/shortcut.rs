@@ -42,7 +42,7 @@ impl ShortcutEnvironment {
     pub fn validate_for_shortcut(&self) -> Result<()> {
         if !self.socket_exists {
             anyhow::bail!(
-                "daemon socket not found at {}; start or restart visionclip-daemon",
+                "Coddy runtime socket not found at {}; start Coddy Desktop or run `coddy runtime serve`",
                 self.socket_path.display()
             );
         }
@@ -60,7 +60,7 @@ impl ShortcutEnvironment {
             .xdg_runtime_dir
             .as_ref()
             .context("XDG_RUNTIME_DIR is required for Coddy shortcut locking")?;
-        Ok(runtime_dir.join("visionclip").join("coddy-voice.lock"))
+        Ok(runtime_dir.join("coddy").join("coddy-voice.lock"))
     }
 }
 
@@ -166,7 +166,7 @@ impl ShortcutInstallPlan {
             r#"#!/usr/bin/env bash
 set -euo pipefail
 
-LOG_DIR="${{HOME}}/.local/state/visionclip"
+LOG_DIR="${{HOME}}/.local/state/coddy"
 LOG_FILE="${{LOG_DIR}}/coddy-shortcut.log"
 mkdir -p "$LOG_DIR"
 
@@ -552,7 +552,7 @@ mod tests {
 
     fn test_environment() -> ShortcutEnvironment {
         ShortcutEnvironment {
-            socket_path: PathBuf::from("/run/user/1000/visionclip/daemon.sock"),
+            socket_path: PathBuf::from("/run/user/1000/coddy/daemon.sock"),
             socket_exists: true,
             display: Some(":0".to_string()),
             wayland_display: None,
