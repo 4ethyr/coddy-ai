@@ -272,6 +272,15 @@ flow, and desktop entry without network access:
 ./scripts/test_install_local.sh
 ```
 
+Release packaging also runs a high-confidence secret guard over tracked and
+staged files. It reports only pattern names and file paths, never the matching
+values:
+
+```bash
+./scripts/guard_no_secrets.sh
+./scripts/test_guard_no_secrets.sh
+```
+
 ## Running the Local Stack
 
 Use separate terminals.

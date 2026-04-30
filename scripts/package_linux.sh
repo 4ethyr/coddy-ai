@@ -29,6 +29,10 @@ trap cleanup EXIT INT TERM
 mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/share/coddy" "$STAGE_DIR/share/applications"
 mkdir -p "$OUT_DIR"
 
+if [[ "${CODDY_SKIP_SECRET_GUARD:-0}" != "1" ]]; then
+  "$ROOT_DIR/scripts/guard_no_secrets.sh"
+fi
+
 echo "Building Coddy backend..."
 cargo build --release -p coddy
 

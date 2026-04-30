@@ -45,6 +45,11 @@ jobs:
         working-directory: apps/coddy-electron
         run: npm ci
 
+      - name: Guard against committed secrets
+        run: |
+          ./scripts/guard_no_secrets.sh
+          ./scripts/test_guard_no_secrets.sh
+
       - name: Test Rust workspace
         run: cargo test -p coddy -p coddy-agent -p coddy-runtime -p coddy-ipc
 
