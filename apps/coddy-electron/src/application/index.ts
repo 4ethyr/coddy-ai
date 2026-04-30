@@ -36,6 +36,7 @@ export {
 } from './SettingsStore'
 export type {
   EvalHarnessSettings,
+  FloatingFontFamily,
   FloatingAppearanceSettings,
   ModelThinkingEffort,
   ModelThinkingSettings,

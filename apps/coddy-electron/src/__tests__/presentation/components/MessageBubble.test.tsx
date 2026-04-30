@@ -26,13 +26,32 @@ describe('MessageBubble', () => {
 
   it('renders inline code without blocks', () => {
     const text = 'Here is some `inline code` and text'
-    render(
+    const { container } = render(
       <MessageBubble
         message={{ id: '3', role: 'assistant', text }}
       />,
     )
 
-    expect(screen.getByText(text)).toBeInTheDocument()
+    expect(screen.getByText('inline code')).toBeInTheDocument()
+    expect(container.textContent).toContain('Here is some')
+    expect(container.querySelector('code')).toHaveTextContent('inline code')
+  })
+
+  it('renders markdown headings, bold text, and lists', () => {
+    render(
+      <MessageBubble
+        message={{
+          id: '7',
+          role: 'assistant',
+          text: '### Principais funcionalidades:\n\n1. **Deteccao de Erros:** identifica problemas.\n2. **Formatacao:** padroniza estilo.\n\n* **Seguranca:** evita padroes inseguros.',
+        }}
+      />,
+    )
+
+    expect(screen.getByText('Principais funcionalidades:')).toBeInTheDocument()
+    expect(screen.getByText('Deteccao de Erros:')).toBeInTheDocument()
+    expect(screen.getByText('Formatacao:')).toBeInTheDocument()
+    expect(screen.getByText('Seguranca:')).toBeInTheDocument()
   })
 
   it('renders code blocks with language label', () => {

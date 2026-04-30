@@ -84,6 +84,9 @@ describe('FloatingTerminal', () => {
     expect(screen.getByTestId('floating-terminal-canvas')).toHaveClass(
       'terminal-canvas',
     )
+    expect(screen.getByTestId('floating-terminal-canvas')).toHaveClass(
+      'select-text',
+    )
   })
 
   it('renders subagent lifecycle readiness in the activity area', () => {

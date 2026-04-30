@@ -8,10 +8,16 @@ export interface FloatingAppearanceSettings {
   blurPx: number
   transparency: number
   glassIntensity: number
+  fontFamily: FloatingFontFamily
+  fontSizePx: number
   textColor: string
+  boldTextColor: string
   accentColor: string
+  glassPrimaryColor: string
+  glassSecondaryColor: string
 }
 
+export type FloatingFontFamily = 'system' | 'mono' | 'serif' | 'display'
 export type ModelThinkingEffort = 'minimal' | 'balanced' | 'deep'
 export type ThinkingAnimation = 'pulse' | 'scan' | 'orbit'
 
@@ -43,8 +49,13 @@ export const DEFAULT_FLOATING_APPEARANCE: FloatingAppearanceSettings = {
   blurPx: 24,
   transparency: 0.58,
   glassIntensity: 0.14,
+  fontFamily: 'system',
+  fontSizePx: 14,
   textColor: '#e5e2e1',
+  boldTextColor: '#ffffff',
   accentColor: '#00dbe9',
+  glassPrimaryColor: '#00dbe9',
+  glassSecondaryColor: '#b600f8',
 }
 
 export const DEFAULT_MODEL_THINKING: ModelThinkingSettings = {
@@ -158,8 +169,27 @@ export function normalizeFloatingAppearance(
       0.32,
       DEFAULT_FLOATING_APPEARANCE.glassIntensity,
     ),
+    fontFamily: validFloatingFontFamily(value?.fontFamily),
+    fontSizePx: clampNumber(
+      value?.fontSizePx,
+      12,
+      18,
+      DEFAULT_FLOATING_APPEARANCE.fontSizePx,
+    ),
     textColor: validHexColor(value?.textColor, DEFAULT_FLOATING_APPEARANCE.textColor),
+    boldTextColor: validHexColor(
+      value?.boldTextColor,
+      DEFAULT_FLOATING_APPEARANCE.boldTextColor,
+    ),
     accentColor: validHexColor(value?.accentColor, DEFAULT_FLOATING_APPEARANCE.accentColor),
+    glassPrimaryColor: validHexColor(
+      value?.glassPrimaryColor,
+      DEFAULT_FLOATING_APPEARANCE.glassPrimaryColor,
+    ),
+    glassSecondaryColor: validHexColor(
+      value?.glassSecondaryColor,
+      DEFAULT_FLOATING_APPEARANCE.glassSecondaryColor,
+    ),
   }
 }
 
@@ -176,6 +206,17 @@ function clampNumber(
 function validHexColor(value: string | undefined, fallback: string): string {
   if (!value) return fallback
   return /^#[0-9a-f]{6}$/i.test(value) ? value : fallback
+}
+
+function validFloatingFontFamily(
+  value: FloatingFontFamily | undefined,
+): FloatingFontFamily {
+  return value === 'system'
+    || value === 'mono'
+    || value === 'serif'
+    || value === 'display'
+    ? value
+    : DEFAULT_FLOATING_APPEARANCE.fontFamily
 }
 
 function normalizePathDraft(value: string | undefined, fallback: string): string {

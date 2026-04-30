@@ -1,12 +1,55 @@
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_EVAL_HARNESS,
+  DEFAULT_FLOATING_APPEARANCE,
   DEFAULT_MODEL_THINKING,
   normalizeEvalHarness,
+  normalizeFloatingAppearance,
   normalizeModelThinking,
 } from '@/application'
 
 describe('SettingsStore', () => {
+  it('normalizes floating appearance layout and glass colors', () => {
+    expect(
+      normalizeFloatingAppearance({
+        blurPx: 50,
+        transparency: 0.1,
+        glassIntensity: 0.5,
+        fontFamily: 'mono',
+        fontSizePx: 20,
+        textColor: '#101010',
+        boldTextColor: '#ffffff',
+        accentColor: '#00ffaa',
+        glassPrimaryColor: '#112233',
+        glassSecondaryColor: '#445566',
+      }),
+    ).toEqual({
+      blurPx: 48,
+      transparency: 0.32,
+      glassIntensity: 0.32,
+      fontFamily: 'mono',
+      fontSizePx: 18,
+      textColor: '#101010',
+      boldTextColor: '#ffffff',
+      accentColor: '#00ffaa',
+      glassPrimaryColor: '#112233',
+      glassSecondaryColor: '#445566',
+    })
+  })
+
+  it('falls back when floating appearance values are invalid', () => {
+    expect(
+      normalizeFloatingAppearance({
+        fontFamily: 'invalid',
+        textColor: 'red',
+        boldTextColor: 'white',
+        accentColor: 'cyan',
+        glassPrimaryColor: 'blue',
+        glassSecondaryColor: 'purple',
+      } as never),
+    ).toEqual(DEFAULT_FLOATING_APPEARANCE)
+  })
+
   it('normalizes model thinking settings with safe bounds', () => {
     expect(
       normalizeModelThinking({

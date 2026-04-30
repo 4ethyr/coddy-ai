@@ -96,8 +96,24 @@ export function FloatingTerminal() {
   const terminalStyle = {
     '--coddy-terminal-opacity': String(appearance.transparency),
     '--coddy-terminal-blur': `${appearance.blurPx}px`,
-    '--coddy-terminal-glass': String(appearance.glassIntensity),
+    '--coddy-terminal-glass-primary': hexToRgba(
+      appearance.glassPrimaryColor,
+      appearance.glassIntensity,
+    ),
+    '--coddy-terminal-glass-secondary': hexToRgba(
+      appearance.glassSecondaryColor,
+      appearance.glassIntensity,
+    ),
+    '--coddy-terminal-glass-secondary-soft': hexToRgba(
+      appearance.glassSecondaryColor,
+      appearance.glassIntensity * 0.6,
+    ),
+    '--coddy-terminal-font-family': floatingFontFamilyCss(
+      appearance.fontFamily,
+    ),
+    '--coddy-terminal-font-size': `${appearance.fontSizePx}px`,
     '--coddy-terminal-text': appearance.textColor,
+    '--coddy-terminal-bold': appearance.boldTextColor,
     '--coddy-terminal-accent': appearance.accentColor,
   } as CSSProperties
 
@@ -209,7 +225,7 @@ export function FloatingTerminal() {
 
       <div
         data-testid="floating-terminal-canvas"
-        className="terminal-canvas flex-1 overflow-y-auto px-8 py-7"
+        className="terminal-canvas flex-1 select-text overflow-y-auto px-8 py-7"
       >
         <div className="flex flex-col gap-7">
           <SystemLine text="system.initialize(context='coddy_floating');" />
@@ -411,4 +427,26 @@ function SystemLine({ text }: { text: string }) {
       <span>{text}</span>
     </div>
   )
+}
+
+function floatingFontFamilyCss(fontFamily: FloatingAppearanceSettings['fontFamily']): string {
+  switch (fontFamily) {
+    case 'mono':
+      return 'JetBrains Mono, Fira Code, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+    case 'serif':
+      return 'Georgia, Cambria, "Times New Roman", Times, serif'
+    case 'display':
+      return 'Manrope, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+    case 'system':
+      return 'Inter, Manrope, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+  }
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const normalized = hex.replace('#', '')
+  const red = Number.parseInt(normalized.slice(0, 2), 16)
+  const green = Number.parseInt(normalized.slice(2, 4), 16)
+  const blue = Number.parseInt(normalized.slice(4, 6), 16)
+  const opacity = Math.max(0, Math.min(1, alpha))
+  return `rgba(${red}, ${green}, ${blue}, ${opacity})`
 }
