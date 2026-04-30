@@ -51,6 +51,7 @@ export function FloatingTerminal() {
     () => loadSettings().modelThinking.animation,
   )
   const toolActivity = session.tool_activity ?? []
+  const subagentActivity = session.subagent_activity ?? []
 
   // Auto-scroll to bottom on new messages or streaming tokens
   useEffect(() => {
@@ -244,6 +245,48 @@ export function FloatingTerminal() {
             </div>
           )}
 
+          {subagentActivity.length > 0 && (
+            <div className="rounded-lg border border-primary/15 bg-surface-container/35 px-4 py-3 font-mono text-xs text-on-surface-variant backdrop-blur-md">
+              <div className="mb-2 uppercase tracking-[0.2em] text-primary/80">
+                agent.subagents
+              </div>
+              <div className="flex flex-col gap-1">
+                {subagentActivity.map((activity) => (
+                  <div
+                    key={activity.id}
+                    className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-3"
+                  >
+                    <span className="flex min-w-0 flex-col">
+                      <span className="truncate">
+                        {activity.name} [{activity.mode}]
+                      </span>
+                      {activity.required_output_fields.length > 0 && (
+                        <span className="truncate text-[10px] uppercase tracking-[0.14em] text-muted">
+                          output: {formatRequiredOutputFields(
+                            activity.required_output_fields,
+                            activity.output_additional_properties_allowed,
+                          )}
+                        </span>
+                      )}
+                    </span>
+                    <span
+                      className={
+                        activity.status === 'Running'
+                          ? 'text-primary'
+                          : activity.status === 'Blocked'
+                            || activity.status === 'Failed'
+                            ? 'text-red-300'
+                            : 'text-emerald-300'
+                      }
+                    >
+                      {activity.status} // {activity.readiness_score}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {error && (
             <div className="flex items-center gap-3 rounded-lg border border-red-400/25 bg-red-500/10 px-4 py-3 font-mono text-sm text-red-300">
               <Icon name="alert" className="h-4 w-4" />
@@ -349,6 +392,16 @@ export function FloatingTerminal() {
       )}
     </main>
   )
+}
+
+function formatRequiredOutputFields(
+  fields: string[],
+  additionalPropertiesAllowed: boolean,
+): string {
+  const visibleFields = fields.slice(0, 3).join(', ')
+  const remaining = fields.length > 3 ? ` +${fields.length - 3}` : ''
+  const strictness = additionalPropertiesAllowed ? 'open' : 'strict'
+  return `${visibleFields}${remaining} // ${strictness}`
 }
 
 function SystemLine({ text }: { text: string }) {

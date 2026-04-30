@@ -6,6 +6,9 @@ mod voice_overlay;
 use crate::config::CoddyRuntimeConfig;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use coddy_agent::{
+    run_default_prompt_battery, MultiagentEvalCase, MultiagentEvalRunner, MultiagentEvalSuiteReport,
+};
 use coddy_client::CoddyClient;
 use coddy_core::{
     AssessmentPolicy, ContextPolicy, ModelCredential, ModelRef, ModelRole, PermissionReply,
@@ -80,6 +83,10 @@ enum Command {
     Session {
         #[command(subcommand)]
         command: SessionCommand,
+    },
+    Eval {
+        #[command(subcommand)]
+        command: EvalCommand,
     },
     Doctor {
         #[command(subcommand)]
@@ -260,6 +267,24 @@ enum SessionCommand {
 
         #[arg(long)]
         limit: Option<usize>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum EvalCommand {
+    Multiagent {
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+
+        #[arg(long)]
+        write_baseline: Option<PathBuf>,
+
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    PromptBattery {
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
 }
 
@@ -446,6 +471,17 @@ async fn main() -> Result<()> {
         Some(Command::Session {
             command: SessionCommand::Watch { after, limit },
         }) => run_session_watch(&config, after, limit).await,
+        Some(Command::Eval {
+            command:
+                EvalCommand::Multiagent {
+                    baseline,
+                    write_baseline,
+                    json,
+                },
+        }) => run_eval_multiagent(baseline, write_baseline, json),
+        Some(Command::Eval {
+            command: EvalCommand::PromptBattery { json },
+        }) => run_eval_prompt_battery(json),
         Some(Command::Doctor {
             command: DoctorCommand::Shortcuts,
         }) => run_shortcuts_doctor(&config).await,
@@ -708,6 +744,146 @@ async fn run_session_watch(
     Ok(())
 }
 
+fn run_eval_multiagent(
+    baseline: Option<PathBuf>,
+    write_baseline: Option<PathBuf>,
+    json: bool,
+) -> Result<()> {
+    let suite = default_multiagent_eval_suite();
+    let comparison = baseline
+        .as_ref()
+        .map(|path| suite.compare_to_baseline_file(path))
+        .transpose()?;
+
+    if let Some(path) = write_baseline.as_ref() {
+        suite.write_baseline(path)?;
+    }
+
+    if json {
+        let mut output = serde_json::json!({
+            "suite": suite.public_metadata(),
+            "baselineWritten": write_baseline.as_ref().map(|path| path.display().to_string()),
+        });
+        if let Some(comparison) = &comparison {
+            output["comparison"] = comparison.public_metadata();
+        }
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
+    println!(
+        "Multiagent eval: score {} | passed {} | failed {}",
+        suite.score, suite.passed, suite.failed
+    );
+    for report in &suite.reports {
+        println!(
+            "- {}: {} ({})",
+            report.case_name,
+            eval_status_label(&report.status),
+            report.score
+        );
+        for failure in &report.failures {
+            println!("  failure: {failure}");
+        }
+    }
+    if let Some(comparison) = &comparison {
+        println!(
+            "Baseline comparison: {} | previous {} | current {} | delta {}",
+            eval_gate_status_label(comparison.status),
+            comparison.previous_score,
+            comparison.current_score,
+            i16::from(comparison.current_score) - i16::from(comparison.previous_score)
+        );
+        for regression in &comparison.regressions {
+            println!("  regression: {regression}");
+        }
+        for improvement in &comparison.improvements {
+            println!("  improvement: {improvement}");
+        }
+    }
+    if let Some(path) = write_baseline {
+        println!("Baseline written: {}", path.display());
+    }
+    Ok(())
+}
+
+fn run_eval_prompt_battery(json: bool) -> Result<()> {
+    let report = run_default_prompt_battery();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report.public_metadata())?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "Prompt battery: score {} | prompts {} | stacks {} | knowledge areas {} | passed {} | failed {}",
+        report.score,
+        report.prompt_count,
+        report.stack_count,
+        report.knowledge_area_count,
+        report.passed,
+        report.failed
+    );
+    println!("Member coverage:");
+    for (member, count) in &report.member_coverage {
+        println!("- {member}: {count}");
+    }
+    for failure in &report.failures {
+        println!(
+            "failure: {} [{} / {}]: {}",
+            failure.id,
+            failure.stack,
+            failure.knowledge_area,
+            failure.failures.join("; ")
+        );
+    }
+    Ok(())
+}
+
+fn default_multiagent_eval_suite() -> MultiagentEvalSuiteReport {
+    let runner = MultiagentEvalRunner::default();
+    runner.run_suite(&[
+        MultiagentEvalCase::new(
+            "hardness-multiagent",
+            "revise, aprimore e teste multiagents, harness, prompts e metricas",
+        )
+        .expected_members(&[
+            "explorer",
+            "coder",
+            "test-writer",
+            "eval-runner",
+            "reviewer",
+        ])
+        .min_hardness_score(100)
+        .max_blocked(0),
+        MultiagentEvalCase::new(
+            "security-sensitive-routing",
+            "revise seguranca, secrets e sandbox",
+        )
+        .expected_members(&["security-reviewer"])
+        .min_hardness_score(100)
+        .max_blocked(0)
+        .max_awaiting_approval(0),
+    ])
+}
+
+fn eval_status_label(status: &coddy_agent::EvalStatus) -> &'static str {
+    match status {
+        coddy_agent::EvalStatus::Passed => "passed",
+        coddy_agent::EvalStatus::Failed => "failed",
+    }
+}
+
+fn eval_gate_status_label(status: coddy_agent::EvalGateStatus) -> &'static str {
+    match status {
+        coddy_agent::EvalGateStatus::Passed => "passed",
+        coddy_agent::EvalGateStatus::Failed => "failed",
+    }
+}
+
 async fn run_runtime_serve(config: &CoddyRuntimeConfig, socket: Option<PathBuf>) -> Result<()> {
     let socket_path = socket.unwrap_or(config.socket_path()?);
     prepare_runtime_socket_path(&socket_path)?;
@@ -965,6 +1141,89 @@ mod tests {
             }
             _ => panic!("unexpected command"),
         }
+    }
+
+    #[test]
+    fn parses_eval_multiagent_command() {
+        let cli = Cli::try_parse_from([
+            "coddy",
+            "eval",
+            "multiagent",
+            "--baseline",
+            "evals/baselines/main.json",
+            "--write-baseline",
+            "evals/reports/latest.json",
+            "--json",
+        ])
+        .expect("parse eval multiagent");
+
+        match cli.command {
+            Some(Command::Eval {
+                command:
+                    EvalCommand::Multiagent {
+                        baseline,
+                        write_baseline,
+                        json,
+                    },
+            }) => {
+                assert_eq!(baseline, Some(PathBuf::from("evals/baselines/main.json")));
+                assert_eq!(
+                    write_baseline,
+                    Some(PathBuf::from("evals/reports/latest.json"))
+                );
+                assert!(json);
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn default_multiagent_eval_suite_is_ci_ready() {
+        let suite = default_multiagent_eval_suite();
+
+        assert!(suite.is_success());
+        assert_eq!(suite.score, 100);
+        assert_eq!(suite.passed, 2);
+        assert_eq!(suite.failed, 0);
+        assert!(suite
+            .reports
+            .iter()
+            .any(|report| report.case_name == "hardness-multiagent"));
+        assert!(suite
+            .reports
+            .iter()
+            .any(|report| report.case_name == "security-sensitive-routing"));
+    }
+
+    #[test]
+    fn parses_eval_prompt_battery_command() {
+        let cli = Cli::try_parse_from(["coddy", "eval", "prompt-battery", "--json"])
+            .expect("parse prompt battery");
+
+        match cli.command {
+            Some(Command::Eval {
+                command: EvalCommand::PromptBattery { json },
+            }) => {
+                assert!(json);
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn default_prompt_battery_eval_is_ci_ready() {
+        let report = run_default_prompt_battery();
+
+        assert!(report.is_success());
+        assert_eq!(report.prompt_count, 300);
+        assert_eq!(report.stack_count, 30);
+        assert_eq!(report.knowledge_area_count, 10);
+        assert_eq!(report.passed, 300);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.score, 100);
+        assert!(report.member_coverage.contains_key("coder"));
+        assert!(report.member_coverage.contains_key("security-reviewer"));
+        assert!(report.member_coverage.contains_key("eval-runner"));
     }
 
     #[test]

@@ -6,6 +6,8 @@ import type {
   ModelProviderListRequest,
   ModelProviderListResult,
   ModelRole,
+  MultiagentEvalRequest,
+  MultiagentEvalResult,
   PermissionReply,
   AssessmentPolicy,
   ReplIpcClient,
@@ -78,6 +80,16 @@ export async function listProviderModels(
   request: ModelProviderListRequest,
 ): Promise<ModelProviderListResult> {
   return client.listProviderModels(request)
+}
+
+/**
+ * Runs the deterministic multiagent harness exposed by the backend.
+ */
+export async function runMultiagentEval(
+  client: ReplIpcClient,
+  request: MultiagentEvalRequest = {},
+): Promise<MultiagentEvalResult> {
+  return client.runMultiagentEval(request)
 }
 
 /**

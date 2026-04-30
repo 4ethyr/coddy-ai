@@ -18,6 +18,7 @@ const sessionContext = {
     active_run: null,
     pending_permission: null,
     tool_activity: [],
+    subagent_activity: [],
     streaming_text: '',
   } as ReplSession,
   connecting: false,
@@ -46,6 +47,7 @@ describe('FloatingTerminal', () => {
       ...sessionContext.session,
       status: 'Idle',
       pending_permission: null,
+      subagent_activity: [],
       streaming_text: '',
     }
     Object.defineProperty(window, 'replApi', {
@@ -82,6 +84,31 @@ describe('FloatingTerminal', () => {
     expect(screen.getByTestId('floating-terminal-canvas')).toHaveClass(
       'terminal-canvas',
     )
+  })
+
+  it('renders subagent lifecycle readiness in the activity area', () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      subagent_activity: [
+        {
+          id: 'eval-runner:evaluation',
+          name: 'eval-runner',
+          mode: 'evaluation',
+          status: 'Prepared',
+          readiness_score: 100,
+          required_output_fields: ['score', 'passed'],
+          output_additional_properties_allowed: false,
+          reason: null,
+        },
+      ],
+    }
+
+    render(<FloatingTerminal />)
+
+    expect(screen.getByText('agent.subagents')).toBeInTheDocument()
+    expect(screen.getByText('eval-runner [evaluation]')).toBeInTheDocument()
+    expect(screen.getByText('output: score, passed // strict')).toBeInTheDocument()
+    expect(screen.getByText('Prepared // 100')).toBeInTheDocument()
   })
 
   it('renders pending tool approval actions above the input', async () => {

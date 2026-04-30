@@ -34,6 +34,15 @@ export async function initializeSession(
   if (!session.tool_activity) {
     session.tool_activity = []
   }
+  if (!session.subagent_activity) {
+    session.subagent_activity = []
+  }
+  session.subagent_activity = session.subagent_activity.map((activity) => ({
+    ...activity,
+    required_output_fields: activity.required_output_fields ?? [],
+    output_additional_properties_allowed:
+      activity.output_additional_properties_allowed ?? true,
+  }))
   if (session.pending_permission === undefined) {
     session.pending_permission = null
   }

@@ -32,6 +32,37 @@ export interface SubagentRouteRecommendation {
   matched_signals: string[]
 }
 
+export interface SubagentHandoffPrepared {
+  name: string
+  mode: string
+  approval_required: boolean
+  allowed_tools: string[]
+  required_output_fields: string[]
+  output_additional_properties_allowed: boolean
+  timeout_ms: number
+  max_context_tokens: number
+  validation_checklist: string[]
+  safety_notes: string[]
+  readiness_score: number
+  readiness_issues: string[]
+}
+
+export type SubagentLifecycleStatus =
+  | 'Prepared'
+  | 'Approved'
+  | 'Running'
+  | 'Completed'
+  | 'Failed'
+  | 'Blocked'
+
+export interface SubagentLifecycleUpdate {
+  name: string
+  mode: string
+  status: SubagentLifecycleStatus
+  readiness_score: number
+  reason: string | null
+}
+
 export type ReplMode = 'FloatingTerminal' | 'DesktopApp'
 
 export type ModelRole = 'Chat' | 'Ocr' | 'Asr' | 'Tts' | 'Embedding'
@@ -87,6 +118,8 @@ export type ReplEvent =
   | { ToolStarted: { name: string } }
   | { ToolCompleted: { name: string; status: ToolStatus } }
   | { SubagentRouted: { recommendations: SubagentRouteRecommendation[] } }
+  | { SubagentHandoffPrepared: { handoff: SubagentHandoffPrepared } }
+  | { SubagentLifecycleUpdated: { update: SubagentLifecycleUpdate } }
   | { PermissionRequested: { request: PermissionRequest } }
   | { PermissionReplied: { request_id: string; reply: PermissionReply } }
   | { TtsQueued: Record<string, never> }
@@ -124,5 +157,6 @@ export interface ReplSessionSnapshotSession {
   active_run: string | null
   pending_permission?: PermissionRequest | null
   tool_activity?: unknown[]
+  subagent_activity?: unknown[]
   streaming_text?: string
 }

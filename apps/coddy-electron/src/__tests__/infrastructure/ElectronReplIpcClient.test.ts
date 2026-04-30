@@ -106,6 +106,10 @@ describe('ElectronReplIpcClient', () => {
       'Chat',
     )
     await client.getToolCatalog()
+    await client.runMultiagentEval({
+      baseline: 'evals/baselines/main.json',
+      writeBaseline: 'evals/reports/latest.json',
+    })
     await client.listProviderModels({
       provider: 'openai',
       apiKey: 'sk-test',
@@ -122,6 +126,10 @@ describe('ElectronReplIpcClient', () => {
       'Chat',
     )
     expect(invoke).toHaveBeenCalledWith('repl:tools')
+    expect(invoke).toHaveBeenCalledWith('repl:eval-multiagent', {
+      baseline: 'evals/baselines/main.json',
+      writeBaseline: 'evals/reports/latest.json',
+    })
     expect(invoke).toHaveBeenCalledWith('models:list', {
       provider: 'openai',
       apiKey: 'sk-test',

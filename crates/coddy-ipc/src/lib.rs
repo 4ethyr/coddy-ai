@@ -525,6 +525,33 @@ mod tests {
     }
 
     #[test]
+    fn command_with_model_credential_roundtrips_through_bincode() {
+        let request = CoddyRequest::Command(ReplCommandJob {
+            request_id: Uuid::new_v4(),
+            command: coddy_core::ReplCommand::Ask {
+                text: "hello".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: Some(coddy_core::ModelCredential {
+                    provider: "vertex".to_string(),
+                    token: "redacted-test-token".to_string(),
+                    endpoint: None,
+                    metadata: Default::default(),
+                }),
+            },
+            speak: false,
+        });
+
+        let payload = bincode::serde::encode_to_vec(&request, bincode::config::standard())
+            .expect("encode request");
+        let (decoded, decoded_len): (CoddyRequest, usize) =
+            bincode::serde::decode_from_slice(&payload, bincode::config::standard())
+                .expect("decode request with credential");
+
+        assert_eq!(decoded_len, payload.len());
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
     fn coddy_wire_request_validates_magic_and_version() {
         let request = CoddyWireRequest::new(CoddyRequest::Events(ReplEventsJob {
             request_id: Uuid::new_v4(),
@@ -643,6 +670,64 @@ mod tests {
                 .expect("decode result");
 
         assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn snapshot_with_pending_permission_roundtrips_through_bincode() {
+        let request_id = Uuid::new_v4();
+        let mut session = coddy_core::ReplSession::new(
+            coddy_core::ReplMode::FloatingTerminal,
+            coddy_core::ModelRef {
+                provider: "vertex".to_string(),
+                name: "gemini-3.1-pro-preview".to_string(),
+            },
+        );
+        let permission = coddy_core::PermissionRequest::new(
+            session.id,
+            Uuid::new_v4(),
+            Some(Uuid::new_v4()),
+            coddy_core::ToolName::new("filesystem.apply_edit").expect("tool name"),
+            coddy_core::ToolPermission::WriteWorkspace,
+            vec!["docs/repl/multiagent-hardness-eval.md".to_string()],
+            coddy_core::ToolRiskLevel::Medium,
+            serde_json::json!({
+                "preview": {
+                    "path": "docs/repl/multiagent-hardness-eval.md",
+                    "diff": "+## Approval Dry Run"
+                }
+            }),
+            1_775_000_000_000,
+        )
+        .expect("permission request");
+        session.pending_permission = Some(permission.clone());
+        session.status = coddy_core::SessionStatus::AwaitingToolApproval;
+        let result = CoddyResult::ReplSessionSnapshot {
+            request_id,
+            snapshot: Box::new(coddy_core::ReplSessionSnapshot {
+                session,
+                last_sequence: 42,
+            }),
+        };
+
+        let payload = bincode::serde::encode_to_vec(&result, bincode::config::standard())
+            .expect("encode result");
+        let (decoded, decoded_len): (CoddyResult, usize) =
+            bincode::serde::decode_from_slice(&payload, bincode::config::standard())
+                .expect("decode snapshot with pending permission");
+
+        assert_eq!(decoded_len, payload.len());
+        assert_eq!(decoded, result);
+        let CoddyResult::ReplSessionSnapshot { snapshot, .. } = decoded else {
+            panic!("expected snapshot result");
+        };
+        assert_eq!(
+            snapshot
+                .session
+                .pending_permission
+                .expect("pending permission")
+                .metadata["preview"]["path"],
+            serde_json::json!("docs/repl/multiagent-hardness-eval.md")
+        );
     }
 
     #[test]

@@ -114,6 +114,7 @@ pub enum ApprovalPolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolSchema {
+    #[serde(with = "crate::json_value_wire")]
     pub schema: Value,
 }
 
@@ -184,6 +185,7 @@ pub struct ToolCall {
     pub session_id: Uuid,
     pub run_id: Uuid,
     pub tool_name: ToolName,
+    #[serde(with = "crate::json_value_wire")]
     pub input: Value,
     pub requested_at_unix_ms: u64,
 }
@@ -235,6 +237,7 @@ impl ToolError {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolOutput {
     pub text: String,
+    #[serde(with = "crate::json_value_wire")]
     pub metadata: Value,
     pub truncated: bool,
 }

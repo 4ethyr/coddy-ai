@@ -52,6 +52,35 @@ describe('Domain type contracts', () => {
             ],
           },
         },
+        SubagentHandoffPrepared: {
+          SubagentHandoffPrepared: {
+            handoff: {
+              name: 'eval-runner',
+              mode: 'evaluation',
+              approval_required: true,
+              allowed_tools: ['filesystem.read_file', 'shell.run'],
+              required_output_fields: ['score', 'passed'],
+              output_additional_properties_allowed: false,
+              timeout_ms: 60000,
+              max_context_tokens: 8000,
+              validation_checklist: ['Use deterministic checks'],
+              safety_notes: ['Do not expose secrets'],
+              readiness_score: 100,
+              readiness_issues: [],
+            },
+          },
+        },
+        SubagentLifecycleUpdated: {
+          SubagentLifecycleUpdated: {
+            update: {
+              name: 'eval-runner',
+              mode: 'evaluation',
+              status: 'Prepared',
+              readiness_score: 100,
+              reason: null,
+            },
+          },
+        },
         PermissionRequested: {
           PermissionRequested: {
             request: {
@@ -81,7 +110,7 @@ describe('Domain type contracts', () => {
         Error: { Error: { code: 'E001', message: 'Something went wrong' } },
       }
 
-      expect(Object.keys(events)).toHaveLength(28)
+      expect(Object.keys(events)).toHaveLength(30)
 
       // Verify each event is correctly typed
       for (const [key, event] of Object.entries(events)) {

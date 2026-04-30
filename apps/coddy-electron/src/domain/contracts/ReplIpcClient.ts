@@ -6,6 +6,8 @@ import type {
   ModelProviderListRequest,
   ModelProviderListResult,
   ModelRole,
+  MultiagentEvalRequest,
+  MultiagentEvalResult,
   PermissionReply,
   ReplEventEnvelope,
   ReplMode,
@@ -48,6 +50,11 @@ export interface ReplIpcClient {
 
   /** Get the backend tool catalog exposed by the active Coddy runtime */
   getToolCatalog(): Promise<ReplToolCatalogItem[]>
+
+  /** Run the deterministic multiagent harness and optionally compare/write a baseline */
+  runMultiagentEval(
+    request?: MultiagentEvalRequest,
+  ): Promise<MultiagentEvalResult>
 
   /** List available models for a provider using a session-scoped credential */
   listProviderModels(

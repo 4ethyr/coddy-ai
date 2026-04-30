@@ -17,7 +17,7 @@ use crate::{
     ShellExecutionConfig, ShellExecutor, ShellPlan, ShellPlanRequest, ShellPlanner, SubagentMode,
     SubagentRegistry, ToolExecution, APPLY_EDIT_TOOL, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL,
     READ_FILE_TOOL, SEARCH_FILES_TOOL, SHELL_RUN_TOOL, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL,
-    SUBAGENT_ROUTE_TOOL,
+    SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
 };
 
 #[derive(Debug, Clone)]
@@ -99,6 +99,7 @@ impl LocalToolRouter {
             SUBAGENT_LIST_TOOL => self.list_subagents(call),
             SUBAGENT_PREPARE_TOOL => self.prepare_subagent(call),
             SUBAGENT_ROUTE_TOOL => self.route_subagent(call),
+            SUBAGENT_TEAM_PLAN_TOOL => self.plan_subagent_team(call),
             other => failed_outcome(
                 call.id,
                 call.tool_name.to_string(),
@@ -405,6 +406,54 @@ impl LocalToolRouter {
                 },
                 ReplEvent::ToolCompleted {
                     name: SUBAGENT_ROUTE_TOOL.to_string(),
+                    status: ToolStatus::Succeeded,
+                },
+            ],
+        })
+    }
+
+    fn plan_subagent_team(&self, call: &ToolCall) -> LocalToolRouteOutcome {
+        let started_at = unix_ms_now();
+        let goal = call.input["goal"].as_str().unwrap_or_default();
+        let max_members = optional_usize_field(&call.input, "max_members").unwrap_or(6);
+        let Some(team) = self.subagents.plan_team(goal, max_members) else {
+            return failed_outcome(
+                call.id,
+                SUBAGENT_TEAM_PLAN_TOOL.to_string(),
+                AgentError::InvalidInput("team plan requires a non-empty goal".to_string())
+                    .into_tool_error(),
+            );
+        };
+        let member_summary = team
+            .members
+            .iter()
+            .map(|member| {
+                format!(
+                    "{}:{}:{}",
+                    member.sequence,
+                    member.name,
+                    member.gate_status.as_str()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = ToolOutput {
+            text: member_summary,
+            metadata: json!({
+                "team": team.public_metadata(),
+            }),
+            truncated: false,
+        };
+        let result = ToolResult::succeeded(call.id, output, started_at, unix_ms_now());
+
+        LocalToolRouteOutcome::from_execution(ToolExecution {
+            result,
+            events: vec![
+                ReplEvent::ToolStarted {
+                    name: SUBAGENT_TEAM_PLAN_TOOL.to_string(),
+                },
+                ReplEvent::ToolCompleted {
+                    name: SUBAGENT_TEAM_PLAN_TOOL.to_string(),
                     status: ToolStatus::Succeeded,
                 },
             ],
@@ -892,6 +941,8 @@ mod tests {
         assert_eq!(handoff["name"], json!("security-reviewer"));
         assert_eq!(handoff["mode"], json!("read-only"));
         assert_eq!(handoff["approvalRequired"], json!(false));
+        assert_eq!(handoff["readinessScore"], json!(100));
+        assert_eq!(handoff["readinessIssues"], json!([]));
         assert!(handoff["allowedTools"]
             .as_array()
             .expect("allowed tools")
@@ -907,6 +958,44 @@ mod tests {
             .any(|item| item
                 .as_str()
                 .is_some_and(|value| value.contains("Ground findings"))));
+    }
+
+    #[test]
+    fn routes_subagent_team_plan_as_measured_multiagent_contract() {
+        let workspace = TempWorkspace::new();
+        let router = LocalToolRouter::new(&workspace.path).expect("router");
+
+        let outcome = router.route(&call(
+            Uuid::new_v4(),
+            SUBAGENT_TEAM_PLAN_TOOL,
+            json!({
+                "goal": "aprimorar multiagents, testar prompts e metrificar hardness",
+                "max_members": 6
+            }),
+        ));
+
+        assert_eq!(outcome.status(), Some(ToolResultStatus::Succeeded));
+        let output = outcome.result.expect("result").output.expect("output");
+        let team = &output.metadata["team"];
+        let members = team["members"].as_array().expect("members");
+
+        assert!(output.text.contains("eval-runner"));
+        assert!(members
+            .iter()
+            .any(|member| member["name"] == json!("test-writer")));
+        assert!(members
+            .iter()
+            .any(|member| member["name"] == json!("coder")));
+        assert_eq!(team["metrics"]["blocked"], json!(0));
+        assert_eq!(team["metrics"]["averageReadiness"], json!(100));
+        assert_eq!(team["metrics"]["hardnessScore"], json!(100));
+        assert!(team["risks"]
+            .as_array()
+            .expect("risks")
+            .iter()
+            .any(|risk| risk
+                .as_str()
+                .is_some_and(|risk| risk.contains("Workspace-write"))));
     }
 
     #[test]

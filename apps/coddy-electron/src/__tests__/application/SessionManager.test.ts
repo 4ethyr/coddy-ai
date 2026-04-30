@@ -39,6 +39,7 @@ describe('SessionManager', () => {
           approval_policy: 'AutoApprove',
         },
       ]),
+      runMultiagentEval: vi.fn(),
       listProviderModels: vi.fn(),
       watchEvents: vi.fn(),
       ask: vi.fn(),
@@ -59,12 +60,63 @@ describe('SessionManager', () => {
     expect(client.getSnapshot).toHaveBeenCalledOnce()
     expect(client.getToolCatalog).toHaveBeenCalledOnce()
     expect(state.lastSequence).toBe(42)
+    expect(state.session.subagent_activity).toEqual([])
     expect(state.toolCatalog).toEqual([
       expect.objectContaining({
         name: 'filesystem.read_file',
         risk_level: 'Low',
         approval_policy: 'AutoApprove',
       }),
+    ])
+  })
+
+  it('keeps backend subagent lifecycle activity from snapshot', async () => {
+    const nextSnapshot = snapshot()
+    nextSnapshot.session.subagent_activity = [
+      {
+        id: 'eval-runner:evaluation',
+        name: 'eval-runner',
+        mode: 'evaluation',
+        status: 'Prepared',
+        readiness_score: 100,
+        required_output_fields: ['score', 'passed'],
+        output_additional_properties_allowed: false,
+        reason: null,
+      },
+    ]
+    const client: ReplIpcClient = {
+      getSnapshot: vi.fn().mockResolvedValue(nextSnapshot),
+      getEventsAfter: vi.fn(),
+      getToolCatalog: vi.fn().mockResolvedValue([]),
+      runMultiagentEval: vi.fn(),
+      listProviderModels: vi.fn(),
+      watchEvents: vi.fn(),
+      ask: vi.fn(),
+      voiceTurn: vi.fn(),
+      stopActiveRun: vi.fn(),
+      stopSpeaking: vi.fn(),
+      selectModel: vi.fn(),
+      openUi: vi.fn(),
+      captureAndExplain: vi.fn(),
+      dismissConfirmation: vi.fn(),
+      replyPermission: vi.fn(),
+      captureVoice: vi.fn(),
+      cancelVoiceCapture: vi.fn(),
+    }
+
+    const state = await initializeSession(client)
+
+    expect(state.session.subagent_activity).toEqual([
+      {
+        id: 'eval-runner:evaluation',
+        name: 'eval-runner',
+        mode: 'evaluation',
+        status: 'Prepared',
+        readiness_score: 100,
+        required_output_fields: ['score', 'passed'],
+        output_additional_properties_allowed: false,
+        reason: null,
+      },
     ])
   })
 

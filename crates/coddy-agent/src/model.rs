@@ -1116,7 +1116,7 @@ fn gemini_api_chat_body(request: &ChatRequest) -> Result<Value, ChatModelError> 
             serde_json::json!({
                 "name": tool.name,
                 "description": tool.description,
-                "parameters": tool.input_schema,
+                "parameters": gemini_api_tool_parameters(&tool.input_schema),
             })
         })
         .collect::<Vec<_>>();
@@ -1152,6 +1152,41 @@ fn gemini_api_chat_body(request: &ChatRequest) -> Result<Value, ChatModelError> 
         body["generationConfig"] = Value::Object(generation_config);
     }
     Ok(body)
+}
+
+fn gemini_api_tool_parameters(schema: &Value) -> Value {
+    let mut schema = schema.clone();
+    strip_gemini_unsupported_schema_keywords(&mut schema, false);
+    schema
+}
+
+fn strip_gemini_unsupported_schema_keywords(value: &mut Value, is_properties_map: bool) {
+    match value {
+        Value::Object(map) => {
+            if !is_properties_map {
+                map.remove("additionalProperties");
+            }
+
+            for (key, child) in map.iter_mut() {
+                if key == "properties" {
+                    if let Value::Object(properties) = child {
+                        for property_schema in properties.values_mut() {
+                            strip_gemini_unsupported_schema_keywords(property_schema, false);
+                        }
+                    }
+                    continue;
+                }
+
+                strip_gemini_unsupported_schema_keywords(child, false);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_gemini_unsupported_schema_keywords(item, false);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn gemini_api_contents(
@@ -2740,6 +2775,52 @@ mod tests {
             .expect("temperature");
         assert!((temperature - 0.2).abs() < 0.000_001);
         assert_eq!(body["generationConfig"]["maxOutputTokens"], 128);
+    }
+
+    #[test]
+    fn gemini_api_removes_unsupported_tool_schema_keywords() {
+        let request = ChatRequest {
+            model: ModelRef {
+                provider: "vertex".to_string(),
+                name: "gemini-2.5-flash".to_string(),
+            },
+            messages: vec![ChatMessage::user("inspect")],
+            tools: vec![ChatToolSpec {
+                name: "filesystem.search_files".to_string(),
+                description: "Search files".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "query": { "type": "string" },
+                        "config": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                                "path": { "type": "string" }
+                            }
+                        },
+                        "additionalProperties": { "type": "string" }
+                    }
+                }),
+                risk_level: ToolRiskLevel::Low,
+                approval_policy: ApprovalPolicy::AutoApprove,
+            }],
+            model_credential: None,
+            temperature: None,
+            max_output_tokens: None,
+        };
+
+        let body = gemini_api_chat_body(&request).expect("body");
+        let parameters = &body["tools"][0]["functionDeclarations"][0]["parameters"];
+
+        assert!(parameters.get("additionalProperties").is_none());
+        assert!(parameters["properties"]["config"]
+            .get("additionalProperties")
+            .is_none());
+        assert!(parameters["properties"]
+            .get("additionalProperties")
+            .is_some());
     }
 
     #[test]

@@ -9,6 +9,8 @@ import type {
   ModelProviderListResult,
   ModelRole,
   AssessmentPolicy,
+  MultiagentEvalRequest,
+  MultiagentEvalResult,
   PermissionReply,
   ReplEventEnvelope,
   ReplMode,
@@ -160,6 +162,15 @@ export class ElectronReplIpcClient implements ReplIpcClient {
 
   async getToolCatalog(): Promise<ReplToolCatalogItem[]> {
     return (await window.replApi.invoke('repl:tools')) as ReplToolCatalogItem[]
+  }
+
+  async runMultiagentEval(
+    request: MultiagentEvalRequest = {},
+  ): Promise<MultiagentEvalResult> {
+    return (await window.replApi.invoke(
+      'repl:eval-multiagent',
+      request,
+    )) as MultiagentEvalResult
   }
 
   async listProviderModels(

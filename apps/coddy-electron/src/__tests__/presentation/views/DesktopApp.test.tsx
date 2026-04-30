@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ReplSession } from '@/domain'
 import { DesktopApp } from '@/presentation/views/DesktopApp/DesktopApp'
 
 const sessionContext = {
@@ -17,8 +18,9 @@ const sessionContext = {
     active_run: null,
     pending_permission: null,
     tool_activity: [],
+    subagent_activity: [],
     streaming_text: '',
-  },
+  } as ReplSession,
   toolCatalog: [],
   connecting: false,
   reconnecting: false,
@@ -43,6 +45,14 @@ describe('DesktopApp', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     window.localStorage.clear()
+    sessionContext.session = {
+      ...sessionContext.session,
+      status: 'Idle',
+      subagent_activity: [],
+      tool_activity: [],
+      pending_permission: null,
+      streaming_text: '',
+    }
     Object.defineProperty(window, 'replApi', {
       configurable: true,
       value: {
@@ -71,5 +81,32 @@ describe('DesktopApp', () => {
     expect(screen.getByText('Model thinking')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'deep' })).toBeInTheDocument()
     expect(screen.getByText('2048 tokens')).toBeInTheDocument()
+  })
+
+  it('renders subagent lifecycle readiness in the desktop activity panel', () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      active_run: 'run-1',
+      subagent_activity: [
+        {
+          id: 'security-reviewer:read-only',
+          name: 'security-reviewer',
+          mode: 'read-only',
+          status: 'Blocked',
+          readiness_score: 80,
+          required_output_fields: ['riskLevel', 'findings'],
+          output_additional_properties_allowed: false,
+          reason: 'validation checklist is underspecified',
+        },
+      ],
+    }
+
+    render(<DesktopApp />)
+
+    expect(
+      screen.getByText(
+        'subagent.security-reviewer // Blocked // readiness=80 // output=riskLevel, findings // strict',
+      ),
+    ).toBeInTheDocument()
   })
 })

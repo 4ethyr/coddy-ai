@@ -13,6 +13,7 @@ export {
   cancelSpeech,
   selectModel,
   listProviderModels,
+  runMultiagentEval,
   openUi,
   captureVoice,
   cancelVoiceCapture,

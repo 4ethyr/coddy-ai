@@ -4,6 +4,7 @@ import {
   ReplCommandError,
   captureAndExplain,
   openUi,
+  runMultiagentEval,
   selectModel,
   sendAsk,
   replyPermission,
@@ -16,6 +17,7 @@ function clientWith(
     getSnapshot: vi.fn(),
     getEventsAfter: vi.fn(),
     getToolCatalog: vi.fn(),
+    runMultiagentEval: vi.fn(),
     listProviderModels: vi.fn(),
     watchEvents: vi.fn(),
     ask: vi.fn(),
@@ -93,5 +95,22 @@ describe('CommandSender', () => {
       message: 'approved',
     })
     expect(client.replyPermission).toHaveBeenCalledWith('perm-1', 'Once')
+  })
+
+  it('runs the multiagent eval harness through the client port', async () => {
+    const result = {
+      suite: { score: 100, passed: 2, failed: 0, reports: [] },
+      baselineWritten: null,
+    }
+    const client = clientWith({
+      runMultiagentEval: vi.fn().mockResolvedValue(result),
+    })
+
+    await expect(
+      runMultiagentEval(client, { baseline: '/tmp/coddy-baseline.json' }),
+    ).resolves.toEqual(result)
+    expect(client.runMultiagentEval).toHaveBeenCalledWith({
+      baseline: '/tmp/coddy-baseline.json',
+    })
   })
 })

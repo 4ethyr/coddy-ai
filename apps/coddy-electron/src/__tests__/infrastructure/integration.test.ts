@@ -74,6 +74,7 @@ function createSimDaemon(): SimDaemon {
       messages: [],
       active_run: null,
       pending_permission: null,
+      subagent_activity: [],
     } satisfies ReplSessionSnapshotSession,
   }
 }
@@ -108,6 +109,21 @@ function createSimBridge(daemon: SimDaemon) {
         // ---- Tool catalog ----
         case 'repl:tools':
           return Promise.resolve(daemon.toolCatalog)
+
+        case 'repl:eval-multiagent':
+          daemon.commands.push('eval-multiagent')
+          return Promise.resolve({
+            suite: {
+              score: 100,
+              passed: 2,
+              failed: 0,
+              reports: [
+                { caseName: 'hardness-multiagent', status: 'passed', score: 100 },
+                { caseName: 'security-sensitive-routing', status: 'passed', score: 100 },
+              ],
+            },
+            baselineWritten: null,
+          })
 
         // ---- Watch start ----
         case 'repl:watch-start': {
@@ -340,6 +356,7 @@ function applyEventToSnapshot(daemon: SimDaemon, event: ReplEvent): void {
     daemon.snapshotSession.active_run = event.RunStarted.run_id
     daemon.snapshotSession.status = 'Thinking'
     daemon.snapshotSession.streaming_text = ''
+    daemon.snapshotSession.subagent_activity = []
     return
   }
 
@@ -355,6 +372,30 @@ function applyEventToSnapshot(daemon: SimDaemon, event: ReplEvent): void {
     daemon.snapshotSession.active_run = null
     daemon.snapshotSession.status = 'Idle'
     daemon.snapshotSession.streaming_text = ''
+    return
+  }
+
+  if ('SubagentLifecycleUpdated' in event) {
+    const update = event.SubagentLifecycleUpdated.update
+    const activityId = `${update.name}:${update.mode}`
+    const current = (daemon.snapshotSession.subagent_activity ?? []) as Array<{
+      id: string
+      required_output_fields?: string[]
+      output_additional_properties_allowed?: boolean
+    }>
+    const existingIndex = current.findIndex((item) => item.id === activityId)
+    const existingActivity = existingIndex >= 0 ? current[existingIndex] : undefined
+    const activity = {
+      ...update,
+      id: activityId,
+      required_output_fields: existingActivity?.required_output_fields ?? [],
+      output_additional_properties_allowed:
+        existingActivity?.output_additional_properties_allowed ?? true,
+    }
+    daemon.snapshotSession.subagent_activity =
+      existingIndex >= 0
+        ? current.map((item, index) => (index === existingIndex ? activity : item))
+        : [...current, activity]
   }
 }
 
@@ -378,6 +419,12 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
 
     async getToolCatalog() {
       return (await sim.invoke('repl:tools')) as ReplToolCatalogItem[]
+    },
+
+    async runMultiagentEval(request = {}) {
+      return (await sim.invoke('repl:eval-multiagent', request)) as Awaited<
+        ReturnType<ReplIpcClient['runMultiagentEval']>
+      >
     },
 
     async listProviderModels(request) {
@@ -550,6 +597,35 @@ describe('IPC integration', () => {
       const batch = await client.getEventsAfter(1)
       expect(batch.events).toHaveLength(0)
     })
+
+    it('applies subagent lifecycle events into the session snapshot', async () => {
+      sim.pushLiveEvent({
+        SubagentLifecycleUpdated: {
+          update: {
+            name: 'eval-runner',
+            mode: 'evaluation',
+            status: 'Prepared',
+            readiness_score: 100,
+            reason: null,
+          },
+        },
+      })
+
+      const snapshot = await client.getSnapshot()
+
+      expect(snapshot.session.subagent_activity).toEqual([
+        {
+          id: 'eval-runner:evaluation',
+          name: 'eval-runner',
+          mode: 'evaluation',
+          status: 'Prepared',
+          readiness_score: 100,
+          required_output_fields: [],
+          output_additional_properties_allowed: true,
+          reason: null,
+        },
+      ])
+    })
   })
 
   describe('tool catalog', () => {
@@ -576,6 +652,22 @@ describe('IPC integration', () => {
         permissions: ['ExecuteCommand'],
         approval_policy: 'AskOnUse',
       })
+    })
+  })
+
+  describe('multiagent eval', () => {
+    it('runs the deterministic multiagent eval through the frontend client port', async () => {
+      const result = await client.runMultiagentEval({
+        baseline: 'evals/baselines/main.json',
+      })
+
+      expect(result.suite).toMatchObject({
+        score: 100,
+        passed: 2,
+        failed: 0,
+      })
+      expect(result.suite.reports).toHaveLength(2)
+      expect(daemon.commands).toEqual(['eval-multiagent'])
     })
   })
 

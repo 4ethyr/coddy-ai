@@ -8,6 +8,7 @@ pub mod runtime;
 pub mod shell_executor;
 pub mod shell_plan;
 pub mod subagent;
+pub mod subagent_executor;
 
 use std::{
     collections::HashMap,
@@ -24,8 +25,11 @@ pub use command_guard::{
 };
 pub use context::{ContextObservation, ContextPlanItem, ContextSnapshot, ContextTool};
 pub use eval::{
-    EvalCase, EvalExpectations, EvalGateReport, EvalGateStatus, EvalQualityGate, EvalReport,
-    EvalRunner, EvalStatus, EvalSuiteReport,
+    default_prompt_battery_cases, run_default_prompt_battery, run_prompt_battery, EvalCase,
+    EvalExpectations, EvalGateReport, EvalGateStatus, EvalQualityGate, EvalReport, EvalRunner,
+    EvalStatus, EvalSuiteReport, MultiagentEvalBaselineComparison, MultiagentEvalBaselineError,
+    MultiagentEvalCase, MultiagentEvalReport, MultiagentEvalRunner, MultiagentEvalSuiteReport,
+    PromptBatteryCase, PromptBatteryFailure, PromptBatteryReport,
 };
 pub use model::{
     ChatFinishReason, ChatMessage, ChatMessageRole, ChatModelClient, ChatModelError,
@@ -48,7 +52,13 @@ pub use shell_plan::{
 };
 pub use subagent::{
     SubagentDefinition, SubagentHandoffPlan, SubagentMode, SubagentRecommendation,
-    SubagentRegistry, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
+    SubagentRegistry, SubagentTeamGateStatus, SubagentTeamMember, SubagentTeamMetrics,
+    SubagentTeamPlan, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
+    SUBAGENT_TEAM_PLAN_TOOL,
+};
+pub use subagent_executor::{
+    SubagentExecutionCompletionPlan, SubagentExecutionGate, SubagentExecutionHandoff,
+    SubagentExecutionStartPlan, SubagentExecutionStartStatus, SubagentOutputContract,
 };
 
 use coddy_core::{
@@ -69,6 +79,28 @@ const DEFAULT_MAX_READ_BYTES: u64 = 128 * 1024;
 const DEFAULT_MAX_LIST_ENTRIES: usize = 200;
 const DEFAULT_MAX_SEARCH_MATCHES: usize = 100;
 const MAX_SEARCH_FILE_BYTES: u64 = 512 * 1024;
+const MAX_SEARCH_MATCH_TEXT_CHARS: usize = 240;
+const SENSITIVE_KEY_MARKERS: &[&str] = &[
+    "api_key",
+    "apikey",
+    "auth",
+    "credential",
+    "password",
+    "secret",
+    "token",
+];
+const SEARCH_IGNORED_DIRS: &[&str] = &[
+    ".git",
+    ".next",
+    ".turbo",
+    ".cache",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "out",
+    "target",
+];
 
 #[derive(Debug, Error)]
 pub enum AgentError {
@@ -490,6 +522,11 @@ impl Default for AgentToolRegistry {
                                     "type": "array",
                                     "items": { "type": "string" }
                                 },
+                                "readinessScore": { "type": "integer" },
+                                "readinessIssues": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                },
                                 "outputSchema": { "type": "object" }
                             }
                         }
@@ -543,6 +580,43 @@ impl Default for AgentToolRegistry {
                                     "timeoutMs": { "type": "integer" },
                                     "maxContextTokens": { "type": "integer" },
                                     "outputSchema": { "type": "object" }
+                                }
+                            }
+                        }
+                    }
+                }),
+                risk_level: ToolRiskLevel::Low,
+                permissions: vec![ToolPermission::DelegateSubagent],
+                timeout_ms: 2_000,
+                approval_policy: ApprovalPolicy::AutoApprove,
+            }),
+            local_tool_definition(LocalToolDefinitionSpec {
+                name: SUBAGENT_TEAM_PLAN_TOOL,
+                description: "Compose a deterministic multiagent team plan with readiness, gate status, output contracts and measurable hardness metrics without executing subagents",
+                category: ToolCategory::Subagent,
+                input_schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["goal"],
+                    "properties": {
+                        "goal": { "type": "string" },
+                        "max_members": { "type": "integer", "minimum": 1 }
+                    }
+                }),
+                output_schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "team": {
+                            "type": "object",
+                            "properties": {
+                                "goal": { "type": "string" },
+                                "members": { "type": "array" },
+                                "metrics": { "type": "object" },
+                                "risks": { "type": "array", "items": { "type": "string" } },
+                                "validationStrategy": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
                                 }
                             }
                         }
@@ -932,14 +1006,22 @@ impl ReadOnlyToolExecutor {
         if truncated {
             bytes.truncate(max_bytes as usize);
         }
+        let relative_path = self.workspace.relative_display(&file_path);
+        let sensitive = path_looks_sensitive(&relative_path);
         let text = String::from_utf8_lossy(&bytes).to_string();
+        let text = if sensitive {
+            redact_sensitive_file_text(&text)
+        } else {
+            text
+        };
         self.record_read(session_id, &file_path)?;
 
         Ok(ToolOutput {
             text,
             metadata: json!({
-                "path": self.workspace.relative_display(&file_path),
+                "path": relative_path,
                 "bytes": bytes.len(),
+                "sensitive": sensitive,
             }),
             truncated,
         })
@@ -975,6 +1057,7 @@ impl ReadOnlyToolExecutor {
 
         self.search_path(&root, &query_lowercase, max_matches, &mut matches)?;
 
+        let truncated = matches.len() >= max_matches;
         let text = matches
             .iter()
             .filter_map(|entry| {
@@ -994,7 +1077,7 @@ impl ReadOnlyToolExecutor {
                 "path": self.workspace.relative_display(&root),
                 "matches": matches,
             }),
-            truncated: false,
+            truncated,
         })
     }
 
@@ -1009,6 +1092,9 @@ impl ReadOnlyToolExecutor {
             return Ok(());
         }
         if path.is_dir() {
+            if self.workspace.root != path && search_ignored_dir(path) {
+                return Ok(());
+            }
             let mut children = fs::read_dir(path)
                 .map_err(|source| AgentError::Io {
                     path: path.display().to_string(),
@@ -1031,6 +1117,9 @@ impl ReadOnlyToolExecutor {
         if !path.is_file() {
             return Ok(());
         }
+        if path_looks_sensitive(&self.workspace.relative_display(path)) {
+            return Ok(());
+        }
         let metadata = fs::metadata(path).map_err(|source| AgentError::Io {
             path: path.display().to_string(),
             source,
@@ -1048,7 +1137,7 @@ impl ReadOnlyToolExecutor {
             matches.push(json!({
                 "path": self.workspace.relative_display(path),
                 "line": line_index + 1,
-                "text": line.trim(),
+                "text": truncate_search_match_text(line.trim()),
             }));
             if matches.len() >= max_matches {
                 break;
@@ -1056,6 +1145,65 @@ impl ReadOnlyToolExecutor {
         }
         Ok(())
     }
+}
+
+fn search_ignored_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| SEARCH_IGNORED_DIRS.contains(&name))
+        .unwrap_or(false)
+}
+
+fn path_looks_sensitive(path: &str) -> bool {
+    let normalized = path.to_ascii_lowercase();
+    normalized == ".env"
+        || normalized.ends_with("/.env")
+        || normalized.contains(".env.")
+        || normalized.contains("credential")
+        || normalized.contains("secret")
+        || normalized.contains("token")
+        || normalized.ends_with(".pem")
+        || normalized.ends_with(".p12")
+        || normalized.ends_with(".pfx")
+        || normalized.ends_with("id_rsa")
+        || normalized.ends_with("id_ed25519")
+}
+
+fn redact_sensitive_file_text(text: &str) -> String {
+    text.lines()
+        .map(redact_sensitive_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn redact_sensitive_line(line: &str) -> String {
+    let lowercase = line.to_ascii_lowercase();
+    if !SENSITIVE_KEY_MARKERS
+        .iter()
+        .any(|marker| lowercase.contains(marker))
+    {
+        return line.to_string();
+    }
+
+    if let Some((left, _)) = line.split_once('=') {
+        return format!("{}=[REDACTED]", left.trim_end());
+    }
+    if let Some((left, _)) = line.split_once(':') {
+        return format!("{}: [REDACTED]", left.trim_end());
+    }
+    "[REDACTED]".to_string()
+}
+
+fn truncate_search_match_text(text: &str) -> String {
+    if text.chars().count() <= MAX_SEARCH_MATCH_TEXT_CHARS {
+        return text.to_string();
+    }
+    let mut truncated = text
+        .chars()
+        .take(MAX_SEARCH_MATCH_TEXT_CHARS.saturating_sub(3))
+        .collect::<String>();
+    truncated.push_str("...");
+    truncated
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1315,7 +1463,7 @@ mod tests {
     fn agent_registry_defines_local_contracts_without_execution() {
         let registry = AgentToolRegistry::default();
 
-        assert_eq!(registry.definitions().len(), 9);
+        assert_eq!(registry.definitions().len(), 10);
         assert!(registry
             .get(&ToolName::new(LIST_FILES_TOOL).expect("tool name"))
             .is_some());
@@ -1367,6 +1515,20 @@ mod tests {
         assert_eq!(subagent_route.approval_policy, ApprovalPolicy::AutoApprove);
         assert_eq!(
             subagent_route.permissions,
+            vec![ToolPermission::DelegateSubagent]
+        );
+
+        let subagent_team_plan = registry
+            .get(&ToolName::new(SUBAGENT_TEAM_PLAN_TOOL).expect("tool name"))
+            .expect("subagent team plan definition");
+        assert_eq!(subagent_team_plan.category, ToolCategory::Subagent);
+        assert_eq!(subagent_team_plan.risk_level, ToolRiskLevel::Low);
+        assert_eq!(
+            subagent_team_plan.approval_policy,
+            ApprovalPolicy::AutoApprove
+        );
+        assert_eq!(
+            subagent_team_plan.permissions,
             vec![ToolPermission::DelegateSubagent]
         );
     }
@@ -1449,6 +1611,26 @@ mod tests {
         let output = result.output.expect("tool output");
         assert_eq!(output.text, "Coddy REPL\n");
         assert_eq!(output.metadata["path"], "docs/repl.md");
+        assert_eq!(output.metadata["sensitive"], json!(false));
+    }
+
+    #[test]
+    fn read_file_redacts_sensitive_workspace_files() {
+        let workspace = TempWorkspace::new();
+        workspace.write(
+            ".env",
+            "GOOGLE_API_KEY=super-secret-token\nPUBLIC_FLAG=true\n",
+        );
+        let executor = ReadOnlyToolExecutor::new(&workspace.path).expect("executor");
+
+        let result = executor.execute(&call(READ_FILE_TOOL, json!({ "path": ".env" })));
+
+        assert_eq!(result.status, ToolResultStatus::Succeeded);
+        let output = result.output.expect("tool output");
+        assert_eq!(output.text, "GOOGLE_API_KEY=[REDACTED]\nPUBLIC_FLAG=true");
+        assert_eq!(output.metadata["path"], ".env");
+        assert_eq!(output.metadata["sensitive"], json!(true));
+        assert!(!output.text.contains("super-secret-token"));
     }
 
     #[test]
@@ -1818,6 +2000,67 @@ mod tests {
             .text
             .contains("src/lib.rs:1:pub struct AgentRuntime;"));
         assert!(output.text.contains("docs/readme.md:1:agent runtime notes"));
+    }
+
+    #[test]
+    fn search_files_skips_generated_directories() {
+        let workspace = TempWorkspace::new();
+        workspace.write("src/lib.rs", "pub struct AgentRuntime;\n");
+        workspace.write("target/debug/build.rs", "generated AgentRuntime\n");
+        workspace.write("apps/web/dist/index.js", "bundled AgentRuntime\n");
+        workspace.write(".git/logs/HEAD", "commit AgentRuntime\n");
+        let executor = ReadOnlyToolExecutor::new(&workspace.path).expect("executor");
+
+        let result = executor.execute(&call(
+            SEARCH_FILES_TOOL,
+            json!({ "query": "AgentRuntime", "path": ".", "max_matches": 20 }),
+        ));
+
+        assert_eq!(result.status, ToolResultStatus::Succeeded);
+        let output = result.output.expect("tool output");
+        assert!(output
+            .text
+            .contains("src/lib.rs:1:pub struct AgentRuntime;"));
+        assert!(!output.text.contains("target/debug/build.rs"));
+        assert!(!output.text.contains("apps/web/dist/index.js"));
+        assert!(!output.text.contains(".git/logs/HEAD"));
+    }
+
+    #[test]
+    fn search_files_skips_sensitive_files() {
+        let workspace = TempWorkspace::new();
+        workspace.write(".env", "GOOGLE_API_KEY=super-secret-token\n");
+        workspace.write("src/lib.rs", "pub const LABEL: &str = \"safe\";\n");
+        let executor = ReadOnlyToolExecutor::new(&workspace.path).expect("executor");
+
+        let result = executor.execute(&call(
+            SEARCH_FILES_TOOL,
+            json!({ "query": "super-secret-token", "path": ".", "max_matches": 20 }),
+        ));
+
+        assert_eq!(result.status, ToolResultStatus::Succeeded);
+        let output = result.output.expect("tool output");
+        assert!(output.text.is_empty());
+        assert!(!output.text.contains(".env"));
+        assert!(!output.text.contains("super-secret-token"));
+    }
+
+    #[test]
+    fn search_files_truncates_long_match_lines() {
+        let workspace = TempWorkspace::new();
+        workspace.write("src/lib.rs", &format!("match {}\n", "x".repeat(400)));
+        let executor = ReadOnlyToolExecutor::new(&workspace.path).expect("executor");
+
+        let result = executor.execute(&call(
+            SEARCH_FILES_TOOL,
+            json!({ "query": "match", "path": "." }),
+        ));
+
+        assert_eq!(result.status, ToolResultStatus::Succeeded);
+        let output = result.output.expect("tool output");
+        let line = output.text.lines().next().expect("match line");
+        assert!(line.ends_with("..."));
+        assert!(line.len() < 280);
     }
 
     #[test]

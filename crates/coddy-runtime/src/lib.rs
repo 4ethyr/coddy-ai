@@ -1,14 +1,17 @@
 use coddy_agent::{
-    AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError, ChatRequest, ChatResponse,
-    ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, LIST_FILES_TOOL,
-    PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL, SUBAGENT_PREPARE_TOOL,
-    SUBAGENT_ROUTE_TOOL,
+    AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError, ChatModelResult, ChatRequest,
+    ChatResponse, ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime,
+    SubagentExecutionGate, SubagentExecutionHandoff, SubagentExecutionStartPlan,
+    SubagentExecutionStartStatus, SubagentOutputContract, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL,
+    READ_FILE_TOOL, SEARCH_FILES_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
+    SUBAGENT_TEAM_PLAN_TOOL,
 };
 use coddy_core::{
     ApprovalPolicy, ContextItem, ContextPolicy, ModelCredential, ModelRef, PermissionReply,
     ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode,
-    ReplSession, ReplSessionSnapshot, SubagentRouteRecommendation, ToolCall, ToolDefinition,
-    ToolName, ToolOutput, ToolResultStatus, ToolRiskLevel,
+    ReplSession, ReplSessionSnapshot, SubagentHandoffPrepared, SubagentLifecycleStatus,
+    SubagentLifecycleUpdate, SubagentRouteRecommendation, ToolCall, ToolDefinition, ToolName,
+    ToolOutput, ToolResultStatus, ToolRiskLevel,
 };
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
@@ -24,7 +27,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixListener;
 use uuid::Uuid;
 
-const MAX_MODEL_TOOL_ROUNDS: usize = 3;
+const MAX_MODEL_TOOL_ROUNDS: usize = 5;
 
 #[derive(Debug, Clone)]
 pub struct CoddyRuntime {
@@ -573,6 +576,7 @@ impl CoddyRuntime {
             ChatMessage::user(context.goal.clone()),
         ];
         let mut response = response;
+        let mut last_tool_observations = None;
 
         for _ in 0..MAX_MODEL_TOOL_ROUNDS {
             let round =
@@ -580,18 +584,32 @@ impl CoddyRuntime {
             if round.executed_tool_calls == 0 {
                 return round.response;
             }
+            last_tool_observations = Some(round.response.text.clone());
 
             if !response.text.trim().is_empty() {
                 messages.push(ChatMessage::assistant(response.text.clone()));
             }
             messages.push(ChatMessage::tool(round.response.text.clone()));
 
-            let Some(next_response) = self.complete_after_tool_messages(
+            let next_response = match self.complete_after_tool_messages(
                 context.selected_model,
                 context.model_credential.clone(),
                 messages.clone(),
-            ) else {
-                return round.response;
+            ) {
+                Ok(response) => response,
+                Err(error) => {
+                    let mut text = round.response.text;
+                    text.push_str("\n\n");
+                    text.push_str(
+                        "Coddy could not get a follow-up response after tool observations: ",
+                    );
+                    text.push_str(&model_error_message(
+                        &error,
+                        context.selected_model,
+                        self.tool_registry.definitions().len(),
+                    ));
+                    return AssistantResponse::from_text(redact_context_text(&text));
+                }
             };
             if next_response.tool_calls.is_empty() {
                 return AssistantResponse::from_chat_response(next_response);
@@ -600,16 +618,11 @@ impl CoddyRuntime {
         }
 
         let tool_summary = summarize_chat_tool_calls(&response.tool_calls);
-        let text = if response.text.trim().is_empty() {
-            format!(
-                "Model requested additional tools after {MAX_MODEL_TOOL_ROUNDS} tool observation rounds: {tool_summary}. Coddy stopped the automatic loop to avoid an unbounded run."
-            )
-        } else {
-            format!(
-                "{}\n\nModel requested additional tools after {MAX_MODEL_TOOL_ROUNDS} tool observation rounds: {tool_summary}. Coddy stopped the automatic loop to avoid an unbounded run.",
-                response.text.trim()
-            )
-        };
+        let text = build_tool_round_limit_response(
+            response.text.trim(),
+            &tool_summary,
+            last_tool_observations.as_deref(),
+        );
         AssistantResponse::from_text(redact_context_text(&text))
     }
 
@@ -667,8 +680,49 @@ impl CoddyRuntime {
                 sections.push(handoff_context);
             }
         }
+        if let Some(team_context) =
+            self.prepare_subagent_team_context(agent_runtime, &mut state, session_id, run_id, goal)
+        {
+            sections.push(team_context);
+        }
 
         Some(sections.join("\n\n"))
+    }
+
+    fn prepare_subagent_team_context(
+        &self,
+        agent_runtime: &LocalAgentRuntime,
+        state: &mut coddy_agent::RunState,
+        session_id: Uuid,
+        run_id: Uuid,
+        goal: &str,
+    ) -> Option<String> {
+        agent_runtime.add_plan_item(
+            state,
+            "Compose measurable multiagent team plan",
+            Some(ToolName::new(SUBAGENT_TEAM_PLAN_TOOL).expect("built-in tool name")),
+        );
+        let call = ToolCall::new(
+            session_id,
+            run_id,
+            ToolName::new(SUBAGENT_TEAM_PLAN_TOOL).expect("built-in tool name"),
+            json!({
+                "goal": goal,
+                "max_members": 6,
+            }),
+            unix_ms_now(),
+        );
+        let outcome = agent_runtime.execute_tool_call(state, &call);
+        for event in outcome.events {
+            self.publish_event_with_run_now(event, run_id);
+        }
+
+        let result = outcome.result?;
+        if result.status != ToolResultStatus::Succeeded {
+            return None;
+        }
+        let output = result.output.as_ref()?;
+        Some(format_subagent_team_context(output))
     }
 
     fn prepare_subagent_handoff_context(
@@ -704,7 +758,35 @@ impl CoddyRuntime {
         if result.status != ToolResultStatus::Succeeded {
             return None;
         }
-        result.output.as_ref().map(format_subagent_handoff_context)
+        let output = result.output.as_ref()?;
+        let mut execution_gate_context = None;
+        let mut output_contract_context = None;
+        if let Some(handoff) = subagent_handoff_prepared_from_output(output) {
+            let execution_handoff = SubagentExecutionHandoff::from(&handoff);
+            let output_contract = SubagentOutputContract::from(&handoff);
+            let execution_plan = SubagentExecutionGate.plan_start_for(&execution_handoff, false);
+            let update = execution_plan
+                .lifecycle_updates
+                .first()
+                .cloned()
+                .unwrap_or_else(|| subagent_lifecycle_blocked_update(&handoff));
+            self.publish_event_with_run_now(ReplEvent::SubagentHandoffPrepared { handoff }, run_id);
+            self.publish_event_with_run_now(ReplEvent::SubagentLifecycleUpdated { update }, run_id);
+            execution_gate_context = Some(format_subagent_execution_gate_context(&execution_plan));
+            output_contract_context =
+                Some(format_subagent_output_contract_context(&output_contract));
+        }
+        Some(
+            [
+                Some(format_subagent_handoff_context(output)),
+                execution_gate_context,
+                output_contract_context,
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        )
     }
 
     fn execute_model_tool_round(
@@ -829,13 +911,11 @@ impl CoddyRuntime {
         selected_model: &ModelRef,
         model_credential: Option<ModelCredential>,
         messages: Vec<ChatMessage>,
-    ) -> Option<ChatResponse> {
+    ) -> ChatModelResult {
         let request = ChatRequest::new(selected_model.clone(), messages)
-            .ok()?
-            .with_model_credential(model_credential)
-            .ok()?
+            .and_then(|request| request.with_model_credential(model_credential))?
             .with_tools(self.chat_tool_specs());
-        self.chat_client.complete(request).ok()
+        self.chat_client.complete(request)
     }
 
     fn chat_tool_specs(&self) -> Vec<ChatToolSpec> {
@@ -1090,6 +1170,30 @@ fn summarize_chat_tool_calls(tool_calls: &[ChatToolCall]) -> String {
         .join(", ")
 }
 
+fn build_tool_round_limit_response(
+    model_text: &str,
+    pending_tool_summary: &str,
+    last_tool_observations: Option<&str>,
+) -> String {
+    let mut sections = Vec::new();
+    if !model_text.trim().is_empty() {
+        sections.push(model_text.trim().to_string());
+    }
+    sections.push(format!(
+        "Coddy reached the bounded tool loop limit after {MAX_MODEL_TOOL_ROUNDS} tool observation rounds. Pending model-requested tools were not executed: {pending_tool_summary}."
+    ));
+    if let Some(observations) = last_tool_observations
+        .map(str::trim)
+        .filter(|observations| !observations.is_empty())
+    {
+        sections.push(format!("Last tool observations:\n{observations}"));
+    }
+    sections.push(
+        "Continue with a narrower prompt or explicitly ask Coddy to proceed with the next safe inspection step.".to_string(),
+    );
+    sections.join("\n\n")
+}
+
 fn build_model_system_prompt(
     context_policy: ContextPolicy,
     session: &ReplSession,
@@ -1329,6 +1433,77 @@ fn format_subagent_routing_context(output: &ToolOutput) -> String {
     lines.join("\n")
 }
 
+fn format_subagent_team_context(output: &ToolOutput) -> String {
+    let Some(team) = output
+        .metadata
+        .get("team")
+        .and_then(|value| value.as_object())
+    else {
+        return "Multiagent team plan: no structured team plan was available.".to_string();
+    };
+    let metrics = team.get("metrics").and_then(|value| value.as_object());
+    let hardness_score = metrics
+        .and_then(|metrics| metrics.get("hardnessScore"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let average_readiness = metrics
+        .and_then(|metrics| metrics.get("averageReadiness"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let awaiting_approval = metrics
+        .and_then(|metrics| metrics.get("awaitingApproval"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let blocked = metrics
+        .and_then(|metrics| metrics.get("blocked"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+
+    let members = team
+        .get("members")
+        .and_then(|value| value.as_array())
+        .map(|members| {
+            members
+                .iter()
+                .take(6)
+                .filter_map(|member| {
+                    let name = member.get("name")?.as_str()?;
+                    let mode = member
+                        .get("mode")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("unknown");
+                    let gate = member
+                        .get("gateStatus")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("unknown");
+                    let readiness = member
+                        .get("readinessScore")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or_default();
+                    Some(format!("{name} [{mode}, {gate}, readiness {readiness}]"))
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .filter(|members| !members.is_empty())
+        .unwrap_or_else(|| "none".to_string());
+    let risks = array_string_preview(team.get("risks"), 3);
+    let validation = array_string_preview(team.get("validationStrategy"), 3);
+
+    [
+        "Multiagent team plan:".to_string(),
+        "- This is a measurable orchestration plan only; no subagent execution has started."
+            .to_string(),
+        format!(
+            "- Metrics: hardness score {hardness_score}; average readiness {average_readiness}; awaiting approval {awaiting_approval}; blocked {blocked}."
+        ),
+        format!("- Members: {members}"),
+        format!("- Risks: {risks}"),
+        format!("- Validation strategy: {validation}"),
+    ]
+    .join("\n")
+}
+
 fn format_subagent_handoff_context(output: &ToolOutput) -> String {
     let Some(handoff) = output
         .metadata
@@ -1356,12 +1531,18 @@ fn format_subagent_handoff_context(output: &ToolOutput) -> String {
         .unwrap_or_default();
     let checklist = array_string_preview(handoff.get("validationChecklist"), 3);
     let safety_notes = array_string_preview(handoff.get("safetyNotes"), 2);
+    let readiness_score = handoff
+        .get("readinessScore")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let readiness_issues = array_string_preview(handoff.get("readinessIssues"), 3);
 
     [
         "Subagent handoff preview:".to_string(),
         "- Use this handoff as planning guidance only; do not claim the subagent executed."
             .to_string(),
         format!("- Prepared `{name}` in {mode} mode; approval required: {approval_required}."),
+        format!("- Readiness score: {readiness_score}; issues: {readiness_issues}."),
         format!(
             "- Handoff prompt: {}",
             truncate_context_text(&redact_context_text(handoff_prompt), 700)
@@ -1370,6 +1551,122 @@ fn format_subagent_handoff_context(output: &ToolOutput) -> String {
         format!("- Safety notes: {safety_notes}"),
     ]
     .join("\n")
+}
+
+fn format_subagent_execution_gate_context(plan: &SubagentExecutionStartPlan) -> String {
+    let status = match plan.status {
+        SubagentExecutionStartStatus::AwaitingApproval => "awaiting approval",
+        SubagentExecutionStartStatus::ReadyToStart => "ready to start",
+        SubagentExecutionStartStatus::Blocked => "blocked",
+    };
+    let lifecycle = if plan.lifecycle_updates.is_empty() {
+        "none".to_string()
+    } else {
+        plan.lifecycle_updates
+            .iter()
+            .map(|update| format!("{:?}", update.status))
+            .collect::<Vec<_>>()
+            .join(" -> ")
+    };
+    let reason = plan.reason.as_deref().unwrap_or("none");
+
+    [
+        "Subagent execution gate preview:".to_string(),
+        "- This is a readiness decision only; no subagent execution has started.".to_string(),
+        format!("- Gate status: {status}."),
+        format!("- Lifecycle plan: {lifecycle}."),
+        format!(
+            "- Reason: {}.",
+            truncate_context_text(&redact_context_text(reason), 240)
+        ),
+    ]
+    .join("\n")
+}
+
+fn format_subagent_output_contract_context(contract: &SubagentOutputContract) -> String {
+    let required_fields = if contract.required_fields.is_empty() {
+        "none".to_string()
+    } else {
+        contract.required_fields.join(", ")
+    };
+    let extra_fields_policy = if contract.additional_properties_allowed {
+        "allowed"
+    } else {
+        "rejected"
+    };
+
+    [
+        "Subagent output contract:".to_string(),
+        format!("- Role: `{}` in {} mode.", contract.name, contract.mode),
+        format!("- Required JSON fields: {required_fields}."),
+        format!("- Additional properties: {extra_fields_policy}."),
+        "- Free-form prose outside the structured JSON output is not accepted.".to_string(),
+    ]
+    .join("\n")
+}
+
+fn subagent_handoff_prepared_from_output(output: &ToolOutput) -> Option<SubagentHandoffPrepared> {
+    let handoff = output.metadata.get("handoff")?.as_object()?;
+    let name = handoff.get("name")?.as_str()?.to_string();
+    let mode = handoff
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let approval_required = handoff
+        .get("approvalRequired")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    let allowed_tools = array_string_values(handoff.get("allowedTools"), 16);
+    let output_schema = handoff.get("outputSchema");
+    let required_output_fields =
+        array_string_values(output_schema.and_then(|schema| schema.get("required")), 32);
+    let output_additional_properties_allowed = output_schema
+        .and_then(|schema| schema.get("additionalProperties"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    let timeout_ms = handoff
+        .get("timeoutMs")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let max_context_tokens = handoff
+        .get("maxContextTokens")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default()
+        .min(u32::MAX as u64) as u32;
+    let validation_checklist = array_string_values(handoff.get("validationChecklist"), 12);
+    let safety_notes = array_string_values(handoff.get("safetyNotes"), 12);
+    let readiness_score = handoff
+        .get("readinessScore")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default()
+        .min(100) as u8;
+    let readiness_issues = array_string_values(handoff.get("readinessIssues"), 12);
+
+    Some(SubagentHandoffPrepared {
+        name,
+        mode,
+        approval_required,
+        allowed_tools,
+        required_output_fields,
+        output_additional_properties_allowed,
+        timeout_ms,
+        max_context_tokens,
+        validation_checklist,
+        safety_notes,
+        readiness_score,
+        readiness_issues,
+    })
+}
+
+fn subagent_lifecycle_blocked_update(handoff: &SubagentHandoffPrepared) -> SubagentLifecycleUpdate {
+    SubagentLifecycleUpdate {
+        name: handoff.name.clone(),
+        mode: handoff.mode.clone(),
+        status: SubagentLifecycleStatus::Blocked,
+        readiness_score: handoff.readiness_score,
+        reason: Some("execution gate did not return a lifecycle update".to_string()),
+    }
 }
 
 fn subagent_recommendations_from_output(output: &ToolOutput) -> Vec<SubagentRouteRecommendation> {
@@ -1437,6 +1734,20 @@ fn array_string_preview(value: Option<&serde_json::Value>, limit: usize) -> Stri
     } else {
         values.join(" | ")
     }
+}
+
+fn array_string_values(value: Option<&serde_json::Value>, limit: usize) -> Vec<String> {
+    value
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .take(limit)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
 }
 
 fn redact_context_text(text: &str) -> String {
@@ -1771,6 +2082,7 @@ mod tests {
                 "subagent.list",
                 "subagent.prepare",
                 "subagent.route",
+                "subagent.team_plan",
             ]
         );
 
@@ -1829,6 +2141,21 @@ mod tests {
             vec![ToolPermission::DelegateSubagent]
         );
         assert_eq!(subagent_route.approval_policy, ApprovalPolicy::AutoApprove);
+
+        let subagent_team_plan = tools
+            .iter()
+            .find(|tool| tool.name == "subagent.team_plan")
+            .expect("subagent team plan tool");
+        assert_eq!(subagent_team_plan.category, ToolCategory::Subagent);
+        assert_eq!(subagent_team_plan.risk_level, ToolRiskLevel::Low);
+        assert_eq!(
+            subagent_team_plan.permissions,
+            vec![ToolPermission::DelegateSubagent]
+        );
+        assert_eq!(
+            subagent_team_plan.approval_policy,
+            ApprovalPolicy::AutoApprove
+        );
     }
 
     #[test]
@@ -2212,7 +2539,22 @@ mod tests {
         assert!(system_prompt.contains("do not claim a subagent executed"));
         assert!(system_prompt.contains("Subagent handoff preview:"));
         assert!(system_prompt.contains("Prepared `eval-runner` in evaluation mode"));
+        assert!(system_prompt.contains("Readiness score: 100"));
         assert!(system_prompt.contains("Validation checklist:"));
+        assert!(system_prompt.contains("Subagent execution gate preview:"));
+        assert!(system_prompt.contains("no subagent execution has started"));
+        assert!(system_prompt.contains("Gate status: awaiting approval"));
+        assert!(system_prompt.contains("Subagent output contract:"));
+        assert!(system_prompt.contains(
+            "Required JSON fields: score, passed, failedChecks, metrics, recommendations."
+        ));
+        assert!(system_prompt.contains("Additional properties: rejected."));
+        assert!(system_prompt
+            .contains("Free-form prose outside the structured JSON output is not accepted."));
+        assert!(system_prompt.contains("Multiagent team plan:"));
+        assert!(system_prompt.contains("hardness score"));
+        assert!(system_prompt.contains("eval-runner [evaluation"));
+        assert!(system_prompt.contains("no subagent execution has started"));
         assert!(events.iter().any(|event| matches!(
             &event.event,
             ReplEvent::ToolStarted { name } if name == SUBAGENT_ROUTE_TOOL
@@ -2231,11 +2573,137 @@ mod tests {
         )));
         assert!(events.iter().any(|event| matches!(
             &event.event,
+            ReplEvent::ToolStarted { name } if name == SUBAGENT_TEAM_PLAN_TOOL
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolCompleted { name, .. } if name == SUBAGENT_TEAM_PLAN_TOOL
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
             ReplEvent::SubagentRouted { recommendations }
                 if recommendations
                     .first()
                     .is_some_and(|recommendation| recommendation.name == "eval-runner")
         )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::SubagentHandoffPrepared { handoff }
+                if handoff.name == "eval-runner"
+                    && handoff.mode == "evaluation"
+                    && handoff.readiness_score == 100
+                    && handoff.readiness_issues.is_empty()
+                    && handoff.allowed_tools.iter().any(|tool| tool == "shell.run")
+                    && !handoff.output_additional_properties_allowed
+                    && handoff.required_output_fields == [
+                        "score".to_string(),
+                        "passed".to_string(),
+                        "failedChecks".to_string(),
+                        "metrics".to_string(),
+                        "recommendations".to_string()
+                    ]
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::SubagentLifecycleUpdated { update }
+                if update.name == "eval-runner"
+                    && update.mode == "evaluation"
+                    && update.status == SubagentLifecycleStatus::Prepared
+                    && update.readiness_score == 100
+                    && update.reason.is_none()
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::SubagentLifecycleUpdated { update }
+                if update.status == SubagentLifecycleStatus::Running
+        )));
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.session.subagent_activity.len(), 1);
+        assert_eq!(snapshot.session.subagent_activity[0].name, "eval-runner");
+        assert_eq!(
+            snapshot.session.subagent_activity[0].status,
+            SubagentLifecycleStatus::Prepared
+        );
+        assert_eq!(snapshot.session.subagent_activity[0].readiness_score, 100);
+        assert_eq!(
+            snapshot.session.subagent_activity[0].required_output_fields,
+            vec![
+                "score".to_string(),
+                "passed".to_string(),
+                "failedChecks".to_string(),
+                "metrics".to_string(),
+                "recommendations".to_string()
+            ]
+        );
+        assert!(!snapshot.session.subagent_activity[0].output_additional_properties_allowed);
+    }
+
+    #[test]
+    fn subagent_handoff_event_preserves_full_values_while_prompt_preview_is_truncated() {
+        let long_issue = "x".repeat(220);
+        let output = ToolOutput {
+            text: "prepared".to_string(),
+            metadata: serde_json::json!({
+                "handoff": {
+                    "name": "eval-runner",
+                    "mode": "evaluation",
+                    "approvalRequired": true,
+                    "allowedTools": ["shell.run"],
+                    "timeoutMs": 60000,
+                    "maxContextTokens": 8000,
+                    "validationChecklist": [long_issue],
+                    "safetyNotes": ["Do not expose secrets."],
+                    "readinessScore": 80,
+                    "readinessIssues": [long_issue],
+                    "outputSchema": {}
+                }
+            }),
+            truncated: false,
+        };
+
+        let handoff = subagent_handoff_prepared_from_output(&output).expect("handoff event");
+        assert_eq!(handoff.validation_checklist[0].len(), 220);
+        assert_eq!(handoff.readiness_issues[0].len(), 220);
+        assert!(handoff.required_output_fields.is_empty());
+        assert!(handoff.output_additional_properties_allowed);
+
+        let preview = format_subagent_handoff_context(&output);
+        assert!(preview.contains("Readiness score: 80"));
+        assert!(!preview.contains(&"x".repeat(220)));
+    }
+
+    #[test]
+    fn subagent_lifecycle_blocks_handoffs_below_readiness_threshold() {
+        let handoff = SubagentHandoffPrepared {
+            name: "coder".to_string(),
+            mode: "workspace-write".to_string(),
+            approval_required: true,
+            allowed_tools: vec!["filesystem.apply_edit".to_string()],
+            required_output_fields: vec!["changedFiles".to_string(), "summary".to_string()],
+            output_additional_properties_allowed: false,
+            timeout_ms: 60_000,
+            max_context_tokens: 8_000,
+            validation_checklist: vec!["Preview edits before applying.".to_string()],
+            safety_notes: vec!["Do not expose secrets.".to_string()],
+            readiness_score: 80,
+            readiness_issues: vec![
+                "workspace-write handoff must include preview edit capability".to_string(),
+            ],
+        };
+
+        let execution_handoff = SubagentExecutionHandoff::from(&handoff);
+        let plan = SubagentExecutionGate.plan_start_for(&execution_handoff, true);
+        let update = plan.lifecycle_updates.first().expect("blocked update");
+
+        assert_eq!(update.name, "coder");
+        assert_eq!(update.status, SubagentLifecycleStatus::Blocked);
+        assert_eq!(update.readiness_score, 80);
+        assert_eq!(
+            update.reason.as_deref(),
+            Some(
+                "readiness score 80 does not meet execution threshold 100; workspace-write handoff must include preview edit capability"
+            )
+        );
     }
 
     #[test]
@@ -2487,6 +2955,61 @@ mod tests {
     }
 
     #[test]
+    fn ask_command_surfaces_tool_followup_model_errors() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("src/main.rs", "fn main() {}\n");
+        let (chat_client, requests) = QueuedChatClient::new(vec![ChatResponse {
+            text: "I will inspect the workspace.".to_string(),
+            deltas: vec!["I will inspect the workspace.".to_string()],
+            finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+            tool_calls: vec![ChatToolCall {
+                id: Some("call-1".to_string()),
+                name: LIST_FILES_TOOL.to_string(),
+                arguments: json!({ "path": ".", "max_entries": 20 }),
+            }],
+        }]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect the workspace".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+
+        assert_eq!(captured_requests.len(), 2);
+        assert!(text.contains("Tool observations:"));
+        assert!(text.contains("filesystem.list_files"));
+        assert!(text.contains("could not get a follow-up response after tool observations"));
+        assert!(text.contains("missing queued response"));
+    }
+
+    #[test]
     fn ask_command_redacts_secret_like_tool_observations_before_model_followup() {
         let request_id = Uuid::new_v4();
         let workspace = TempWorkspace::new();
@@ -2541,9 +3064,7 @@ mod tests {
             .find(|message| message.role == coddy_agent::ChatMessageRole::Tool)
             .expect("tool observation message");
 
-        assert!(tool_message
-            .content
-            .contains("OPENAI_API_KEY=sk-[REDACTED]"));
+        assert!(tool_message.content.contains("OPENAI_API_KEY=[REDACTED]"));
         assert!(!tool_message.content.contains("sk-secret-token"));
     }
 
@@ -2882,12 +3403,10 @@ mod tests {
                 arguments: json!({ "path": ".", "max_entries": 20 }),
             }],
         };
-        let (chat_client, requests) = QueuedChatClient::new(vec![
-            repeated_tool_response("call-1"),
-            repeated_tool_response("call-2"),
-            repeated_tool_response("call-3"),
-            repeated_tool_response("call-4"),
-        ]);
+        let responses = (1..=(MAX_MODEL_TOOL_ROUNDS + 1))
+            .map(|index| repeated_tool_response(&format!("call-{index}")))
+            .collect::<Vec<_>>();
+        let (chat_client, requests) = QueuedChatClient::new(responses);
         let runtime = CoddyRuntime::with_workspace_and_chat_client(
             AgentToolRegistry::default(),
             &workspace.path,
@@ -2923,8 +3442,10 @@ mod tests {
         let events = runtime.events_after(2).0;
 
         assert_eq!(captured_requests.len(), MAX_MODEL_TOOL_ROUNDS + 1);
-        assert!(text.contains("stopped the automatic loop"));
+        assert!(text.contains("bounded tool loop limit"));
         assert!(text.contains("filesystem.list_files"));
+        assert!(text.contains("Last tool observations:"));
+        assert!(text.contains("README.md"));
         assert_eq!(
             events
                 .iter()

@@ -4,6 +4,7 @@ pub mod context;
 pub mod event;
 pub mod event_broker;
 pub mod event_log;
+mod json_value_wire;
 pub mod permission;
 pub mod policy;
 pub mod repl_shell;
@@ -21,7 +22,10 @@ pub use context::{
     BoundingBox, CodeBlock, ExtractionSource, QuestionBlock, ScreenRegion, ScreenRegionKind,
     ScreenUnderstandingContext, TerminalBlock,
 };
-pub use event::{ReplEvent, ReplIntent, ShortcutSource, SubagentRouteRecommendation, ToolStatus};
+pub use event::{
+    ReplEvent, ReplIntent, ShortcutSource, SubagentHandoffPrepared, SubagentLifecycleStatus,
+    SubagentLifecycleUpdate, SubagentRouteRecommendation, ToolStatus,
+};
 pub use event_broker::{ReplEventBroker, ReplEventSubscription};
 pub use event_log::{ReplEventEnvelope, ReplEventLog, ReplSessionSnapshot};
 pub use permission::{
@@ -36,7 +40,9 @@ pub use repl_shell::{
 pub use search::{
     SearchExtractionPolicy, SearchProvider, SearchResultContext, SearchResultItem, SourceQuality,
 };
-pub use session::{ContextItem, ReplMessage, ReplMode, ReplSession, SessionStatus, VoiceState};
+pub use session::{
+    ContextItem, ReplMessage, ReplMode, ReplSession, SessionStatus, SubagentActivity, VoiceState,
+};
 pub use shortcut::{ShortcutConflictPolicy, ShortcutDecision};
 pub use tool::{
     ApprovalPolicy, ToolCall, ToolCategory, ToolContractError, ToolDefinition, ToolError, ToolName,

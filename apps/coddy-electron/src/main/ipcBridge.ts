@@ -65,6 +65,11 @@ type ReplCommandResult = {
   error?: { code: string; message: string }
 }
 
+type MultiagentEvalPayload = {
+  baseline?: string
+  writeBaseline?: string
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -265,6 +270,13 @@ export function registerIpcHandlers(): void {
     )
     return runCoddyCommand(['ask', text], credentialEnv)
   })
+
+  ipcMain.handle(
+    'repl:eval-multiagent',
+    async (_event, payload: MultiagentEvalPayload = {}) => {
+      return runMultiagentEval(payload)
+    },
+  )
 
   // ---- Voice: capture + transcribe via coddy CLI ----
   ipcMain.handle('voice:capture', async () => {
@@ -545,6 +557,26 @@ async function runCoddyCommand(
   env: Record<string, string> = {},
 ): Promise<ReplCommandResult> {
   return runCoddyCommandFromChild(coddySpawn(args, env))
+}
+
+async function runMultiagentEval(payload: MultiagentEvalPayload): Promise<unknown> {
+  const args = ['eval', 'multiagent', '--json']
+  const baseline = normalizeOptionalPath(payload.baseline)
+  const writeBaseline = normalizeOptionalPath(payload.writeBaseline)
+  if (baseline) {
+    args.push('--baseline', baseline)
+  }
+  if (writeBaseline) {
+    args.push('--write-baseline', writeBaseline)
+  }
+
+  return readJson(coddySpawn(args))
+}
+
+function normalizeOptionalPath(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
 }
 
 async function runtimeCredentialEnvironmentForActiveModel(

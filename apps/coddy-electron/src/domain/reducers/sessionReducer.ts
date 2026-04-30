@@ -3,7 +3,15 @@
 // Mirrors: crates/coddy-core/src/session.rs — ReplSession::apply_event()
 
 import type { ReplSession } from '@/domain/types/session'
-import type { ReplEvent, ToolStatus } from '@/domain/types/events'
+import type {
+  ReplEvent,
+  SubagentHandoffPrepared,
+  SubagentLifecycleStatus,
+  SubagentLifecycleUpdate,
+  ToolStatus,
+} from '@/domain/types/events'
+
+const SUBAGENT_READY_SCORE = 100
 
 export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSession {
   const tag = Object.keys(event)[0] as keyof ReplEvent
@@ -22,6 +30,7 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
         status: 'Thinking',
         streaming_text: '',
         tool_activity: [],
+        subagent_activity: [],
       }
     }
 
@@ -116,6 +125,56 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
 
     case 'SubagentRouted':
       return { ...session, status: 'Thinking' }
+
+    case 'SubagentHandoffPrepared': {
+      const { handoff } = (event as {
+        SubagentHandoffPrepared: {
+          handoff: SubagentHandoffPrepared
+        }
+      }).SubagentHandoffPrepared
+      const previousActivity = session.subagent_activity ?? []
+      const activityId = `${handoff.name}:${handoff.mode}`
+      const existingIndex = previousActivity.findIndex(
+        (item) => item.id === activityId,
+      )
+      const activity = subagentActivityFromHandoffPrepared(
+        existingIndex >= 0 ? previousActivity[existingIndex] : undefined,
+        handoff,
+      )
+      const subagent_activity =
+        existingIndex >= 0
+          ? previousActivity.map((item, index) =>
+              index === existingIndex ? activity : item,
+            )
+          : [...previousActivity, activity]
+
+      return { ...session, status: 'Thinking', subagent_activity }
+    }
+
+    case 'SubagentLifecycleUpdated': {
+      const { update } = (event as {
+        SubagentLifecycleUpdated: {
+          update: SubagentLifecycleUpdate
+        }
+      }).SubagentLifecycleUpdated
+      const previousActivity = session.subagent_activity ?? []
+      const activityId = `${update.name}:${update.mode}`
+      const existingIndex = previousActivity.findIndex(
+        (item) => item.id === activityId,
+      )
+      const activity = subagentActivityFromLifecycleUpdate(
+        existingIndex >= 0 ? previousActivity[existingIndex] : undefined,
+        update,
+      )
+      const subagent_activity =
+        existingIndex >= 0
+          ? previousActivity.map((item, index) =>
+              index === existingIndex ? activity : item,
+            )
+          : [...previousActivity, activity]
+
+      return { ...session, status: 'Thinking', subagent_activity }
+    }
 
     case 'PermissionRequested': {
       const { request } = (event as {
@@ -226,4 +285,109 @@ function findLastRunningToolIndex(
     }
   }
   return -1
+}
+
+function subagentActivityFromLifecycleUpdate(
+  previous: ReplSession['subagent_activity'][number] | undefined,
+  update: SubagentLifecycleUpdate,
+): ReplSession['subagent_activity'][number] {
+  const { status, reason } = normalizeSubagentLifecycleTransition(previous?.status, update)
+
+  return {
+    id: `${update.name}:${update.mode}`,
+    name: update.name,
+    mode: update.mode,
+    status,
+    readiness_score: update.readiness_score,
+    required_output_fields: previous?.required_output_fields ?? [],
+    output_additional_properties_allowed:
+      previous?.output_additional_properties_allowed ?? true,
+    reason,
+  }
+}
+
+function subagentActivityFromHandoffPrepared(
+  previous: ReplSession['subagent_activity'][number] | undefined,
+  handoff: SubagentHandoffPrepared,
+): ReplSession['subagent_activity'][number] {
+  const reason = handoffReadinessReason(handoff)
+  return {
+    id: `${handoff.name}:${handoff.mode}`,
+    name: handoff.name,
+    mode: handoff.mode,
+    status: reason ? 'Blocked' : previous?.status ?? 'Prepared',
+    readiness_score: handoff.readiness_score,
+    required_output_fields: handoff.required_output_fields,
+    output_additional_properties_allowed:
+      handoff.output_additional_properties_allowed,
+    reason: reason ?? previous?.reason ?? null,
+  }
+}
+
+function normalizeSubagentLifecycleTransition(
+  previous: SubagentLifecycleStatus | undefined,
+  update: SubagentLifecycleUpdate,
+): { status: SubagentLifecycleStatus; reason: string | null } {
+  const readinessReason = readinessBlockReason(update)
+  if (readinessReason) {
+    return { status: 'Blocked', reason: readinessReason }
+  }
+
+  if (!isAllowedSubagentTransition(previous, update.status)) {
+    return {
+      status: 'Blocked',
+      reason: `invalid subagent lifecycle transition: ${previous ?? 'None'} -> ${update.status}`,
+    }
+  }
+
+  return { status: update.status, reason: update.reason }
+}
+
+function readinessBlockReason(update: SubagentLifecycleUpdate): string | null {
+  if (!requiresReadyHandoff(update.status)) return null
+
+  const reasons: string[] = []
+  if (update.readiness_score < SUBAGENT_READY_SCORE) {
+    reasons.push(`readiness score ${update.readiness_score} is below execution threshold`)
+  }
+  if (update.reason) {
+    reasons.push(update.reason)
+  }
+
+  return reasons.length > 0 ? reasons.join('; ') : null
+}
+
+function handoffReadinessReason(handoff: SubagentHandoffPrepared): string | null {
+  const reasons: string[] = []
+  if (handoff.readiness_score < SUBAGENT_READY_SCORE) {
+    reasons.push(`readiness score ${handoff.readiness_score} is below execution threshold`)
+  }
+  reasons.push(...handoff.readiness_issues)
+
+  return reasons.length > 0 ? reasons.join('; ') : null
+}
+
+function requiresReadyHandoff(status: SubagentLifecycleStatus): boolean {
+  return (
+    status === 'Prepared'
+    || status === 'Approved'
+    || status === 'Running'
+    || status === 'Completed'
+  )
+}
+
+function isAllowedSubagentTransition(
+  previous: SubagentLifecycleStatus | undefined,
+  next: SubagentLifecycleStatus,
+): boolean {
+  if (!previous) return next === 'Prepared' || next === 'Blocked'
+  if (previous === next) return true
+
+  if (previous === 'Prepared') return next === 'Approved' || next === 'Blocked'
+  if (previous === 'Approved') return next === 'Running' || next === 'Blocked'
+  if (previous === 'Running') {
+    return next === 'Completed' || next === 'Failed' || next === 'Blocked'
+  }
+
+  return false
 }

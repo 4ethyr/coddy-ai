@@ -11,6 +11,8 @@ export type {
   ReplMessage,
   PermissionReply,
   PermissionRequest,
+  SubagentLifecycleStatus,
+  SubagentLifecycleUpdate,
   ReplEvent,
   ReplEventEnvelope,
   ReplSessionSnapshot,
@@ -36,10 +38,18 @@ export {
 } from './models'
 
 export type {
+  MultiagentEvalComparison,
+  MultiagentEvalRequest,
+  MultiagentEvalResult,
+  MultiagentEvalSuiteSummary,
+} from './evals'
+
+export type {
   SessionStatus,
   AssessmentPolicy as SessionAssessmentPolicy,
   VoiceState,
   ContextItem,
+  SubagentActivity,
   ScreenUnderstandingContext,
   ReplSession,
 } from './session'
