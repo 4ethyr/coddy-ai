@@ -22,7 +22,7 @@ cargo test -p coddy-ipc -p coddy-agent -p coddy-runtime
 Result:
 
 - `coddy`: 44 passed
-- `coddy-agent`: 137 passed
+- `coddy-agent`: 141 passed
 - `coddy-ipc`: 22 passed
 - repository boundaries: 2 passed
 - `coddy-runtime`: 37 passed
@@ -37,7 +37,7 @@ Result: passed.
 
 Frontend validation:
 
-- `npm test` in `apps/coddy-electron`: 25 files passed, 200 tests passed.
+- `npm test` in `apps/coddy-electron`: 25 files passed, 207 tests passed.
 - `npm run typecheck` in `apps/coddy-electron`: passed.
 - `npm run build` in `apps/coddy-electron`: passed.
 
@@ -219,7 +219,8 @@ Implemented result:
 - Added `--json` for CI/frontend-friendly structured output.
 - The default CLI suite currently covers:
   - `hardness-multiagent`;
-  - `security-sensitive-routing`.
+  - `security-sensitive-routing`;
+  - `execution-reducer-contracts`.
 
 Live validation:
 
@@ -231,7 +232,7 @@ Live validation:
 Observed result:
 
 - Current score: 100.
-- Passed cases: 2.
+- Passed cases: 3.
 - Failed cases: 0.
 - Baseline comparison status: passed.
 - Score delta: 0.
@@ -271,13 +272,15 @@ Implemented result:
 - Wired the Desktop workspace tab to run the backend harness through the existing Electron bridge.
 - Added a compact glassmorphism panel for score, passed, failed and baseline delta.
 - Added baseline and write-baseline path fields that pass trimmed request values to the IPC use case.
+- Added persisted eval harness settings for default baseline and write-baseline paths.
 - The panel surfaces failed baseline comparisons and regression case identifiers.
 
 Validation:
 
 - `npm test -- CommandSender WorkspacePanel`: 10 tests passed.
 - `npm test -- WorkspacePanel DesktopApp`: 8 tests passed.
-- `npm test`: 25 files passed, 200 tests passed.
+- `npm test -- SettingsStore WorkspacePanel DesktopApp`: 15 tests passed.
+- `npm test`: 25 files passed, 207 tests passed.
 - `npm run typecheck`: passed.
 - `npm run typecheck:main`: passed.
 - `npm run build`: passed.
@@ -335,19 +338,115 @@ Validation:
 - `cargo test -p coddy -p coddy-agent -p coddy-runtime -p coddy-ipc`: passed.
 - `cargo build -p coddy`: passed.
 
+### Battery 14: Workspace Prompt Battery Panel
+
+Goal: expose the deterministic 300-prompt routing battery through the Electron workspace, so
+frontend users can run the same local harness without leaving the desktop UI.
+
+Implemented result:
+
+- Added `PromptBatteryResult` and `PromptBatteryFailure` frontend domain types.
+- Added `runPromptBatteryEval()` to the typed `ReplIpcClient` port and application layer.
+- Added the `repl:eval-prompt-battery` preload/main IPC channel.
+- The Electron main process calls `coddy eval prompt-battery --json` with a fixed argument array.
+- Extended `useSession` with prompt battery result, status and error state.
+- Added a compact Workspace panel for score, prompt count, stack count, failed count and top
+  subagent member coverage.
+
+Validation:
+
+- `npm test -- CommandSender ElectronReplIpcClient integration WorkspacePanel DesktopApp`: 39 tests passed.
+- `npm test`: 25 files passed, 207 tests passed.
+- `npm run typecheck`: passed.
+- `npm run typecheck:main`: passed.
+- `npm run build`: passed.
+
+### Battery 15: Deterministic Subagent Execution Reducer
+
+Goal: add the foundation for real subagent execution by reducing multiple handoffs and structured
+subagent outputs into one strict execution summary.
+
+Implemented result:
+
+- Added `SubagentExecutionCoordinator` as a deterministic reducer over prepared handoffs, approved
+  subagents and collected outputs.
+- The reducer preserves approval gates: outputs for write/evaluation subagents are not accepted
+  unless the handoff was approved first.
+- Accepted outputs are stored by subagent name only after the output contract passes validation.
+- Invalid outputs are rejected with missing/unexpected field details.
+- Ready handoffs without output are marked failed with a missing-output reason.
+- Blocked and awaiting-approval handoffs still emit lifecycle updates without pretending execution
+  happened.
+- The summary reports total, completed, failed, blocked, awaiting approval, accepted outputs,
+  rejected outputs, missing outputs, unexpected orphan outputs and consolidated lifecycle updates.
+
+Validation:
+
+- `cargo test -p coddy-agent subagent_executor`: 14 tests passed.
+
+### Battery 16: Multiagent Eval Reducer Gate
+
+Goal: make the default multiagent eval suite verify execution-output consolidation, not only
+routing and team planning.
+
+Implemented result:
+
+- Added `validate_execution_reducer()` to `MultiagentEvalCase`.
+- Added `MultiagentExecutionMetrics` to expose reducer totals in eval metadata.
+- `MultiagentEvalRunner` can now synthesize contract-valid subagent outputs, approve guarded
+  handoffs for the deterministic eval, run `SubagentExecutionCoordinator`, and fail the case if
+  totals, accepted outputs, missing outputs, rejected outputs or approval state are wrong.
+- The CLI default `coddy eval multiagent` suite now includes `execution-reducer-contracts` as a
+  third CI-ready case.
+
+Validation:
+
+- `cargo test -p coddy-agent multiagent_eval`: 4 tests passed.
+- `cargo test -p coddy default_multiagent_eval_suite_is_ci_ready`: passed.
+- `cargo build -p coddy`: passed.
+- `./target/debug/coddy eval multiagent --json`: score 100, 3 passed, 0 failed;
+  `execution-reducer-contracts` reported 6 accepted outputs, 0 rejected outputs and 0 missing
+  outputs.
+- Frontend regression check after the JSON shape update: `npm test` passed with 25 files and 207
+  tests; `npm run typecheck` passed; `npm run build` passed.
+
+### Battery 17: Workspace Reducer Metrics
+
+Goal: close the backend/frontend loop for `executionMetrics`, so the desktop workspace shows
+whether the multiagent reducer accepted, rejected or missed structured subagent outputs.
+
+Implemented result:
+
+- Added typed `MultiagentExecutionMetrics` and `MultiagentEvalReport` frontend contracts.
+- `MultiagentEvalSuiteSummary.reports` now carries structured report metadata instead of `unknown`.
+- The Workspace multiagent panel renders an `Execution reducer` strip when the backend returns
+  reducer metrics.
+- The panel surfaces completed/total, accepted, rejected, missing, blocked and awaiting counts in
+  the same compact glassmorphism style as the existing harness cards.
+
+Validation:
+
+- `npm test -- WorkspacePanel`: 8 tests passed.
+- `npm run typecheck`: passed.
+
 ## Current Assessment
 
 The multiagent harness is now measurable before execution. It can compose a team plan, expose
 per-member readiness and approval gates, and inject the plan into model context without claiming
 subagents actually ran. The deterministic prompt battery now gives a stable local regression signal
 for subagent routing breadth across 300 prompts before running expensive live model evaluations.
+Both harnesses are now callable from the Electron workspace with typed IPC contracts. The execution
+layer now has a strict reducer for consolidating contract-valid subagent outputs, but that reducer
+is not yet connected to a real isolated subagent runtime. The default multiagent eval suite now
+checks the reducer contract as a first-class CI case, and the workspace UI renders those reducer
+metrics when present.
 
 Remaining gaps:
 
 - no real isolated subagent executor yet;
-- frontend baseline paths are configurable per run but not persisted as user defaults yet;
 - sensitive path reads should be guarded before tool execution, not only redacted after observation;
-- multiagent output consolidation still needs a strict reducer that merges accepted JSON outputs.
+- multiagent output consolidation exists as a deterministic reducer, but runtime execution still
+  needs to feed it real subagent outputs.
 - broad prompts can still consume the full bounded tool budget; the runtime now reports evidence,
   but the next improvement should add adaptive tool budgeting and observation compaction.
 - live model answer quality still needs a sampled harness on top of the deterministic routing
@@ -357,6 +456,6 @@ Remaining gaps:
 
 1. Add a sampled live-model eval runner that reuses the 300-prompt corpus with configurable sample
    size, budget controls and redacted telemetry.
-2. Persist default baseline paths for the Workspace multiagent eval panel.
-3. Add a reducer that accepts only contract-valid subagent outputs and produces a consolidated run report.
-4. Add optional explicit approval before reading sensitive paths, even when output redaction is enabled.
+2. Connect the subagent execution reducer to isolated runtime sessions so accepted outputs come from
+   real subagent runs instead of test fixtures.
+3. Add optional explicit approval before reading sensitive paths, even when output redaction is enabled.
