@@ -6,8 +6,8 @@ use std::{
 };
 
 use coddy_core::{
-    PermissionReply, PermissionRequest, ReplEvent, ToolCall, ToolError, ToolOutput, ToolResult,
-    ToolResultStatus, ToolStatus,
+    PermissionReply, PermissionRequest, ReplEvent, ToolCall, ToolDefinition, ToolError, ToolOutput,
+    ToolResult, ToolResultStatus, ToolStatus,
 };
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -77,6 +77,17 @@ impl LocalToolRouter {
     }
 
     pub fn route(&self, call: &ToolCall) -> LocalToolRouteOutcome {
+        let Some(definition) = self.registry.get(&call.tool_name) else {
+            return failed_outcome(
+                call.id,
+                call.tool_name.to_string(),
+                AgentError::UnknownTool(call.tool_name.to_string()).into_tool_error(),
+            );
+        };
+        if let Err(error) = validate_tool_input(definition, &call.input) {
+            return failed_outcome(call.id, call.tool_name.to_string(), error.into_tool_error());
+        }
+
         match call.tool_name.as_str() {
             LIST_FILES_TOOL | READ_FILE_TOOL | SEARCH_FILES_TOOL => {
                 LocalToolRouteOutcome::from_execution(self.filesystem.execute_with_events(call))
@@ -397,6 +408,138 @@ fn optional_subagent_mode(input: &Value) -> Result<Option<SubagentMode>, AgentEr
         .ok_or_else(|| AgentError::InvalidInput(format!("unsupported subagent mode: {mode}")))
 }
 
+fn validate_tool_input(definition: &ToolDefinition, input: &Value) -> Result<(), AgentError> {
+    let object = input.as_object().ok_or_else(|| {
+        AgentError::InvalidInput(format!("{} input must be an object", definition.name))
+    })?;
+    let schema = &definition.input_schema.schema;
+    let properties = schema.get("properties").and_then(Value::as_object);
+
+    if schema
+        .get("additionalProperties")
+        .and_then(Value::as_bool)
+        .is_some_and(|allowed| !allowed)
+    {
+        let Some(properties) = properties else {
+            if object.is_empty() {
+                return Ok(());
+            }
+            return Err(AgentError::InvalidInput(format!(
+                "{} does not accept input fields",
+                definition.name
+            )));
+        };
+
+        if let Some(key) = object.keys().find(|key| !properties.contains_key(*key)) {
+            return Err(AgentError::InvalidInput(format!(
+                "{} does not accept input field `{key}`",
+                definition.name
+            )));
+        }
+    }
+
+    if let Some(required) = schema.get("required").and_then(Value::as_array) {
+        for field in required.iter().filter_map(Value::as_str) {
+            if !object.contains_key(field) {
+                return Err(AgentError::InvalidInput(format!(
+                    "{} requires input field `{field}`",
+                    definition.name
+                )));
+            }
+        }
+    }
+
+    if let Some(properties) = properties {
+        for (key, value) in object {
+            if let Some(property_schema) = properties.get(key) {
+                validate_tool_property(definition.name.as_str(), key, property_schema, value)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_tool_property(
+    tool_name: &str,
+    key: &str,
+    schema: &Value,
+    value: &Value,
+) -> Result<(), AgentError> {
+    if let Some(allowed_values) = schema.get("enum").and_then(Value::as_array) {
+        if !allowed_values.iter().any(|allowed| allowed == value) {
+            return Err(AgentError::InvalidInput(format!(
+                "{tool_name}.{key} must be one of the allowed enum values"
+            )));
+        }
+    }
+
+    if let Some(types) = json_schema_types(schema) {
+        if !types
+            .iter()
+            .any(|schema_type| value_matches_schema_type(value, schema_type))
+        {
+            return Err(AgentError::InvalidInput(format!(
+                "{tool_name}.{key} must be {}, got {}",
+                types.join(" or "),
+                json_value_type(value)
+            )));
+        }
+    }
+
+    if let Some(minimum) = schema.get("minimum").and_then(Value::as_f64) {
+        let Some(value) = value.as_f64() else {
+            return Ok(());
+        };
+        if value < minimum {
+            return Err(AgentError::InvalidInput(format!(
+                "{tool_name}.{key} must be greater than or equal to {minimum}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn json_schema_types(schema: &Value) -> Option<Vec<String>> {
+    match schema.get("type") {
+        Some(Value::String(value)) => Some(vec![value.clone()]),
+        Some(Value::Array(values)) => Some(
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+fn value_matches_schema_type(value: &Value, schema_type: &str) -> bool {
+    match schema_type {
+        "array" => value.is_array(),
+        "boolean" => value.is_boolean(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "null" => value.is_null(),
+        "number" => value.is_number(),
+        "object" => value.is_object(),
+        "string" => value.is_string(),
+        _ => true,
+    }
+}
+
+fn json_value_type(value: &Value) -> &'static str {
+    match value {
+        Value::Array(_) => "array",
+        Value::Bool(_) => "boolean",
+        Value::Null => "null",
+        Value::Number(number) if number.is_i64() || number.is_u64() => "integer",
+        Value::Number(_) => "number",
+        Value::Object(_) => "object",
+        Value::String(_) => "string",
+    }
+}
+
 fn failed_outcome(call_id: Uuid, tool_name: String, error: ToolError) -> LocalToolRouteOutcome {
     let now = unix_ms_now();
     let result = ToolResult::failed(call_id, error, now, now);
@@ -522,6 +665,49 @@ mod tests {
             outcome.result.expect("result").output.expect("output").text,
             "# Coddy\n"
         );
+    }
+
+    #[test]
+    fn rejects_unknown_input_fields_before_tool_execution() {
+        let workspace = TempWorkspace::new();
+        workspace.write("README.md", "# Coddy\n");
+        let router = LocalToolRouter::new(&workspace.path).expect("router");
+
+        let outcome = router.route(&call(
+            Uuid::new_v4(),
+            READ_FILE_TOOL,
+            json!({
+                "path": "README.md",
+                "absolute_path": "/tmp/README.md"
+            }),
+        ));
+
+        assert_eq!(outcome.status(), Some(ToolResultStatus::Failed));
+        let error = outcome.result.expect("result").error.expect("error");
+        assert_eq!(error.code, "invalid_input");
+        assert!(error
+            .message
+            .contains("filesystem.read_file does not accept input field `absolute_path`"));
+    }
+
+    #[test]
+    fn rejects_wrong_input_types_before_tool_execution() {
+        let workspace = TempWorkspace::new();
+        let router = LocalToolRouter::new(&workspace.path).expect("router");
+
+        let outcome = router.route(&call(
+            Uuid::new_v4(),
+            SHELL_RUN_TOOL,
+            json!({ "command": ["printf", "coddy"] }),
+        ));
+
+        assert_eq!(outcome.status(), Some(ToolResultStatus::Failed));
+        let error = outcome.result.expect("result").error.expect("error");
+        assert_eq!(error.code, "invalid_input");
+        assert!(error
+            .message
+            .contains("shell.run.command must be string, got array"));
+        assert_eq!(router.pending_shell_count(), 0);
     }
 
     #[test]
