@@ -110,6 +110,21 @@ function createSimBridge(daemon: SimDaemon) {
         case 'repl:tools':
           return Promise.resolve(daemon.toolCatalog)
 
+        case 'repl:eval-multiagent':
+          daemon.commands.push('eval-multiagent')
+          return Promise.resolve({
+            suite: {
+              score: 100,
+              passed: 2,
+              failed: 0,
+              reports: [
+                { caseName: 'hardness-multiagent', status: 'passed', score: 100 },
+                { caseName: 'security-sensitive-routing', status: 'passed', score: 100 },
+              ],
+            },
+            baselineWritten: null,
+          })
+
         // ---- Watch start ----
         case 'repl:watch-start': {
           // Push existing events after sequence
@@ -406,6 +421,12 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
       return (await sim.invoke('repl:tools')) as ReplToolCatalogItem[]
     },
 
+    async runMultiagentEval(request = {}) {
+      return (await sim.invoke('repl:eval-multiagent', request)) as Awaited<
+        ReturnType<ReplIpcClient['runMultiagentEval']>
+      >
+    },
+
     async listProviderModels(request) {
       return {
         provider: request.provider,
@@ -631,6 +652,22 @@ describe('IPC integration', () => {
         permissions: ['ExecuteCommand'],
         approval_policy: 'AskOnUse',
       })
+    })
+  })
+
+  describe('multiagent eval', () => {
+    it('runs the deterministic multiagent eval through the frontend client port', async () => {
+      const result = await client.runMultiagentEval({
+        baseline: 'evals/baselines/main.json',
+      })
+
+      expect(result.suite).toMatchObject({
+        score: 100,
+        passed: 2,
+        failed: 0,
+      })
+      expect(result.suite.reports).toHaveLength(2)
+      expect(daemon.commands).toEqual(['eval-multiagent'])
     })
   })
 

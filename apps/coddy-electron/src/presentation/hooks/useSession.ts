@@ -8,6 +8,8 @@ import type {
   ModelProviderListRequest,
   ModelProviderListResult,
   ModelRole,
+  MultiagentEvalRequest,
+  MultiagentEvalResult,
   PermissionReply,
   ReplCommandResult,
   ReplMode,
@@ -32,13 +34,19 @@ import {
   dismissConfirmation,
   replyPermission,
   listProviderModels,
+  runMultiagentEval,
 } from '@/application'
 import { useReplClient } from './useReplClient'
+
+export type MultiagentEvalStatus = 'idle' | 'running' | 'succeeded' | 'failed'
 
 export interface UseSessionReturn {
   session: ReplSession
   lastSequence: number
   toolCatalog: ReplToolCatalogItem[]
+  multiagentEval: MultiagentEvalResult | null
+  multiagentEvalStatus: MultiagentEvalStatus
+  multiagentEvalError: string | null
   /** True while still connecting / loading the first snapshot */
   connecting: boolean
   /** True when the daemon stream disconnected and we're retrying */
@@ -61,6 +69,11 @@ export interface UseSessionReturn {
   listProviderModels: (
     request: ModelProviderListRequest,
   ) => Promise<ModelProviderListResult>
+
+  /** Run the deterministic multiagent harness exposed by the backend */
+  runMultiagentEval: (
+    request?: MultiagentEvalRequest,
+  ) => Promise<MultiagentEvalResult>
 
   /** Switch the REPL UI mode through the daemon */
   openUi: (mode: ReplMode) => Promise<void>
@@ -93,6 +106,12 @@ export function useSession(): UseSessionReturn {
   const [connecting, setConnecting] = useState(true)
   const [reconnecting, setReconnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [multiagentEval, setMultiagentEval] =
+    useState<MultiagentEvalResult | null>(null)
+  const [multiagentEvalStatus, setMultiagentEvalStatus] =
+    useState<MultiagentEvalStatus>('idle')
+  const [multiagentEvalError, setMultiagentEvalError] =
+    useState<string | null>(null)
   const abortRef = useRef<(() => void) | null>(null)
   const initCountRef = useRef(0)
 
@@ -192,6 +211,31 @@ export function useSession(): UseSessionReturn {
     [client],
   )
 
+  const handleRunMultiagentEval = useCallback(
+    async (request: MultiagentEvalRequest = {}) => {
+      setMultiagentEvalStatus('running')
+      setMultiagentEvalError(null)
+
+      try {
+        const result = await runMultiagentEval(client, request)
+        setMultiagentEval(result)
+        setMultiagentEvalStatus(
+          result.comparison?.status === 'failed' || result.suite.failed > 0
+            ? 'failed'
+            : 'succeeded',
+        )
+        return result
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        setMultiagentEvalError(message)
+        setMultiagentEvalStatus('failed')
+        setError(message)
+        throw err
+      }
+    },
+    [client],
+  )
+
   const handleOpenUi = useCallback(
     async (mode: ReplMode) => {
       try {
@@ -258,6 +302,9 @@ export function useSession(): UseSessionReturn {
     session: state.session,
     lastSequence: state.lastSequence,
     toolCatalog: state.toolCatalog,
+    multiagentEval,
+    multiagentEvalStatus,
+    multiagentEvalError,
     connecting,
     reconnecting,
     error,
@@ -266,6 +313,7 @@ export function useSession(): UseSessionReturn {
     cancelSpeech: handleCancelSpeech,
     selectModel: handleSelectModel,
     listProviderModels: handleListProviderModels,
+    runMultiagentEval: handleRunMultiagentEval,
     openUi: handleOpenUi,
     captureVoice: handleCaptureVoice,
     cancelVoiceCapture: handleCancelVoiceCapture,

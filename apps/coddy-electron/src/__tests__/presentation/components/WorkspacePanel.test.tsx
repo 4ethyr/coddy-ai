@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import userEvent from '@testing-library/user-event'
 import { render, screen } from '@testing-library/react'
 import { WorkspacePanel } from '@/presentation/components/WorkspacePanel'
 
@@ -47,5 +48,91 @@ describe('WorkspacePanel', () => {
     render(<WorkspacePanel items={[]} tools={[]} />)
 
     expect(screen.getByText('No tools loaded yet')).toBeInTheDocument()
+  })
+
+  it('renders and triggers the multiagent eval harness summary', async () => {
+    const onRun = vi.fn()
+
+    render(
+      <WorkspacePanel
+        items={[]}
+        tools={[]}
+        multiagentEvalStatus="failed"
+        onRunMultiagentEval={onRun}
+        multiagentEval={{
+          suite: { score: 92, passed: 3, failed: 1, reports: [] },
+          baselineWritten: null,
+          comparison: {
+            status: 'failed',
+            previousScore: 98,
+            currentScore: 92,
+            scoreDelta: -6,
+            regressions: ['security-sensitive-routing'],
+            improvements: [],
+          },
+        }}
+      />,
+    )
+
+    expect(screen.getByText('Multiagent eval')).toBeInTheDocument()
+    expect(screen.getByText('92')).toBeInTheDocument()
+    expect(screen.getByText('3')).toBeInTheDocument()
+    expect(screen.getByText('1')).toBeInTheDocument()
+    expect(screen.getByText('-6')).toBeInTheDocument()
+    expect(screen.getByText('baseline failed')).toBeInTheDocument()
+    expect(screen.getByText('security-sensitive-routing')).toBeInTheDocument()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Run multiagent eval' }),
+    )
+
+    expect(onRun).toHaveBeenCalledTimes(1)
+    expect(onRun).toHaveBeenCalledWith({})
+  })
+
+  it('passes baseline paths from the workspace panel to the eval harness', async () => {
+    const onRun = vi.fn()
+
+    render(
+      <WorkspacePanel
+        items={[]}
+        tools={[]}
+        multiagentEvalStatus="idle"
+        onRunMultiagentEval={onRun}
+      />,
+    )
+
+    await userEvent.type(
+      screen.getByLabelText('baseline'),
+      ' /tmp/current-baseline.json ',
+    )
+    await userEvent.type(
+      screen.getByLabelText('write baseline'),
+      '/tmp/next-baseline.json',
+    )
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Run multiagent eval' }),
+    )
+
+    expect(onRun).toHaveBeenCalledWith({
+      baseline: '/tmp/current-baseline.json',
+      writeBaseline: '/tmp/next-baseline.json',
+    })
+  })
+
+  it('locks the multiagent eval action while a run is active', () => {
+    render(
+      <WorkspacePanel
+        items={[]}
+        tools={[]}
+        multiagentEvalStatus="running"
+        onRunMultiagentEval={vi.fn()}
+      />,
+    )
+
+    expect(
+      screen.getByRole('button', { name: 'Run multiagent eval' }),
+    ).toBeDisabled()
+    expect(screen.getByText('Running')).toBeInTheDocument()
   })
 })

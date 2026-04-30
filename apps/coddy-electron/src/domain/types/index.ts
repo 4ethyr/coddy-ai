@@ -38,6 +38,13 @@ export {
 } from './models'
 
 export type {
+  MultiagentEvalComparison,
+  MultiagentEvalRequest,
+  MultiagentEvalResult,
+  MultiagentEvalSuiteSummary,
+} from './evals'
+
+export type {
   SessionStatus,
   AssessmentPolicy as SessionAssessmentPolicy,
   VoiceState,

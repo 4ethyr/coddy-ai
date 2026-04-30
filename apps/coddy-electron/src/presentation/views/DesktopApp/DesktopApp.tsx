@@ -22,11 +22,15 @@ export function DesktopApp() {
   const {
     session,
     toolCatalog,
+    multiagentEval,
+    multiagentEvalStatus,
+    multiagentEvalError,
     connecting,
     error,
     ask,
     selectModel,
     listProviderModels,
+    runMultiagentEval,
     openUi,
     replyPermission,
   } = useSessionContext()
@@ -172,6 +176,12 @@ export function DesktopApp() {
             <WorkspacePanel
               items={session.workspace_context}
               tools={toolCatalog}
+              multiagentEval={multiagentEval}
+              multiagentEvalStatus={multiagentEvalStatus}
+              multiagentEvalError={multiagentEvalError}
+              onRunMultiagentEval={(request) => {
+                void runMultiagentEval(request)
+              }}
             />
           )}
 

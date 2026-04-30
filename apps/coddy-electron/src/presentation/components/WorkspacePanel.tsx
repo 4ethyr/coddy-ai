@@ -1,14 +1,33 @@
-// Workspace panel: shows context items (files, screen captures, etc.)
+// Workspace panel: shows context items, harness metrics and local tools.
 
-import type { ContextItem, ReplToolCatalogItem, ToolRiskLevel } from '@/domain'
+import { useState } from 'react'
+import type {
+  ContextItem,
+  MultiagentEvalRequest,
+  MultiagentEvalResult,
+  ReplToolCatalogItem,
+  ToolRiskLevel,
+} from '@/domain'
+import type { MultiagentEvalStatus } from '@/presentation/hooks/useSession'
 import { Icon } from './Icon'
 
 interface Props {
   items: ContextItem[]
   tools: ReplToolCatalogItem[]
+  multiagentEval?: MultiagentEvalResult | null
+  multiagentEvalStatus?: MultiagentEvalStatus
+  multiagentEvalError?: string | null
+  onRunMultiagentEval?: (request: MultiagentEvalRequest) => void
 }
 
-export function WorkspacePanel({ items, tools }: Props) {
+export function WorkspacePanel({
+  items,
+  tools,
+  multiagentEval,
+  multiagentEvalStatus = 'idle',
+  multiagentEvalError = null,
+  onRunMultiagentEval,
+}: Props) {
   return (
     <div className="h-full overflow-y-auto p-5 sm:p-8">
       <div className="mx-auto flex max-w-6xl flex-col gap-6">
@@ -68,6 +87,15 @@ export function WorkspacePanel({ items, tools }: Props) {
           )}
         </section>
 
+        {(onRunMultiagentEval || multiagentEval || multiagentEvalError) && (
+          <MultiagentEvalPanel
+            result={multiagentEval}
+            status={multiagentEvalStatus}
+            error={multiagentEvalError}
+            onRun={onRunMultiagentEval}
+          />
+        )}
+
         <section className="flex flex-col gap-4 border-t border-white/10 pt-5">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
@@ -94,6 +122,159 @@ export function WorkspacePanel({ items, tools }: Props) {
           )}
         </section>
       </div>
+    </div>
+  )
+}
+
+function MultiagentEvalPanel({
+  result,
+  status,
+  error,
+  onRun,
+}: {
+  result?: MultiagentEvalResult | null
+  status: MultiagentEvalStatus
+  error?: string | null
+  onRun?: (request: MultiagentEvalRequest) => void
+}) {
+  const [baselinePath, setBaselinePath] = useState('')
+  const [writeBaselinePath, setWriteBaselinePath] = useState('')
+  const suite = result?.suite
+  const comparison = result?.comparison
+  const score = suite ? Math.round(suite.score) : '--'
+  const passed = suite?.passed ?? '--'
+  const failed = suite?.failed ?? '--'
+  const delta =
+    comparison && Number.isFinite(comparison.scoreDelta)
+      ? formatSignedNumber(comparison.scoreDelta)
+      : '--'
+  const disabled = status === 'running' || !onRun
+
+  const handleRun = () => {
+    onRun?.(buildEvalRequest(baselinePath, writeBaselinePath))
+  }
+
+  return (
+    <section className="flex flex-col gap-4 border-t border-white/10 pt-5">
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+        <div>
+          <p className="font-display text-[10px] uppercase tracking-[0.22em] text-primary/70">
+            Agent Harness
+          </p>
+          <h2 className="mt-1 font-display text-lg font-medium text-on-surface">
+            Multiagent eval
+          </h2>
+        </div>
+        <button
+          type="button"
+          onClick={handleRun}
+          disabled={disabled}
+          aria-label="Run multiagent eval"
+          className="desktop-glass-panel inline-flex h-9 items-center justify-center gap-2 rounded-lg px-4 font-display text-[11px] uppercase tracking-[0.18em] text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Icon
+            name={status === 'running' ? 'cpu' : 'bot'}
+            className={`h-4 w-4 ${status === 'running' ? 'animate-pulse' : ''}`}
+          />
+          {status === 'running' ? 'Running' : 'Run eval'}
+        </button>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <EvalMetric label="score" value={String(score)} tone="primary" />
+        <EvalMetric label="passed" value={String(passed)} tone="success" />
+        <EvalMetric label="failed" value={String(failed)} tone="danger" />
+        <EvalMetric label="delta" value={delta} tone={deltaTone(comparison)} />
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-2">
+        <EvalPathInput
+          label="baseline"
+          value={baselinePath}
+          onChange={setBaselinePath}
+        />
+        <EvalPathInput
+          label="write baseline"
+          value={writeBaselinePath}
+          onChange={setWriteBaselinePath}
+        />
+      </div>
+
+      {comparison && (
+        <div className="rounded-lg border border-outline/15 bg-surface-container-highest/35 px-3 py-2 font-mono text-xs text-on-surface-variant">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={comparisonTone(comparison.status)}>
+              baseline {comparison.status}
+            </span>
+            <span>
+              {Math.round(comparison.previousScore)}
+              {' -> '}
+              {Math.round(comparison.currentScore)}
+            </span>
+          </div>
+          {comparison.regressions.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {comparison.regressions.map((regression) => (
+                <MetaPill key={regression} label={regression} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <p
+          role="alert"
+          className="rounded border border-red-400/20 bg-red-400/10 px-3 py-2 font-mono text-xs text-red-200"
+        >
+          {error}
+        </p>
+      )}
+    </section>
+  )
+}
+
+function EvalPathInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="flex min-w-0 flex-col gap-2 rounded-lg border border-outline/15 bg-surface-container-highest/30 px-3 py-2">
+      <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-on-surface-variant/70">
+        {label}
+      </span>
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-8 min-w-0 bg-transparent font-mono text-xs text-on-surface outline-none placeholder:text-on-surface-variant/35"
+        placeholder="/tmp/coddy-multiagent-baseline.json"
+      />
+    </label>
+  )
+}
+
+function EvalMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string
+  value: string
+  tone: 'primary' | 'success' | 'danger' | 'muted'
+}) {
+  return (
+    <div className="rounded-lg border border-outline/15 bg-surface-container-highest/40 px-3 py-3">
+      <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-on-surface-variant/70">
+        {label}
+      </p>
+      <p className={`mt-2 font-display text-2xl font-semibold ${metricTone(tone)}`}>
+        {value}
+      </p>
     </div>
   )
 }
@@ -142,6 +323,48 @@ function requiredInputFields(schema: ReplToolCatalogItem['input_schema']) {
   const required = schema.required
   if (!Array.isArray(required)) return []
   return required.filter((field): field is string => typeof field === 'string')
+}
+
+function buildEvalRequest(
+  baselinePath: string,
+  writeBaselinePath: string,
+): MultiagentEvalRequest {
+  const request: MultiagentEvalRequest = {}
+  const baseline = baselinePath.trim()
+  const writeBaseline = writeBaselinePath.trim()
+  if (baseline) request.baseline = baseline
+  if (writeBaseline) request.writeBaseline = writeBaseline
+  return request
+}
+
+function formatSignedNumber(value: number): string {
+  return value > 0 ? `+${value}` : String(value)
+}
+
+function deltaTone(
+  comparison?: MultiagentEvalResult['comparison'],
+): 'primary' | 'success' | 'danger' | 'muted' {
+  if (!comparison) return 'muted'
+  if (comparison.scoreDelta > 0) return 'success'
+  if (comparison.scoreDelta < 0) return 'danger'
+  return 'primary'
+}
+
+function metricTone(tone: 'primary' | 'success' | 'danger' | 'muted'): string {
+  switch (tone) {
+    case 'primary':
+      return 'text-primary'
+    case 'success':
+      return 'text-emerald-200'
+    case 'danger':
+      return 'text-red-200'
+    case 'muted':
+      return 'text-on-surface-variant'
+  }
+}
+
+function comparisonTone(status: 'passed' | 'failed'): string {
+  return status === 'passed' ? 'text-emerald-200' : 'text-red-200'
 }
 
 function RiskBadge({ risk }: { risk: ToolRiskLevel }) {

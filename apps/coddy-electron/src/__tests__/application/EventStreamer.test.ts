@@ -33,6 +33,7 @@ describe('EventStreamer', () => {
       getSnapshot: vi.fn().mockResolvedValue(snapshot(0)),
       getEventsAfter: vi.fn(),
       getToolCatalog: vi.fn(),
+      runMultiagentEval: vi.fn(),
       listProviderModels: vi.fn(),
       watchEvents(afterSequence: number): AsyncIterable<ReplEventEnvelope> {
         watchedAfter.push(afterSequence)
@@ -86,6 +87,7 @@ describe('EventStreamer', () => {
       getSnapshot: vi.fn().mockResolvedValue(snapshot(0)),
       getEventsAfter: vi.fn(),
       getToolCatalog: vi.fn(),
+      runMultiagentEval: vi.fn(),
       listProviderModels: vi.fn(),
       watchEvents(): AsyncIterable<ReplEventEnvelope> {
         watchStarted = true
