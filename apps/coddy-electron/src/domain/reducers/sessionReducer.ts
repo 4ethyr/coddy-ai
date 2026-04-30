@@ -114,6 +114,9 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
       return { ...session, status: 'Thinking', tool_activity }
     }
 
+    case 'SubagentRouted':
+      return { ...session, status: 'Thinking' }
+
     case 'PermissionRequested': {
       const { request } = (event as {
         PermissionRequested: { request: ReplSession['pending_permission'] }

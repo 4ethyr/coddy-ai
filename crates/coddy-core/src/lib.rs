@@ -21,7 +21,7 @@ pub use context::{
     BoundingBox, CodeBlock, ExtractionSource, QuestionBlock, ScreenRegion, ScreenRegionKind,
     ScreenUnderstandingContext, TerminalBlock,
 };
-pub use event::{ReplEvent, ReplIntent, ShortcutSource, ToolStatus};
+pub use event::{ReplEvent, ReplIntent, ShortcutSource, SubagentRouteRecommendation, ToolStatus};
 pub use event_broker::{ReplEventBroker, ReplEventSubscription};
 pub use event_log::{ReplEventEnvelope, ReplEventLog, ReplSessionSnapshot};
 pub use permission::{

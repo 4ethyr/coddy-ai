@@ -40,6 +40,18 @@ describe('Domain type contracts', () => {
         MessageAppended: { MessageAppended: { message: { id: 'm1', role: 'user', text: 'hi' } } },
         ToolStarted: { ToolStarted: { name: 'search_web' } },
         ToolCompleted: { ToolCompleted: { name: 'search_web', status: 'Denied' as ToolStatus } },
+        SubagentRouted: {
+          SubagentRouted: {
+            recommendations: [
+              {
+                name: 'eval-runner',
+                score: 88,
+                mode: 'evaluation',
+                matched_signals: ['eval', 'harness'],
+              },
+            ],
+          },
+        },
         PermissionRequested: {
           PermissionRequested: {
             request: {
@@ -69,7 +81,7 @@ describe('Domain type contracts', () => {
         Error: { Error: { code: 'E001', message: 'Something went wrong' } },
       }
 
-      expect(Object.keys(events)).toHaveLength(27)
+      expect(Object.keys(events)).toHaveLength(28)
 
       // Verify each event is correctly typed
       for (const [key, event] of Object.entries(events)) {

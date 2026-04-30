@@ -36,6 +36,14 @@ pub enum ToolStatus {
     Denied,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SubagentRouteRecommendation {
+    pub name: String,
+    pub score: u8,
+    pub mode: String,
+    pub matched_signals: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ReplEvent {
     SessionStarted {
@@ -104,6 +112,9 @@ pub enum ReplEvent {
     ToolCompleted {
         name: String,
         status: ToolStatus,
+    },
+    SubagentRouted {
+        recommendations: Vec<SubagentRouteRecommendation>,
     },
     PermissionRequested {
         request: crate::PermissionRequest,

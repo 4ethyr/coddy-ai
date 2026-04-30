@@ -142,6 +142,11 @@ continua observando o roteamento pelos eventos `ToolStarted`/`ToolCompleted`.
 Esse passo não significa execução real do subagent; execução paralela continua
 dependendo de um executor dedicado com contexto isolado e auditoria.
 
+Além dos eventos de tool, o runtime publica `SubagentRouted` com as recomendações
+normalizadas (`name`, `score`, `mode`, `matched_signals`). Esse evento é o
+contrato de UI/auditoria para explicar por que um papel foi sugerido antes de
+existir um executor paralelo completo.
+
 ### Evals de harness
 
 O crate `coddy-agent` possui `EvalRunner` para casos determinísticos de

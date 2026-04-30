@@ -6,8 +6,8 @@ use coddy_agent::{
 use coddy_core::{
     ApprovalPolicy, ContextItem, ContextPolicy, ModelCredential, ModelRef, PermissionReply,
     ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode,
-    ReplSession, ReplSessionSnapshot, ToolCall, ToolDefinition, ToolName, ToolOutput,
-    ToolResultStatus, ToolRiskLevel,
+    ReplSession, ReplSessionSnapshot, SubagentRouteRecommendation, ToolCall, ToolDefinition,
+    ToolName, ToolOutput, ToolResultStatus, ToolRiskLevel,
 };
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
@@ -645,7 +645,12 @@ impl CoddyRuntime {
         if result.status != ToolResultStatus::Succeeded {
             return None;
         }
-        result.output.as_ref().map(format_subagent_routing_context)
+        let output = result.output.as_ref()?;
+        let recommendations = subagent_recommendations_from_output(output);
+        if !recommendations.is_empty() {
+            self.publish_event_with_run_now(ReplEvent::SubagentRouted { recommendations }, run_id);
+        }
+        Some(format_subagent_routing_context(output))
     }
 
     fn execute_model_tool_round(
@@ -1226,12 +1231,7 @@ fn format_tool_context(tool_definitions: &[ToolDefinition]) -> String {
 }
 
 fn format_subagent_routing_context(output: &ToolOutput) -> String {
-    let recommendations = output
-        .metadata
-        .get("recommendations")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let recommendations = subagent_recommendation_values(output);
 
     if recommendations.is_empty() {
         return "Subagent routing guidance: no focused recommendation was available for this turn."
@@ -1273,6 +1273,53 @@ fn format_subagent_routing_context(output: &ToolOutput) -> String {
         ));
     }
     lines.join("\n")
+}
+
+fn subagent_recommendations_from_output(output: &ToolOutput) -> Vec<SubagentRouteRecommendation> {
+    subagent_recommendation_values(output)
+        .iter()
+        .filter_map(|recommendation| {
+            let name = recommendation.get("name")?.as_str()?.to_string();
+            let score = recommendation
+                .get("score")
+                .and_then(|value| value.as_u64())
+                .unwrap_or_default()
+                .min(100) as u8;
+            let mode = recommendation
+                .get("mode")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let matched_signals = recommendation
+                .get("matchedSignals")
+                .and_then(|value| value.as_array())
+                .map(|signals| {
+                    signals
+                        .iter()
+                        .filter_map(|signal| signal.as_str())
+                        .take(8)
+                        .map(|signal| truncate_context_text(&redact_context_text(signal), 80))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            Some(SubagentRouteRecommendation {
+                name,
+                score,
+                mode,
+                matched_signals,
+            })
+        })
+        .collect()
+}
+
+fn subagent_recommendation_values(output: &ToolOutput) -> Vec<serde_json::Value> {
+    output
+        .metadata
+        .get("recommendations")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn redact_context_text(text: &str) -> String {
@@ -2035,6 +2082,13 @@ mod tests {
         assert!(events.iter().any(|event| matches!(
             &event.event,
             ReplEvent::ToolCompleted { name, .. } if name == SUBAGENT_ROUTE_TOOL
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::SubagentRouted { recommendations }
+                if recommendations
+                    .first()
+                    .is_some_and(|recommendation| recommendation.name == "eval-runner")
         )));
     }
 

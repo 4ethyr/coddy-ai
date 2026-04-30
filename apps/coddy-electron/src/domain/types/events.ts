@@ -25,6 +25,13 @@ export type ReplIntent =
 
 export type ToolStatus = 'Succeeded' | 'Failed' | 'Cancelled' | 'Denied'
 
+export interface SubagentRouteRecommendation {
+  name: string
+  score: number
+  mode: string
+  matched_signals: string[]
+}
+
 export type ReplMode = 'FloatingTerminal' | 'DesktopApp'
 
 export type ModelRole = 'Chat' | 'Ocr' | 'Asr' | 'Tts' | 'Embedding'
@@ -79,6 +86,7 @@ export type ReplEvent =
   | { MessageAppended: { message: ReplMessage } }
   | { ToolStarted: { name: string } }
   | { ToolCompleted: { name: string; status: ToolStatus } }
+  | { SubagentRouted: { recommendations: SubagentRouteRecommendation[] } }
   | { PermissionRequested: { request: PermissionRequest } }
   | { PermissionReplied: { request_id: string; reply: PermissionReply } }
   | { TtsQueued: Record<string, never> }

@@ -168,6 +168,9 @@ impl ReplSession {
             crate::ReplEvent::ToolCompleted { .. } => {
                 self.status = SessionStatus::Thinking;
             }
+            crate::ReplEvent::SubagentRouted { .. } => {
+                self.status = SessionStatus::Thinking;
+            }
             crate::ReplEvent::PermissionRequested { request } => {
                 self.pending_permission = Some(request.clone());
                 self.status = SessionStatus::AwaitingToolApproval;

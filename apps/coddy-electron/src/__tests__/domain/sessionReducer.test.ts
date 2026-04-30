@@ -490,6 +490,32 @@ describe('sessionReducer', () => {
       ])
     })
 
+    it('SubagentRouted keeps thinking state without mutating tool activity', () => {
+      const session = testSession({
+        status: 'Thinking',
+        tool_activity: [
+          { id: 'subagent.route-1', name: 'subagent.route', status: 'Succeeded' },
+        ],
+      })
+      const event: ReplEvent = {
+        SubagentRouted: {
+          recommendations: [
+            {
+              name: 'eval-runner',
+              score: 88,
+              mode: 'evaluation',
+              matched_signals: ['eval', 'harness'],
+            },
+          ],
+        },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result.status).toBe('Thinking')
+      expect(result.tool_activity).toEqual(session.tool_activity)
+    })
+
     it('PermissionRequested transitions to AwaitingToolApproval and stores the request', () => {
       const session = testSession({ status: 'Thinking', active_run: 'run-001' })
       const event: ReplEvent = {
