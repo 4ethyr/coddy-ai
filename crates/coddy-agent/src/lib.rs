@@ -29,7 +29,7 @@ pub use eval::{
     EvalExpectations, EvalGateReport, EvalGateStatus, EvalQualityGate, EvalReport, EvalRunner,
     EvalStatus, EvalSuiteReport, MultiagentEvalBaselineComparison, MultiagentEvalBaselineError,
     MultiagentEvalCase, MultiagentEvalReport, MultiagentEvalRunner, MultiagentEvalSuiteReport,
-    PromptBatteryCase, PromptBatteryFailure, PromptBatteryReport,
+    MultiagentExecutionMetrics, PromptBatteryCase, PromptBatteryFailure, PromptBatteryReport,
 };
 pub use model::{
     ChatFinishReason, ChatMessage, ChatMessageRole, ChatModelClient, ChatModelError,
@@ -57,8 +57,10 @@ pub use subagent::{
     SUBAGENT_TEAM_PLAN_TOOL,
 };
 pub use subagent_executor::{
-    SubagentExecutionCompletionPlan, SubagentExecutionGate, SubagentExecutionHandoff,
-    SubagentExecutionStartPlan, SubagentExecutionStartStatus, SubagentOutputContract,
+    SubagentExecutionCompletionPlan, SubagentExecutionCoordinator, SubagentExecutionGate,
+    SubagentExecutionHandoff, SubagentExecutionOutcomeStatus, SubagentExecutionOutputStatus,
+    SubagentExecutionRecord, SubagentExecutionStartPlan, SubagentExecutionStartStatus,
+    SubagentExecutionSummary, SubagentOutputContract,
 };
 
 use coddy_core::{

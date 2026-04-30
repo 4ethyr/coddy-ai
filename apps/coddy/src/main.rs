@@ -867,6 +867,20 @@ fn default_multiagent_eval_suite() -> MultiagentEvalSuiteReport {
         .min_hardness_score(100)
         .max_blocked(0)
         .max_awaiting_approval(0),
+        MultiagentEvalCase::new(
+            "execution-reducer-contracts",
+            "revise, aprimore e teste multiagents, harness, prompts e metricas",
+        )
+        .expected_members(&[
+            "explorer",
+            "coder",
+            "test-writer",
+            "eval-runner",
+            "reviewer",
+        ])
+        .min_hardness_score(100)
+        .max_blocked(0)
+        .validate_execution_reducer(),
     ])
 }
 
@@ -1183,7 +1197,7 @@ mod tests {
 
         assert!(suite.is_success());
         assert_eq!(suite.score, 100);
-        assert_eq!(suite.passed, 2);
+        assert_eq!(suite.passed, 3);
         assert_eq!(suite.failed, 0);
         assert!(suite
             .reports
@@ -1193,6 +1207,9 @@ mod tests {
             .reports
             .iter()
             .any(|report| report.case_name == "security-sensitive-routing"));
+        assert!(suite.reports.iter().any(|report| {
+            report.case_name == "execution-reducer-contracts" && report.execution_metrics.is_some()
+        }));
     }
 
     #[test]
