@@ -23,7 +23,10 @@ pub use command_guard::{
     SHELL_RUN_TOOL,
 };
 pub use context::{ContextObservation, ContextPlanItem, ContextSnapshot, ContextTool};
-pub use eval::{EvalCase, EvalExpectations, EvalReport, EvalRunner, EvalStatus, EvalSuiteReport};
+pub use eval::{
+    EvalCase, EvalExpectations, EvalGateReport, EvalGateStatus, EvalQualityGate, EvalReport,
+    EvalRunner, EvalStatus, EvalSuiteReport,
+};
 pub use model::{
     ChatFinishReason, ChatMessage, ChatMessageRole, ChatModelClient, ChatModelError,
     ChatModelResult, ChatRequest, ChatResponse, ChatToolCall, ChatToolSpec, DefaultChatModelClient,

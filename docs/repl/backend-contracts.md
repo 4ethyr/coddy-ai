@@ -138,6 +138,12 @@ filesystem, shell, approval e edição. Cada `EvalReport` retorna `score` de 0 a
 `passes_score_threshold(minimum_score)`. Esse score é a base local para gates de
 qualidade antes de expandir para benchmarks externos como SWE-bench Verified.
 
+`EvalQualityGate` transforma o score em decisão de baseline: define
+`minimum_score`, `max_failed_cases` e retorna `EvalGateReport` com status,
+score real, limite esperado e razões bloqueantes. Isso permite manter gaps
+conhecidos como não bloqueantes quando configurados explicitamente, mas falhar a
+suite quando houver regressão de score ou excesso de casos falhos.
+
 ### Stream de eventos
 
 ```bash

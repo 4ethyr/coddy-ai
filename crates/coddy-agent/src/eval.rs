@@ -110,6 +110,28 @@ pub struct EvalSuiteReport {
     pub score: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvalGateStatus {
+    Passed,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalQualityGate {
+    pub minimum_score: u8,
+    pub max_failed_cases: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalGateReport {
+    pub status: EvalGateStatus,
+    pub suite_score: u8,
+    pub minimum_score: u8,
+    pub failed_cases: usize,
+    pub max_failed_cases: usize,
+    pub failures: Vec<String>,
+}
+
 impl EvalSuiteReport {
     fn new(reports: Vec<EvalReport>) -> Self {
         let passed = reports
@@ -132,6 +154,70 @@ impl EvalSuiteReport {
 
     pub fn passes_score_threshold(&self, minimum_score: u8) -> bool {
         self.score >= minimum_score
+    }
+
+    pub fn evaluate_gate(&self, gate: EvalQualityGate) -> EvalGateReport {
+        gate.evaluate(self)
+    }
+}
+
+impl EvalQualityGate {
+    pub fn strict() -> Self {
+        Self {
+            minimum_score: 100,
+            max_failed_cases: 0,
+        }
+    }
+
+    pub fn new(minimum_score: u8, max_failed_cases: usize) -> Self {
+        Self {
+            minimum_score: minimum_score.min(100),
+            max_failed_cases,
+        }
+    }
+
+    pub fn evaluate(&self, suite: &EvalSuiteReport) -> EvalGateReport {
+        let mut failures = Vec::new();
+
+        if suite.score < self.minimum_score {
+            failures.push(format!(
+                "suite score {} is below required minimum {}",
+                suite.score, self.minimum_score
+            ));
+        }
+
+        if suite.failed > self.max_failed_cases {
+            failures.push(format!(
+                "suite has {} failed cases, above allowed maximum {}",
+                suite.failed, self.max_failed_cases
+            ));
+
+            for report in suite
+                .reports
+                .iter()
+                .filter(|report| report.status == EvalStatus::Failed)
+            {
+                failures.push(format!(
+                    "{} failed with score {}: {}",
+                    report.case_name,
+                    report.score,
+                    report.failures.join("; ")
+                ));
+            }
+        }
+
+        EvalGateReport {
+            status: if failures.is_empty() {
+                EvalGateStatus::Passed
+            } else {
+                EvalGateStatus::Failed
+            },
+            suite_score: suite.score,
+            minimum_score: self.minimum_score,
+            failed_cases: suite.failed,
+            max_failed_cases: self.max_failed_cases,
+            failures,
+        }
     }
 }
 
@@ -500,5 +586,90 @@ mod tests {
         assert!(!suite.is_success());
         assert!(suite.passes_score_threshold(75));
         assert!(!suite.passes_score_threshold(76));
+    }
+
+    #[test]
+    fn quality_gate_reports_score_and_case_regressions() {
+        let workspace = TempWorkspace::new();
+        workspace.write("README.md", "# Coddy\n");
+        let runner = EvalRunner::new(&workspace.path).expect("runner");
+        let passing = EvalCase::new(
+            "passing",
+            "read docs",
+            vec![item(
+                "Read README",
+                READ_FILE_TOOL,
+                json!({ "path": "README.md" }),
+            )],
+            Vec::new(),
+            EvalExpectations::final_status(DeterministicPlanStatus::Completed),
+        );
+        let failing = EvalCase::new(
+            "failing",
+            "expect wrong status",
+            vec![item(
+                "Read README",
+                READ_FILE_TOOL,
+                json!({ "path": "README.md" }),
+            )],
+            Vec::new(),
+            EvalExpectations::final_status(DeterministicPlanStatus::Failed),
+        );
+        let suite = runner.run_suite(&[passing, failing]);
+
+        let report = suite.evaluate_gate(EvalQualityGate::strict());
+
+        assert_eq!(report.status, EvalGateStatus::Failed);
+        assert_eq!(report.suite_score, 75);
+        assert_eq!(report.minimum_score, 100);
+        assert_eq!(report.failed_cases, 1);
+        assert_eq!(report.max_failed_cases, 0);
+        assert!(report
+            .failures
+            .iter()
+            .any(|failure| failure.contains("suite score 75 is below required minimum 100")));
+        assert!(report
+            .failures
+            .iter()
+            .any(|failure| failure.contains("suite has 1 failed cases, above allowed maximum 0")));
+        assert!(report
+            .failures
+            .iter()
+            .any(|failure| failure.contains("failing failed with score 50")));
+    }
+
+    #[test]
+    fn quality_gate_can_allow_non_blocking_known_failures() {
+        let workspace = TempWorkspace::new();
+        workspace.write("README.md", "# Coddy\n");
+        let runner = EvalRunner::new(&workspace.path).expect("runner");
+        let passing = EvalCase::new(
+            "passing",
+            "read docs",
+            vec![item(
+                "Read README",
+                READ_FILE_TOOL,
+                json!({ "path": "README.md" }),
+            )],
+            Vec::new(),
+            EvalExpectations::final_status(DeterministicPlanStatus::Completed),
+        );
+        let known_gap = EvalCase::new(
+            "known-gap",
+            "documented non-blocking gap",
+            vec![item(
+                "Read README",
+                READ_FILE_TOOL,
+                json!({ "path": "README.md" }),
+            )],
+            Vec::new(),
+            EvalExpectations::final_status(DeterministicPlanStatus::Failed),
+        );
+        let suite = runner.run_suite(&[passing, known_gap]);
+
+        let report = suite.evaluate_gate(EvalQualityGate::new(75, 1));
+
+        assert_eq!(report.status, EvalGateStatus::Passed);
+        assert!(report.failures.is_empty());
     }
 }
