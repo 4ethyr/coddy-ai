@@ -14,6 +14,7 @@ export {
   selectModel,
   listProviderModels,
   runMultiagentEval,
+  runPromptBatteryEval,
   openUi,
   captureVoice,
   cancelVoiceCapture,
@@ -25,13 +26,16 @@ export {
 
 export {
   DEFAULT_FLOATING_APPEARANCE,
+  DEFAULT_EVAL_HARNESS,
   DEFAULT_MODEL_THINKING,
   loadSettings,
+  normalizeEvalHarness,
   normalizeFloatingAppearance,
   normalizeModelThinking,
   saveSettings,
 } from './SettingsStore'
 export type {
+  EvalHarnessSettings,
   FloatingAppearanceSettings,
   ModelThinkingEffort,
   ModelThinkingSettings,

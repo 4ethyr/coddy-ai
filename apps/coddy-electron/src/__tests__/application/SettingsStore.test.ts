@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_EVAL_HARNESS,
   DEFAULT_MODEL_THINKING,
+  normalizeEvalHarness,
   normalizeModelThinking,
 } from '@/application'
 
@@ -28,5 +30,21 @@ describe('SettingsStore', () => {
         animation: 'invalid',
       } as never),
     ).toEqual(DEFAULT_MODEL_THINKING)
+  })
+
+  it('normalizes eval harness paths before persistence', () => {
+    expect(
+      normalizeEvalHarness({
+        baselinePath: ' /tmp/baseline.json ',
+        writeBaselinePath: ' /tmp/latest.json ',
+      }),
+    ).toEqual({
+      baselinePath: '/tmp/baseline.json',
+      writeBaselinePath: '/tmp/latest.json',
+    })
+  })
+
+  it('falls back when eval harness paths are absent', () => {
+    expect(normalizeEvalHarness(undefined)).toEqual(DEFAULT_EVAL_HARNESS)
   })
 })

@@ -5,19 +5,31 @@ import type {
   ContextItem,
   MultiagentEvalRequest,
   MultiagentEvalResult,
+  PromptBatteryResult,
   ReplToolCatalogItem,
   ToolRiskLevel,
 } from '@/domain'
-import type { MultiagentEvalStatus } from '@/presentation/hooks/useSession'
+import type { EvalRunStatus } from '@/presentation/hooks/useSession'
 import { Icon } from './Icon'
 
 interface Props {
   items: ContextItem[]
   tools: ReplToolCatalogItem[]
   multiagentEval?: MultiagentEvalResult | null
-  multiagentEvalStatus?: MultiagentEvalStatus
+  multiagentEvalStatus?: EvalRunStatus
   multiagentEvalError?: string | null
+  promptBattery?: PromptBatteryResult | null
+  promptBatteryStatus?: EvalRunStatus
+  promptBatteryError?: string | null
+  evalHarnessSettings?: EvalHarnessSettings
+  onEvalHarnessSettingsChange?: (settings: EvalHarnessSettings) => void
   onRunMultiagentEval?: (request: MultiagentEvalRequest) => void
+  onRunPromptBattery?: () => void
+}
+
+interface EvalHarnessSettings {
+  baselinePath: string
+  writeBaselinePath: string
 }
 
 export function WorkspacePanel({
@@ -26,7 +38,13 @@ export function WorkspacePanel({
   multiagentEval,
   multiagentEvalStatus = 'idle',
   multiagentEvalError = null,
+  promptBattery,
+  promptBatteryStatus = 'idle',
+  promptBatteryError = null,
+  evalHarnessSettings,
+  onEvalHarnessSettingsChange,
   onRunMultiagentEval,
+  onRunPromptBattery,
 }: Props) {
   return (
     <div className="h-full overflow-y-auto p-5 sm:p-8">
@@ -92,7 +110,18 @@ export function WorkspacePanel({
             result={multiagentEval}
             status={multiagentEvalStatus}
             error={multiagentEvalError}
+            settings={evalHarnessSettings}
+            onSettingsChange={onEvalHarnessSettingsChange}
             onRun={onRunMultiagentEval}
+          />
+        )}
+
+        {(onRunPromptBattery || promptBattery || promptBatteryError) && (
+          <PromptBatteryPanel
+            result={promptBattery}
+            status={promptBatteryStatus}
+            error={promptBatteryError}
+            onRun={onRunPromptBattery}
           />
         )}
 
@@ -130,17 +159,26 @@ function MultiagentEvalPanel({
   result,
   status,
   error,
+  settings,
+  onSettingsChange,
   onRun,
 }: {
   result?: MultiagentEvalResult | null
-  status: MultiagentEvalStatus
+  status: EvalRunStatus
   error?: string | null
+  settings?: EvalHarnessSettings
+  onSettingsChange?: (settings: EvalHarnessSettings) => void
   onRun?: (request: MultiagentEvalRequest) => void
 }) {
-  const [baselinePath, setBaselinePath] = useState('')
-  const [writeBaselinePath, setWriteBaselinePath] = useState('')
+  const [baselinePath, setBaselinePath] = useState(
+    () => settings?.baselinePath ?? '',
+  )
+  const [writeBaselinePath, setWriteBaselinePath] = useState(
+    () => settings?.writeBaselinePath ?? '',
+  )
   const suite = result?.suite
   const comparison = result?.comparison
+  const executionMetrics = suite ? multiagentExecutionMetrics(suite.reports) : null
   const score = suite ? Math.round(suite.score) : '--'
   const passed = suite?.passed ?? '--'
   const failed = suite?.failed ?? '--'
@@ -152,6 +190,22 @@ function MultiagentEvalPanel({
 
   const handleRun = () => {
     onRun?.(buildEvalRequest(baselinePath, writeBaselinePath))
+  }
+
+  const handleBaselinePathChange = (next: string) => {
+    setBaselinePath(next)
+    onSettingsChange?.({
+      baselinePath: next,
+      writeBaselinePath,
+    })
+  }
+
+  const handleWriteBaselinePathChange = (next: string) => {
+    setWriteBaselinePath(next)
+    onSettingsChange?.({
+      baselinePath,
+      writeBaselinePath: next,
+    })
   }
 
   return (
@@ -187,16 +241,53 @@ function MultiagentEvalPanel({
         <EvalMetric label="delta" value={delta} tone={deltaTone(comparison)} />
       </div>
 
+      {executionMetrics && (
+        <div className="rounded-lg border border-outline/15 bg-surface-container-highest/35 px-3 py-3">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p className="font-display text-[10px] uppercase tracking-[0.22em] text-primary/70">
+              Execution reducer
+            </p>
+            <span
+              className={`font-mono text-[11px] ${
+                executionMetrics.failed === 0 &&
+                executionMetrics.rejectedOutputs === 0 &&
+                executionMetrics.missingOutputs === 0
+                  ? 'text-emerald-200'
+                  : 'text-red-200'
+              }`}
+            >
+              {executionMetrics.completed}/{executionMetrics.total} completed
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <MetaPill label={`accepted: ${executionMetrics.acceptedOutputs}`} />
+            <MetaPill label={`rejected: ${executionMetrics.rejectedOutputs}`} />
+            <MetaPill label={`missing: ${executionMetrics.missingOutputs}`} />
+            <MetaPill label={`blocked: ${executionMetrics.blocked}`} />
+            <MetaPill
+              label={`awaiting: ${executionMetrics.awaitingApproval}`}
+            />
+          </div>
+          {executionMetrics.unexpectedOutputs.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {executionMetrics.unexpectedOutputs.map((name) => (
+                <MetaPill key={name} label={`unexpected: ${name}`} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="grid gap-3 lg:grid-cols-2">
         <EvalPathInput
           label="baseline"
           value={baselinePath}
-          onChange={setBaselinePath}
+          onChange={handleBaselinePathChange}
         />
         <EvalPathInput
           label="write baseline"
           value={writeBaselinePath}
-          onChange={setWriteBaselinePath}
+          onChange={handleWriteBaselinePathChange}
         />
       </div>
 
@@ -219,6 +310,81 @@ function MultiagentEvalPanel({
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {error && (
+        <p
+          role="alert"
+          className="rounded border border-red-400/20 bg-red-400/10 px-3 py-2 font-mono text-xs text-red-200"
+        >
+          {error}
+        </p>
+      )}
+    </section>
+  )
+}
+
+function PromptBatteryPanel({
+  result,
+  status,
+  error,
+  onRun,
+}: {
+  result?: PromptBatteryResult | null
+  status: EvalRunStatus
+  error?: string | null
+  onRun?: () => void
+}) {
+  const disabled = status === 'running' || !onRun
+  const score = result ? Math.round(result.score) : '--'
+  const promptCount = result?.promptCount ?? '--'
+  const stackCount = result?.stackCount ?? '--'
+  const failed = result?.failed ?? '--'
+  const coverage = result ? topMemberCoverage(result.memberCoverage) : []
+
+  return (
+    <section className="flex flex-col gap-4 border-t border-white/10 pt-5">
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+        <div>
+          <p className="font-display text-[10px] uppercase tracking-[0.22em] text-primary/70">
+            Prompt Harness
+          </p>
+          <h2 className="mt-1 font-display text-lg font-medium text-on-surface">
+            Prompt battery
+          </h2>
+        </div>
+        <button
+          type="button"
+          onClick={onRun}
+          disabled={disabled}
+          aria-label="Run prompt battery"
+          className="desktop-glass-panel inline-flex h-9 items-center justify-center gap-2 rounded-lg px-4 font-display text-[11px] uppercase tracking-[0.18em] text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Icon
+            name={status === 'running' ? 'cpu' : 'bot'}
+            className={`h-4 w-4 ${status === 'running' ? 'animate-pulse' : ''}`}
+          />
+          {status === 'running' ? 'Running' : 'Run battery'}
+        </button>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <EvalMetric label="score" value={String(score)} tone="primary" />
+        <EvalMetric label="prompts" value={String(promptCount)} tone="success" />
+        <EvalMetric label="stacks" value={String(stackCount)} tone="primary" />
+        <EvalMetric
+          label="failed"
+          value={String(failed)}
+          tone={result && result.failed > 0 ? 'danger' : 'success'}
+        />
+      </div>
+
+      {coverage.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {coverage.map(([member, count]) => (
+            <MetaPill key={member} label={`${member}: ${count}`} />
+          ))}
         </div>
       )}
 
@@ -365,6 +531,20 @@ function metricTone(tone: 'primary' | 'success' | 'danger' | 'muted'): string {
 
 function comparisonTone(status: 'passed' | 'failed'): string {
   return status === 'passed' ? 'text-emerald-200' : 'text-red-200'
+}
+
+function multiagentExecutionMetrics(
+  reports: MultiagentEvalResult['suite']['reports'],
+) {
+  return reports.find((report) => report.executionMetrics)?.executionMetrics ?? null
+}
+
+function topMemberCoverage(
+  coverage: PromptBatteryResult['memberCoverage'],
+): Array<[string, number]> {
+  return Object.entries(coverage)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 8)
 }
 
 function RiskBadge({ risk }: { risk: ToolRiskLevel }) {

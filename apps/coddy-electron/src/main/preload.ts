@@ -11,6 +11,7 @@ const replApi = {
       'repl:events-after',
       'repl:tools',
       'repl:eval-multiagent',
+      'repl:eval-prompt-battery',
       'models:list',
       'repl:ask',
       'repl:voice-turn',

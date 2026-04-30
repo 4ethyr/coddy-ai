@@ -278,6 +278,10 @@ export function registerIpcHandlers(): void {
     },
   )
 
+  ipcMain.handle('repl:eval-prompt-battery', async () => {
+    return runPromptBatteryEval()
+  })
+
   // ---- Voice: capture + transcribe via coddy CLI ----
   ipcMain.handle('voice:capture', async () => {
     if (activeVoiceCapture) {
@@ -571,6 +575,10 @@ async function runMultiagentEval(payload: MultiagentEvalPayload): Promise<unknow
   }
 
   return readJson(coddySpawn(args))
+}
+
+async function runPromptBatteryEval(): Promise<unknown> {
+  return readJson(coddySpawn(['eval', 'prompt-battery', '--json']))
 }
 
 function normalizeOptionalPath(value: unknown): string | null {

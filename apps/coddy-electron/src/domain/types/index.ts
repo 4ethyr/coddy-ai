@@ -42,6 +42,8 @@ export type {
   MultiagentEvalRequest,
   MultiagentEvalResult,
   MultiagentEvalSuiteSummary,
+  PromptBatteryFailure,
+  PromptBatteryResult,
 } from './evals'
 
 export type {
