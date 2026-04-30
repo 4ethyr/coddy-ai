@@ -21,6 +21,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixListener;
 use uuid::Uuid;
 
+const MAX_MODEL_TOOL_ROUNDS: usize = 3;
+
 #[derive(Debug, Clone)]
 pub struct CoddyRuntime {
     tool_registry: AgentToolRegistry,
@@ -52,6 +54,11 @@ struct ModelResponseContext<'a> {
     model_credential: Option<ModelCredential>,
     system_prompt: &'a str,
     goal: String,
+}
+
+struct ToolRoundOutcome {
+    response: AssistantResponse,
+    executed_tool_calls: usize,
 }
 
 impl CoddyRuntime {
@@ -464,6 +471,58 @@ impl CoddyRuntime {
 
         let mut state = agent_runtime.start_run(context.session_id, context.goal.clone());
         state.run_id = context.run_id;
+        let mut messages = vec![
+            ChatMessage::system(build_tool_followup_system_prompt(context.system_prompt)),
+            ChatMessage::user(context.goal.clone()),
+        ];
+        let mut response = response;
+
+        for _ in 0..MAX_MODEL_TOOL_ROUNDS {
+            let round =
+                self.execute_model_tool_round(agent_runtime, &mut state, &context, &response);
+            if round.executed_tool_calls == 0 {
+                return round.response;
+            }
+
+            if !response.text.trim().is_empty() {
+                messages.push(ChatMessage::assistant(response.text.clone()));
+            }
+            messages.push(ChatMessage::tool(round.response.text.clone()));
+
+            let Some(next_response) = self.complete_after_tool_messages(
+                context.selected_model,
+                context.model_credential.clone(),
+                messages.clone(),
+            ) else {
+                return round.response;
+            };
+            if next_response.tool_calls.is_empty() {
+                return AssistantResponse::from_chat_response(next_response);
+            }
+            response = next_response;
+        }
+
+        let tool_summary = summarize_chat_tool_calls(&response.tool_calls);
+        let text = if response.text.trim().is_empty() {
+            format!(
+                "Model requested additional tools after {MAX_MODEL_TOOL_ROUNDS} tool observation rounds: {tool_summary}. Coddy stopped the automatic loop to avoid an unbounded run."
+            )
+        } else {
+            format!(
+                "{}\n\nModel requested additional tools after {MAX_MODEL_TOOL_ROUNDS} tool observation rounds: {tool_summary}. Coddy stopped the automatic loop to avoid an unbounded run.",
+                response.text.trim()
+            )
+        };
+        AssistantResponse::from_text(redact_context_text(&text))
+    }
+
+    fn execute_model_tool_round(
+        &self,
+        agent_runtime: &LocalAgentRuntime,
+        state: &mut coddy_agent::RunState,
+        context: &ModelResponseContext<'_>,
+        response: &ChatResponse,
+    ) -> ToolRoundOutcome {
         let mut observations = Vec::new();
         let mut executed_tool_calls = 0_usize;
 
@@ -496,7 +555,7 @@ impl CoddyRuntime {
             }
 
             agent_runtime.add_plan_item(
-                &mut state,
+                state,
                 format!("Run model-requested tool {tool_name}"),
                 Some(tool_name.clone()),
             );
@@ -507,7 +566,7 @@ impl CoddyRuntime {
                 tool_call.arguments.clone(),
                 unix_ms_now(),
             );
-            let outcome = agent_runtime.execute_tool_call(&mut state, &call);
+            let outcome = agent_runtime.execute_tool_call(state, &call);
             executed_tool_calls += 1;
             for event in outcome.events {
                 self.publish_event_with_run_now(event, context.run_id);
@@ -562,48 +621,24 @@ impl CoddyRuntime {
         text.push_str(&observations.join("\n"));
         let text = redact_context_text(&text);
 
-        let observation_response = AssistantResponse::from_text(text);
-        if executed_tool_calls == 0 {
-            return observation_response;
+        ToolRoundOutcome {
+            response: AssistantResponse::from_text(text),
+            executed_tool_calls,
         }
-
-        self.complete_after_tool_observations(
-            context.selected_model,
-            context.model_credential,
-            context.system_prompt,
-            &context.goal,
-            &response.text,
-            &observation_response.text,
-        )
-        .unwrap_or(observation_response)
     }
 
-    fn complete_after_tool_observations(
+    fn complete_after_tool_messages(
         &self,
         selected_model: &ModelRef,
         model_credential: Option<ModelCredential>,
-        system_prompt: &str,
-        user_text: &str,
-        assistant_text: &str,
-        observation_text: &str,
-    ) -> Option<AssistantResponse> {
-        let mut messages = vec![
-            ChatMessage::system(build_tool_followup_system_prompt(system_prompt)),
-            ChatMessage::user(user_text.to_string()),
-        ];
-        if !assistant_text.trim().is_empty() {
-            messages.push(ChatMessage::assistant(assistant_text.to_string()));
-        }
-        messages.push(ChatMessage::tool(observation_text.to_string()));
-
+        messages: Vec<ChatMessage>,
+    ) -> Option<ChatResponse> {
         let request = ChatRequest::new(selected_model.clone(), messages)
             .ok()?
             .with_model_credential(model_credential)
-            .ok()?;
-        match self.chat_client.complete(request) {
-            Ok(response) => Some(AssistantResponse::from_chat_response(response)),
-            Err(_) => None,
-        }
+            .ok()?
+            .with_tools(self.chat_tool_specs());
+        self.chat_client.complete(request).ok()
     }
 
     fn chat_tool_specs(&self) -> Vec<ChatToolSpec> {
@@ -1825,7 +1860,10 @@ mod tests {
 
         assert_eq!(text, "The workspace contains a Rust source directory.");
         assert_eq!(captured_requests.len(), 2);
-        assert!(captured_requests[1].tools.is_empty());
+        assert!(captured_requests[1]
+            .tools
+            .iter()
+            .any(|tool| tool.name == LIST_FILES_TOOL));
         let followup_system_prompt = &captured_requests[1].messages[0].content;
         assert!(followup_system_prompt.contains("Agent loop:"));
         assert!(followup_system_prompt.contains("Security rules:"));
@@ -1904,6 +1942,155 @@ mod tests {
             .content
             .contains("OPENAI_API_KEY=sk-[REDACTED]"));
         assert!(!tool_message.content.contains("sk-secret-token"));
+    }
+
+    #[test]
+    fn ask_command_continues_safe_tool_loop_after_followup_requests_more_context() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("src/main.rs", "fn main() {\n    println!(\"hi\");\n}\n");
+        let (chat_client, requests) = QueuedChatClient::new(vec![
+            ChatResponse {
+                text: "I will inspect the workspace.".to_string(),
+                deltas: vec!["I will inspect the workspace.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-1".to_string()),
+                    name: LIST_FILES_TOOL.to_string(),
+                    arguments: json!({ "path": ".", "max_entries": 20 }),
+                }],
+            },
+            ChatResponse {
+                text: "I found source files and need to read the entrypoint.".to_string(),
+                deltas: vec!["I found source files and need to read the entrypoint.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-2".to_string()),
+                    name: READ_FILE_TOOL.to_string(),
+                    arguments: json!({ "path": "src/main.rs", "max_bytes": 200 }),
+                }],
+            },
+            ChatResponse::from_text("The entrypoint prints hi from main."),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect the entrypoint".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+
+        assert_eq!(text, "The entrypoint prints hi from main.");
+        assert_eq!(captured_requests.len(), 3);
+        assert!(captured_requests[2]
+            .tools
+            .iter()
+            .any(|tool| tool.name == READ_FILE_TOOL));
+        assert!(captured_requests[2].messages.iter().any(|message| {
+            message.role == coddy_agent::ChatMessageRole::Tool
+                && message.content.contains("filesystem.read_file")
+                && message.content.contains("println!")
+        }));
+        let events = runtime.events_after(2).0;
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(&event.event, ReplEvent::ToolStarted { name } if name == LIST_FILES_TOOL || name == READ_FILE_TOOL))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn ask_command_stops_safe_tool_loop_after_round_limit() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("README.md", "# Coddy\n");
+        let repeated_tool_response = |id: &str| ChatResponse {
+            text: format!("Need another workspace pass {id}."),
+            deltas: vec![format!("Need another workspace pass {id}.")],
+            finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+            tool_calls: vec![ChatToolCall {
+                id: Some(id.to_string()),
+                name: LIST_FILES_TOOL.to_string(),
+                arguments: json!({ "path": ".", "max_entries": 20 }),
+            }],
+        };
+        let (chat_client, requests) = QueuedChatClient::new(vec![
+            repeated_tool_response("call-1"),
+            repeated_tool_response("call-2"),
+            repeated_tool_response("call-3"),
+            repeated_tool_response("call-4"),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "keep inspecting".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let events = runtime.events_after(2).0;
+
+        assert_eq!(captured_requests.len(), MAX_MODEL_TOOL_ROUNDS + 1);
+        assert!(text.contains("stopped the automatic loop"));
+        assert!(text.contains("filesystem.list_files"));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(&event.event, ReplEvent::ToolStarted { name } if name == LIST_FILES_TOOL))
+                .count(),
+            MAX_MODEL_TOOL_ROUNDS
+        );
     }
 
     #[test]
