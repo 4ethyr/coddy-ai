@@ -102,6 +102,7 @@ function ToolRow({ tool }: { tool: ReplToolCatalogItem }) {
   const permissions = tool.permissions.length
     ? tool.permissions.join(', ')
     : 'No explicit permission'
+  const requiredFields = requiredInputFields(tool.input_schema)
 
   return (
     <article className="rounded-lg border border-outline/15 bg-surface-container-highest/40 p-3">
@@ -121,6 +122,13 @@ function ToolRow({ tool }: { tool: ReplToolCatalogItem }) {
         <MetaPill label={tool.category} />
         <MetaPill label={tool.approval_policy} />
         <MetaPill label={`${tool.timeout_ms}ms`} />
+        <MetaPill
+          label={
+            requiredFields.length
+              ? `input: ${requiredFields.join(', ')}`
+              : 'input: optional'
+          }
+        />
       </div>
 
       <p className="mt-3 truncate font-mono text-[11px] text-on-surface-variant/80">
@@ -128,6 +136,12 @@ function ToolRow({ tool }: { tool: ReplToolCatalogItem }) {
       </p>
     </article>
   )
+}
+
+function requiredInputFields(schema: ReplToolCatalogItem['input_schema']) {
+  const required = schema.required
+  if (!Array.isArray(required)) return []
+  return required.filter((field): field is string => typeof field === 'string')
 }
 
 function RiskBadge({ risk }: { risk: ToolRiskLevel }) {

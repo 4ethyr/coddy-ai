@@ -1,4 +1,4 @@
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
@@ -238,11 +238,15 @@ pub struct ReplToolsJob {
     pub request_id: Uuid,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReplToolCatalogItem {
     pub name: String,
     pub description: String,
     pub category: coddy_core::ToolCategory,
+    #[serde(with = "json_value_wire")]
+    pub input_schema: serde_json::Value,
+    #[serde(with = "json_value_wire")]
+    pub output_schema: serde_json::Value,
     pub risk_level: coddy_core::ToolRiskLevel,
     pub permissions: Vec<coddy_core::ToolPermission>,
     pub timeout_ms: u64,
@@ -255,6 +259,8 @@ impl ReplToolCatalogItem {
             name: name.into(),
             description: "Legacy tool advertised by daemon without metadata".to_string(),
             category: coddy_core::ToolCategory::Other,
+            input_schema: coddy_core::ToolSchema::empty_object().schema,
+            output_schema: coddy_core::ToolSchema::empty_object().schema,
             risk_level: coddy_core::ToolRiskLevel::Medium,
             permissions: Vec::new(),
             timeout_ms: 1,
@@ -269,10 +275,41 @@ impl From<&coddy_core::ToolDefinition> for ReplToolCatalogItem {
             name: definition.name.to_string(),
             description: definition.description.clone(),
             category: definition.category,
+            input_schema: definition.input_schema.schema.clone(),
+            output_schema: definition.output_schema.schema.clone(),
             risk_level: definition.risk_level,
             permissions: definition.permissions.clone(),
             timeout_ms: definition.timeout_ms,
             approval_policy: definition.approval_policy,
+        }
+    }
+}
+
+mod json_value_wire {
+    use super::*;
+
+    pub fn serialize<S>(value: &serde_json::Value, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if serializer.is_human_readable() {
+            value.serialize(serializer)
+        } else {
+            serde_json::to_string(value)
+                .map_err(serde::ser::Error::custom)?
+                .serialize(serializer)
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<serde_json::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            serde_json::Value::deserialize(deserializer)
+        } else {
+            let json = String::deserialize(deserializer)?;
+            serde_json::from_str(&json).map_err(serde::de::Error::custom)
         }
     }
 }
@@ -670,6 +707,13 @@ mod tests {
                     name: "filesystem.read_file".to_string(),
                     description: "Read a file".to_string(),
                     category: coddy_core::ToolCategory::Filesystem,
+                    input_schema: serde_json::json!({
+                        "type": "object",
+                        "required": ["path"]
+                    }),
+                    output_schema: serde_json::json!({
+                        "type": "object"
+                    }),
                     risk_level: coddy_core::ToolRiskLevel::Low,
                     permissions: vec![coddy_core::ToolPermission::ReadWorkspace],
                     timeout_ms: 5_000,
@@ -703,6 +747,8 @@ mod tests {
         assert_eq!(item.name, "filesystem.read_file");
         assert_eq!(item.description, "Read a file");
         assert_eq!(item.category, coddy_core::ToolCategory::Filesystem);
+        assert_eq!(item.input_schema["type"], "object");
+        assert_eq!(item.output_schema["type"], "object");
         assert_eq!(item.risk_level, coddy_core::ToolRiskLevel::Low);
         assert_eq!(
             item.permissions,

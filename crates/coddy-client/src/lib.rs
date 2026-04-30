@@ -495,6 +495,13 @@ mod tests {
                         name: "filesystem.read_file".to_string(),
                         description: "Read a file".to_string(),
                         category: coddy_core::ToolCategory::Filesystem,
+                        input_schema: serde_json::json!({
+                            "type": "object",
+                            "required": ["path"]
+                        }),
+                        output_schema: serde_json::json!({
+                            "type": "object"
+                        }),
                         risk_level: coddy_core::ToolRiskLevel::Low,
                         permissions: vec![coddy_core::ToolPermission::ReadWorkspace],
                         timeout_ms: 5_000,
@@ -511,6 +518,8 @@ mod tests {
 
         assert_eq!(catalog.len(), 1);
         assert_eq!(catalog[0].name, "filesystem.read_file");
+        assert_eq!(catalog[0].input_schema["required"][0], "path");
+        assert_eq!(catalog[0].output_schema["type"], "object");
         assert_eq!(catalog[0].risk_level, coddy_core::ToolRiskLevel::Low);
         assert_eq!(
             catalog[0].permissions,

@@ -121,8 +121,8 @@ coddy session tools
 
 Retorna o catálogo público de tools que o runtime Coddy expõe para o REPL e
 para a UI. A resposta usa `ReplToolCatalogItem`, com nome, descrição,
-categoria, risco, permissões, timeout e approval policy. O Electron consome
-esse contrato pelo canal `repl:tools`.
+categoria, schemas de entrada/saída, risco, permissões, timeout e approval
+policy. O Electron consome esse contrato pelo canal `repl:tools`.
 
 O catálogo atual inclui tools locais de filesystem, shell protegido e a fundação
 de subagents. A tool `subagent.list` é read-only/auto-approved e retorna os

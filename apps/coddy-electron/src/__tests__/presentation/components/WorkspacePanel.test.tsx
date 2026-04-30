@@ -12,6 +12,8 @@ describe('WorkspacePanel', () => {
             name: 'filesystem.read_file',
             description: 'Read a UTF-8 text file inside the active workspace',
             category: 'Filesystem',
+            input_schema: { type: 'object', required: ['path'] },
+            output_schema: { type: 'object' },
             risk_level: 'Low',
             permissions: ['ReadWorkspace'],
             timeout_ms: 5_000,
@@ -21,6 +23,8 @@ describe('WorkspacePanel', () => {
             name: 'shell.run',
             description: 'Execute a workspace-scoped shell command',
             category: 'Shell',
+            input_schema: { type: 'object', required: ['command'] },
+            output_schema: { type: 'object' },
             risk_level: 'Medium',
             permissions: ['ExecuteCommand'],
             timeout_ms: 30_000,
@@ -32,6 +36,8 @@ describe('WorkspacePanel', () => {
 
     expect(screen.getByText('filesystem.read_file')).toBeInTheDocument()
     expect(screen.getByText('shell.run')).toBeInTheDocument()
+    expect(screen.getByText('input: path')).toBeInTheDocument()
+    expect(screen.getByText('input: command')).toBeInTheDocument()
     expect(screen.getByText('Low')).toBeInTheDocument()
     expect(screen.getByText('AskOnUse')).toBeInTheDocument()
     expect(screen.getByText('ExecuteCommand')).toBeInTheDocument()

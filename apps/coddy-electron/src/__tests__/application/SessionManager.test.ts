@@ -31,6 +31,8 @@ describe('SessionManager', () => {
           name: 'filesystem.read_file',
           description: 'Read a UTF-8 text file inside the active workspace',
           category: 'Filesystem',
+          input_schema: { type: 'object', required: ['path'] },
+          output_schema: { type: 'object' },
           risk_level: 'Low',
           permissions: ['ReadWorkspace'],
           timeout_ms: 5_000,

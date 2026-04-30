@@ -1109,6 +1109,13 @@ mod tests {
                 name: "filesystem.read_file".to_string(),
                 description: "Read a file".to_string(),
                 category: coddy_core::ToolCategory::Filesystem,
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["path"]
+                }),
+                output_schema: serde_json::json!({
+                    "type": "object"
+                }),
                 risk_level: coddy_core::ToolRiskLevel::Low,
                 permissions: vec![coddy_core::ToolPermission::ReadWorkspace],
                 timeout_ms: 5_000,

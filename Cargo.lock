@@ -252,6 +252,7 @@ dependencies = [
  "anyhow",
  "coddy-core",
  "coddy-ipc",
+ "serde_json",
  "tokio",
  "uuid",
 ]
@@ -274,6 +275,7 @@ dependencies = [
  "bincode",
  "coddy-core",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "uuid",

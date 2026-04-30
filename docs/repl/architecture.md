@@ -129,9 +129,9 @@ Todos esses comandos devem gerar `ReplCommand` estruturado e passar pelo daemon 
 O modo terminal usa `CoddyRequest::Tools` para alimentar `/tools`. O IPC aceita
 o resultado legado `ReplTools(Vec<String>)` e o resultado evolutivo
 `ReplToolCatalog(Vec<ReplToolCatalogItem>)`, que inclui nome, descricao,
-categoria, risco, permissoes, timeout e approval policy. O runtime ja devolve o
-catalogo rico para o CLI e para a UI Electron, mantendo `ReplTools` apenas como
-compatibilidade com clientes legados.
+categoria, schemas de entrada/saida, risco, permissoes, timeout e approval
+policy. O runtime ja devolve o catalogo rico para o CLI e para a UI Electron,
+mantendo `ReplTools` apenas como compatibilidade com clientes legados.
 
 Subagents ainda nao executam trabalho em paralelo. A primeira fundacao esta no
 crate `coddy-agent`: um registry declarativo exposto pela tool

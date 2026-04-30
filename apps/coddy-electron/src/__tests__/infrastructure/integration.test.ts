@@ -43,6 +43,8 @@ function createSimDaemon(): SimDaemon {
         name: 'filesystem.read_file',
         description: 'Read a UTF-8 text file inside the active workspace',
         category: 'Filesystem',
+        input_schema: { type: 'object', required: ['path'] },
+        output_schema: { type: 'object' },
         risk_level: 'Low',
         permissions: ['ReadWorkspace'],
         timeout_ms: 5_000,
@@ -52,6 +54,8 @@ function createSimDaemon(): SimDaemon {
         name: 'shell.run',
         description: 'Execute a workspace-scoped shell command',
         category: 'Shell',
+        input_schema: { type: 'object', required: ['command'] },
+        output_schema: { type: 'object' },
         risk_level: 'Medium',
         permissions: ['ExecuteCommand'],
         timeout_ms: 30_000,
@@ -558,12 +562,16 @@ describe('IPC integration', () => {
       ])
       expect(tools[0]).toMatchObject({
         category: 'Filesystem',
+        input_schema: { type: 'object', required: ['path'] },
+        output_schema: { type: 'object' },
         risk_level: 'Low',
         permissions: ['ReadWorkspace'],
         approval_policy: 'AutoApprove',
       })
       expect(tools[1]).toMatchObject({
         category: 'Shell',
+        input_schema: { type: 'object', required: ['command'] },
+        output_schema: { type: 'object' },
         risk_level: 'Medium',
         permissions: ['ExecuteCommand'],
         approval_policy: 'AskOnUse',

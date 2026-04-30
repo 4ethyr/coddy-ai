@@ -38,6 +38,8 @@ export interface ReplToolCatalogItem {
   name: string
   description: string
   category: ToolCategory
+  input_schema: Record<string, unknown>
+  output_schema: Record<string, unknown>
   risk_level: ToolRiskLevel
   permissions: ToolPermission[]
   timeout_ms: number
