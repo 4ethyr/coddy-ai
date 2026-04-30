@@ -135,6 +135,13 @@ A tool `subagent.route` também é read-only/auto-approved e recebe `goal`,
 prepara a futura execução real de subagents com seleção mensurável, sem acoplar
 a UI a um runtime paralelo prematuro.
 
+Em turns com modelo, o runtime executa `subagent.route` antes da primeira
+inferência e injeta um bloco `Subagent routing guidance` no system prompt. O
+modelo recebe papéis recomendados como sinais de planejamento/validação, e a UI
+continua observando o roteamento pelos eventos `ToolStarted`/`ToolCompleted`.
+Esse passo não significa execução real do subagent; execução paralela continua
+dependendo de um executor dedicado com contexto isolado e auditoria.
+
 ### Evals de harness
 
 O crate `coddy-agent` possui `EvalRunner` para casos determinísticos de

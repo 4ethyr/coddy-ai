@@ -138,9 +138,11 @@ crate `coddy-agent`: um registry declarativo exposto pela tool
 `subagent.list`, com papeis obrigatorios, modo de execucao, allowed tools,
 sinais de roteamento, timeout, budget de contexto e schema de resposta. A tool
 `subagent.route` adiciona selecao deterministica e scoreada por intencao antes
-da execucao real. O proximo passo arquitetural e conectar esse registry a um
-executor com contexto isolado, eventos, auditoria e politicas herdadas do tool
-registry.
+da execucao real. Em turns model-backed, o runtime ja usa esse roteamento como
+contexto de system prompt e como evento observavel pela UI, sem declarar que um
+subagent executou trabalho. O proximo passo arquitetural e conectar esse
+registry a um executor com contexto isolado, eventos, auditoria e politicas
+herdadas do tool registry.
 
 ### `crates/coddy-core`
 

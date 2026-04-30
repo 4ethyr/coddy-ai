@@ -1,7 +1,7 @@
 use coddy_agent::{
     AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError, ChatRequest, ChatResponse,
     ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, LIST_FILES_TOOL,
-    PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL,
+    PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL, SUBAGENT_ROUTE_TOOL,
 };
 use coddy_core::{
     ApprovalPolicy, ContextItem, ContextPolicy, ModelCredential, ModelRef, PermissionReply,
@@ -487,11 +487,17 @@ impl CoddyRuntime {
             user_text,
         } = turn;
 
-        let system_prompt = build_model_system_prompt(
+        let mut system_prompt = build_model_system_prompt(
             context_policy,
             session_context,
             self.tool_registry.definitions(),
         );
+        if let Some(routing_context) =
+            self.prepare_subagent_routing_context(session_id, run_id, &user_text)
+        {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&routing_context);
+        }
         let request = match ChatRequest::new(
             selected_model.clone(),
             vec![
@@ -604,6 +610,42 @@ impl CoddyRuntime {
             )
         };
         AssistantResponse::from_text(redact_context_text(&text))
+    }
+
+    fn prepare_subagent_routing_context(
+        &self,
+        session_id: Uuid,
+        run_id: Uuid,
+        goal: &str,
+    ) -> Option<String> {
+        let agent_runtime = self.agent_runtime.as_ref()?;
+        let mut state = agent_runtime.start_run(session_id, format!("Route subagents for: {goal}"));
+        state.run_id = run_id;
+        agent_runtime.add_plan_item(
+            &mut state,
+            "Recommend focused subagents for this turn",
+            Some(ToolName::new(SUBAGENT_ROUTE_TOOL).expect("built-in tool name")),
+        );
+        let call = ToolCall::new(
+            session_id,
+            run_id,
+            ToolName::new(SUBAGENT_ROUTE_TOOL).expect("built-in tool name"),
+            json!({
+                "goal": goal,
+                "limit": 3,
+            }),
+            unix_ms_now(),
+        );
+        let outcome = agent_runtime.execute_tool_call(&mut state, &call);
+        for event in outcome.events {
+            self.publish_event_with_run_now(event, run_id);
+        }
+
+        let result = outcome.result?;
+        if result.status != ToolResultStatus::Succeeded {
+            return None;
+        }
+        result.output.as_ref().map(format_subagent_routing_context)
     }
 
     fn execute_model_tool_round(
@@ -1183,6 +1225,56 @@ fn format_tool_context(tool_definitions: &[ToolDefinition]) -> String {
     lines.join("\n")
 }
 
+fn format_subagent_routing_context(output: &ToolOutput) -> String {
+    let recommendations = output
+        .metadata
+        .get("recommendations")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    if recommendations.is_empty() {
+        return "Subagent routing guidance: no focused recommendation was available for this turn."
+            .to_string();
+    }
+
+    let mut lines = vec![
+        "Subagent routing guidance:".to_string(),
+        "- Treat these as planning and validation hints; do not claim a subagent executed unless a runtime event confirms it.".to_string(),
+    ];
+    for recommendation in recommendations.iter().take(3) {
+        let name = recommendation
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown");
+        let score = recommendation
+            .get("score")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default();
+        let mode = recommendation
+            .get("mode")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown");
+        let matched_signals = recommendation
+            .get("matchedSignals")
+            .and_then(|value| value.as_array())
+            .map(|signals| {
+                signals
+                    .iter()
+                    .filter_map(|signal| signal.as_str())
+                    .take(5)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        lines.push(format!(
+            "- {name} [{mode}] score {score}; matched: {}",
+            truncate_context_text(&redact_context_text(&matched_signals), 120)
+        ));
+    }
+    lines.join("\n")
+}
+
 fn redact_context_text(text: &str) -> String {
     let markers = ["Bearer ", "sk-or-", "ya29.", "sk-"];
     let mut output = String::with_capacity(text.len());
@@ -1376,7 +1468,7 @@ fn default_workspace_root() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use coddy_agent::{PREVIEW_EDIT_TOOL, READ_FILE_TOOL};
+    use coddy_agent::{PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SUBAGENT_ROUTE_TOOL};
     use coddy_client::CoddyClient;
     use coddy_core::{
         ApprovalPolicy, ModelRef, ModelRole, PermissionReply, ReplEvent, ToolCategory,
@@ -1894,6 +1986,59 @@ mod tests {
     }
 
     #[test]
+    fn ask_command_injects_subagent_routing_guidance_for_model() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("routing accepted"));
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "run eval baseline score regression harness for this change".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let system_prompt = &captured_requests[0].messages[0].content;
+        let events = runtime.events_after(0).0;
+
+        assert!(system_prompt.contains("Subagent routing guidance:"));
+        assert!(system_prompt.contains("eval-runner [evaluation]"));
+        assert!(system_prompt.contains("matched: eval"));
+        assert!(system_prompt.contains("do not claim a subagent executed"));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolStarted { name } if name == SUBAGENT_ROUTE_TOOL
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolCompleted { name, .. } if name == SUBAGENT_ROUTE_TOOL
+        )));
+    }
+
+    #[test]
     fn ask_command_prioritizes_recent_workspace_context_in_model_prompt() {
         let request_id = Uuid::new_v4();
         let (chat_client, requests) =
@@ -2049,9 +2194,13 @@ mod tests {
 
         assert!(text.contains("shell.run"));
         assert!(text.contains("was not executed"));
-        assert!(!events
-            .iter()
-            .any(|event| matches!(event.event, ReplEvent::ToolStarted { .. })));
+        assert!(!events.iter().any(
+            |event| matches!(&event.event, ReplEvent::ToolStarted { name } if name == "shell.run")
+        ));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolStarted { name } if name == SUBAGENT_ROUTE_TOOL
+        )));
         assert!(events.iter().any(|event| matches!(
             &event.event,
             ReplEvent::MessageAppended { message }
