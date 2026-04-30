@@ -193,6 +193,10 @@ campos obrigatórios do schema e não inclui campos extras quando
 `additionalProperties` está desativado; falhas geram lifecycle `Failed` em vez
 de `Completed`.
 
+O evento `SubagentHandoffPrepared` também expõe `required_output_fields`,
+derivado de `outputSchema.required`, para que frontend, snapshot e executor
+trabalhem com o mesmo contrato de saída.
+
 ### Evals de harness
 
 O crate `coddy-agent` possui `EvalRunner` para casos determinísticos de

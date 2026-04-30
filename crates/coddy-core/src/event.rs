@@ -50,6 +50,7 @@ pub struct SubagentHandoffPrepared {
     pub mode: String,
     pub approval_required: bool,
     pub allowed_tools: Vec<String>,
+    pub required_output_fields: Vec<String>,
     pub timeout_ms: u64,
     pub max_context_tokens: u32,
     pub validation_checklist: Vec<String>,

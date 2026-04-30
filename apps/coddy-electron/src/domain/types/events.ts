@@ -37,6 +37,7 @@ export interface SubagentHandoffPrepared {
   mode: string
   approval_required: boolean
   allowed_tools: string[]
+  required_output_fields: string[]
   timeout_ms: number
   max_context_tokens: number
   validation_checklist: string[]

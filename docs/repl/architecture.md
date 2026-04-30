@@ -161,7 +161,9 @@ real antes de existir um executor isolado. O gate tambem revalida modo,
 ferramentas, score e aprovacao para impedir que um contrato reduzido ou
 malformado avance para execucao. A fundacao tambem inclui validacao de saida
 estruturada via `SubagentOutputContract`, permitindo que o futuro executor so
-publique `Completed` quando o JSON retornado cumprir o schema do handoff.
+publique `Completed` quando o JSON retornado cumprir o schema do handoff. O
+evento `SubagentHandoffPrepared` carrega `required_output_fields` para manter UI,
+runtime e executor alinhados no mesmo contrato.
 
 ### `crates/coddy-core`
 

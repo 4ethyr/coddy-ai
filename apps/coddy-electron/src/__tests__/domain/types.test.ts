@@ -59,6 +59,7 @@ describe('Domain type contracts', () => {
               mode: 'evaluation',
               approval_required: true,
               allowed_tools: ['filesystem.read_file', 'shell.run'],
+              required_output_fields: ['score', 'passed'],
               timeout_ms: 60000,
               max_context_tokens: 8000,
               validation_checklist: ['Use deterministic checks'],

@@ -1440,6 +1440,12 @@ fn subagent_handoff_prepared_from_output(output: &ToolOutput) -> Option<Subagent
         .and_then(|value| value.as_bool())
         .unwrap_or(true);
     let allowed_tools = array_string_values(handoff.get("allowedTools"), 16);
+    let required_output_fields = array_string_values(
+        handoff
+            .get("outputSchema")
+            .and_then(|schema| schema.get("required")),
+        32,
+    );
     let timeout_ms = handoff
         .get("timeoutMs")
         .and_then(|value| value.as_u64())
@@ -1463,6 +1469,7 @@ fn subagent_handoff_prepared_from_output(output: &ToolOutput) -> Option<Subagent
         mode,
         approval_required,
         allowed_tools,
+        required_output_fields,
         timeout_ms,
         max_context_tokens,
         validation_checklist,
@@ -2372,6 +2379,13 @@ mod tests {
                     && handoff.readiness_score == 100
                     && handoff.readiness_issues.is_empty()
                     && handoff.allowed_tools.iter().any(|tool| tool == "shell.run")
+                    && handoff.required_output_fields == [
+                        "score".to_string(),
+                        "passed".to_string(),
+                        "failedChecks".to_string(),
+                        "metrics".to_string(),
+                        "recommendations".to_string()
+                    ]
         )));
         assert!(events.iter().any(|event| matches!(
             &event.event,
@@ -2423,6 +2437,7 @@ mod tests {
         let handoff = subagent_handoff_prepared_from_output(&output).expect("handoff event");
         assert_eq!(handoff.validation_checklist[0].len(), 220);
         assert_eq!(handoff.readiness_issues[0].len(), 220);
+        assert!(handoff.required_output_fields.is_empty());
 
         let preview = format_subagent_handoff_context(&output);
         assert!(preview.contains("Readiness score: 80"));
@@ -2436,6 +2451,7 @@ mod tests {
             mode: "workspace-write".to_string(),
             approval_required: true,
             allowed_tools: vec!["filesystem.apply_edit".to_string()],
+            required_output_fields: vec!["changedFiles".to_string(), "summary".to_string()],
             timeout_ms: 60_000,
             max_context_tokens: 8_000,
             validation_checklist: vec!["Preview edits before applying.".to_string()],

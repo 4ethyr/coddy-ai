@@ -782,6 +782,8 @@ Escopo entregue:
 - `SubagentOutputContract` prepara a validacao de conclusao, marcando a saida
   estruturada como `Completed` somente quando todos os campos obrigatorios do
   schema foram retornados sem propriedades inesperadas;
+- `SubagentHandoffPrepared` agora preserva `required_output_fields`, alinhando
+  UI, runtime e futuro executor sobre o contrato de saida esperado;
 - o system prompt recebe um resumo do score, mas o evento preserva valores
   completos para observabilidade;
 - o frontend exibe a atividade de subagents no painel agentic mantendo o padrao

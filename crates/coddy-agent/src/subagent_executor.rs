@@ -508,6 +508,7 @@ mod tests {
             mode: "read-only".to_string(),
             approval_required: false,
             allowed_tools: vec!["filesystem.read_file".to_string()],
+            required_output_fields: vec!["summary".to_string()],
             timeout_ms: 60_000,
             max_context_tokens: 8_000,
             validation_checklist: vec!["Ground findings in evidence.".to_string()],
