@@ -140,11 +140,22 @@ sinais de roteamento, timeout, budget de contexto e schema de resposta. A tool
 `subagent.route` adiciona selecao deterministica e scoreada por intencao antes
 da execucao real. A tool `subagent.prepare` transforma um papel e objetivo em
 um contrato de handoff com allowed tools, prompt, checklist, safety notes,
-approval flag e output schema. Em turns model-backed, o runtime ja usa esse
-roteamento como contexto de system prompt e publica `SubagentRouted` para
-UI/auditoria, sem declarar que um subagent executou trabalho. O proximo passo
-arquitetural e conectar esse registry a um executor com contexto isolado,
-eventos de ciclo de vida, auditoria e politicas herdadas do tool registry.
+approval flag, readiness score e output schema. Em turns model-backed, o runtime
+ja usa esse roteamento como contexto de system prompt e publica `SubagentRouted`
+para UI/auditoria, sem declarar que um subagent executou trabalho. O proximo
+passo arquitetural e conectar esse registry a um executor com contexto isolado,
+eventos de ciclo de vida como `SubagentHandoffPrepared` e futuros eventos de
+execucao, auditoria e politicas herdadas do tool registry. O primeiro evento de
+ciclo de vida executavel pelo frontend e `SubagentLifecycleUpdated`: handoffs
+com readiness completo ficam `Prepared`; handoffs incompletos ficam `Blocked`
+antes de qualquer execucao real. O reducer Rust tambem materializa esse estado
+em `ReplSession.subagent_activity`, preservando a integracao entre snapshot,
+event replay e UI. A politica de transicao e propositalmente conservadora:
+`Prepared -> Approved -> Running -> Completed/Failed`, sempre com readiness 100
+para estados executaveis; qualquer salto invalido vira `Blocked`. O
+`SubagentExecutionGate` no `coddy-agent` ja materializa o proximo contrato:
+planejar inicio de execucao sem side effects, aguardando aprovacao quando
+necessario e emitindo apenas a sequencia de lifecycle permitida.
 
 ### `crates/coddy-core`
 

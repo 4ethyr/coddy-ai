@@ -707,3 +707,88 @@ Escopo recomendado:
   `ReplToolCatalog` e mantendo `ReplTools` apenas como compatibilidade;
 - adicionar teste de roundtrip servidor/cliente;
 - manter fixtures versionadas de evals como bloco posterior.
+
+## Revisao `texts/` de 2026-04-30
+
+Arquivos analisados:
+
+- `texts/Detalhes Tecnicos de IA Avancada.pdf`
+- `texts/Detalhes de Modelos e Ferramentas IA.pdf`
+- `texts/Pesquisa Detalhada Claude Mythos e Ferramentas.pdf`
+- `texts/Detalhes Tecnicos Modelos IA Avancados.pdf`
+
+Os PDFs reforcam uma direcao correta para o Coddy: modelos diferentes devem
+entrar em uma plataforma mais forte que o proprio modelo. A parte aproveitavel
+e o padrao "fat platform, thin agents": harness deterministico, permissao,
+contexto, tools, memoria, subagents, evals e telemetria devem compensar
+variacao entre modelos locais e modelos remotos.
+
+Pontos que devem virar codigo:
+
+- agent loop explicito com fases observaveis de context loading, planning,
+  action, observation, validation e response;
+- subagents com contexto isolado, allowed tools, timeout, budget de contexto,
+  checklist, safety notes e retorno resumido;
+- roteamento deterministico antes da inferencia para reduzir dependencia de
+  instrucao solta no prompt;
+- readiness gate antes de executar um subagent real;
+- compaction e pruning como responsabilidade do runtime;
+- memoria persistente com escopo, redacao de secrets e politica de delecao;
+- MCP somente depois de tool registry, permission bridge e audit log locais.
+
+Pontos tratados como especulativos ate haver fonte primaria:
+
+- detalhes internos de modelos como "Claude Mythos", "Opus 4.7" e "GPT-5.5";
+- numeros de parametros, custos, benchmarks fechados e codinomes internos;
+- alegacoes de capacidades ciberneticas nao acompanhadas de system card ou
+  avaliacao publica verificavel.
+
+Fontes publicas verificadas nesta revisao apontam para os mesmos invariantes
+praticos sem depender dessas alegacoes: o harness orquestra modelo e tools,
+subagents precisam de contexto separado e permissoes proprias, hooks devem
+interceptar ferramentas, e MCP e um protocolo de contexto/tooling que nao
+substitui governanca local.
+
+## Proximo bloco recomendado apos a revisao dos textos
+
+Implementado como fundacao incremental: readiness scoring para contratos de
+handoff de subagents.
+
+Motivo:
+
+- e pequeno, testavel e reversivel;
+- nao executa subagents nem altera arquivos do usuario;
+- cria uma metrica local de 0 a 100 para impedir execucao futura de handoffs
+  incompletos;
+- conecta pesquisa, documentos `.agent` e runtime real sem aumentar superficie
+  de risco.
+
+Escopo entregue:
+
+- `subagent.prepare` agora retorna `readinessScore` e `readinessIssues`;
+- o runtime publica `SubagentHandoffPrepared` com esses campos para UI e
+  auditoria;
+- o runtime publica `SubagentLifecycleUpdated` como gate observavel:
+  `Prepared` para handoffs completos e `Blocked` para readiness incompleto;
+- o snapshot Rust reduz esse lifecycle em `subagent_activity`, mantendo
+  reconnect e bootstrap alinhados ao stream de eventos;
+- o reducer Rust e o reducer TypeScript validam transicoes:
+  `Prepared -> Approved -> Running -> Completed/Failed`; saltos como
+  `None -> Running` ou readiness abaixo de 100 viram `Blocked`;
+- `SubagentExecutionGate` cria o plano de inicio do executor real sem side
+  effects, bloqueando readiness incompleto e aguardando aprovacao quando
+  necessario;
+- o system prompt recebe um resumo do score, mas o evento preserva valores
+  completos para observabilidade;
+- o frontend exibe a atividade de subagents no painel agentic mantendo o padrao
+  glassmorphism existente;
+- testes cobrem contratos prontos, incompletos e reducer de lifecycle.
+
+Proxima melhoria recomendada:
+
+- persistir historico de lifecycle por run em storage local, nao apenas no
+  snapshot em memoria;
+- conectar `Prepared -> Approved -> Running` a um executor isolado, mantendo
+  bloqueio quando `readinessScore < 100`;
+- adicionar evals deterministicas que falhem quando um subagent sem allowed
+  tools, output schema ou preview de edit passa pelo gate.

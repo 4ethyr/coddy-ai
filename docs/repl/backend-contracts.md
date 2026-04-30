@@ -138,8 +138,9 @@ a UI a um runtime paralelo prematuro.
 `subagent.prepare` recebe `name` e `goal`, valida o papel solicitado e devolve
 um contrato de handoff sem executar o subagent. O retorno inclui allowed tools,
 timeout, orçamento de contexto, `approvalRequired`, prompt de handoff, checklist
-de validação, notas de segurança e output schema. Esse contrato é a ponte segura
-entre roteamento e um executor real com contexto isolado.
+de validação, notas de segurança, `readinessScore`, `readinessIssues` e output
+schema. Esse contrato é a ponte segura entre roteamento e um executor real com
+contexto isolado.
 
 Em turns com modelo, o runtime executa `subagent.route` antes da primeira
 inferência e injeta um bloco `Subagent routing guidance` no system prompt. O
@@ -152,6 +153,34 @@ Além dos eventos de tool, o runtime publica `SubagentRouted` com as recomendaç
 normalizadas (`name`, `score`, `mode`, `matched_signals`). Esse evento é o
 contrato de UI/auditoria para explicar por que um papel foi sugerido antes de
 existir um executor paralelo completo.
+
+Quando `subagent.prepare` gera o handoff do papel recomendado, o runtime publica
+`SubagentHandoffPrepared` com `name`, `mode`, `approval_required`,
+`allowed_tools`, `timeout_ms`, `max_context_tokens`, checklist e notas de
+segurança, além do score e das pendências de prontidão do handoff. A UI pode
+usar esse evento para exibir a preparação do subagent sem confundir com execução
+real.
+
+Em seguida, o runtime publica `SubagentLifecycleUpdated`. O status inicial é
+`Prepared` somente quando `readiness_score == 100` e não há pendências. Caso
+contrário, o status é `Blocked` e o campo `reason` carrega as pendências. Esse é
+o gate determinístico que deve impedir um executor real de subagents de iniciar
+um handoff incompleto. O snapshot de sessão também reduz esse evento em
+`subagent_activity`, para que a UI preserve o estado após reconnect ou bootstrap
+tardio.
+
+O reducer Rust valida transições de lifecycle de forma conservadora:
+`Prepared -> Approved -> Running -> Completed/Failed`. Estados executáveis
+exigem readiness 100; transições fora desse caminho são materializadas como
+`Blocked` com `reason` auditável. Isso mantém o próximo executor real impedido
+de declarar execução sem preparação e aprovação prévias.
+
+O crate `coddy-agent` também contém `SubagentExecutionGate`, uma fundação sem
+side effects para o executor real. Ele recebe um `SubagentHandoffPlan` e uma
+decisão de aprovação, bloqueia readiness incompleto, aguarda aprovação quando
+necessário e só então monta o plano de lifecycle
+`Prepared -> Approved -> Running`. Essa camada ainda não executa modelo nem
+ferramentas em paralelo; ela fixa o contrato que o executor real deverá seguir.
 
 ### Evals de harness
 
