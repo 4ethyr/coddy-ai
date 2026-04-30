@@ -1944,12 +1944,13 @@ fn default_workspace_root() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use coddy_agent::{
-        PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
+        PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_REDUCE_OUTPUTS_TOOL,
+        SUBAGENT_ROUTE_TOOL,
     };
     use coddy_client::CoddyClient;
     use coddy_core::{
         ApprovalPolicy, ModelRef, ModelRole, PermissionReply, ReplEvent, ToolCategory,
-        ToolPermission, ToolRiskLevel,
+        ToolPermission, ToolRiskLevel, ToolStatus,
     };
     use coddy_ipc::{
         ReplCommandJob, ReplEventStreamJob, ReplEventsJob, ReplSessionSnapshotJob, ReplToolsJob,
@@ -2081,6 +2082,7 @@ mod tests {
                 "shell.run",
                 "subagent.list",
                 "subagent.prepare",
+                "subagent.reduce_outputs",
                 "subagent.route",
                 "subagent.team_plan",
             ]
@@ -2154,6 +2156,21 @@ mod tests {
         );
         assert_eq!(
             subagent_team_plan.approval_policy,
+            ApprovalPolicy::AutoApprove
+        );
+
+        let subagent_reduce_outputs = tools
+            .iter()
+            .find(|tool| tool.name == "subagent.reduce_outputs")
+            .expect("subagent reduce outputs tool");
+        assert_eq!(subagent_reduce_outputs.category, ToolCategory::Subagent);
+        assert_eq!(subagent_reduce_outputs.risk_level, ToolRiskLevel::Low);
+        assert_eq!(
+            subagent_reduce_outputs.permissions,
+            vec![ToolPermission::DelegateSubagent]
+        );
+        assert_eq!(
+            subagent_reduce_outputs.approval_policy,
             ApprovalPolicy::AutoApprove
         );
     }
@@ -3066,6 +3083,97 @@ mod tests {
 
         assert!(tool_message.content.contains("OPENAI_API_KEY=[REDACTED]"));
         assert!(!tool_message.content.contains("sk-secret-token"));
+    }
+
+    #[test]
+    fn ask_command_executes_model_subagent_output_reducer_tool() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        let (chat_client, requests) = QueuedChatClient::new(vec![
+            ChatResponse {
+                text: "I will validate the subagent outputs before summarizing.".to_string(),
+                deltas: vec!["I will validate the subagent outputs before summarizing.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-reduce".to_string()),
+                    name: SUBAGENT_REDUCE_OUTPUTS_TOOL.to_string(),
+                    arguments: json!({
+                        "goal": "revise seguranca, secrets e sandbox",
+                        "max_members": 2,
+                        "outputs": {
+                            "security-reviewer": {
+                                "riskLevel": "low",
+                                "findings": [],
+                                "requiredFixes": [],
+                                "recommendations": []
+                            },
+                            "reviewer": {
+                                "approved": true,
+                                "issues": [],
+                                "suggestions": [],
+                                "blockingProblems": [],
+                                "nonBlockingProblems": []
+                            }
+                        }
+                    }),
+                }],
+            },
+            ChatResponse::from_text("The subagent outputs passed reducer validation."),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "validate multiagent security review outputs".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let tool_message = captured_requests[1]
+            .messages
+            .iter()
+            .find(|message| message.role == coddy_agent::ChatMessageRole::Tool)
+            .expect("tool observation message");
+        let events = runtime.events_after(0).0;
+
+        assert_eq!(text, "The subagent outputs passed reducer validation.");
+        assert_eq!(captured_requests.len(), 2);
+        assert!(tool_message.content.contains("subagent.reduce_outputs"));
+        assert!(tool_message.content.contains("2 accepted"));
+        assert!(tool_message.content.contains("0 rejected"));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolStarted { name } if name == SUBAGENT_REDUCE_OUTPUTS_TOOL
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolCompleted { name, status }
+                if name == SUBAGENT_REDUCE_OUTPUTS_TOOL && *status == ToolStatus::Succeeded
+        )));
+        assert!(runtime.snapshot().session.pending_permission.is_none());
     }
 
     #[test]

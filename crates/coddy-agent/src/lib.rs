@@ -53,8 +53,8 @@ pub use shell_plan::{
 pub use subagent::{
     SubagentDefinition, SubagentHandoffPlan, SubagentMode, SubagentRecommendation,
     SubagentRegistry, SubagentTeamGateStatus, SubagentTeamMember, SubagentTeamMetrics,
-    SubagentTeamPlan, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
-    SUBAGENT_TEAM_PLAN_TOOL,
+    SubagentTeamPlan, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_REDUCE_OUTPUTS_TOOL,
+    SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
 };
 pub use subagent_executor::{
     SubagentExecutionCompletionPlan, SubagentExecutionCoordinator, SubagentExecutionGate,
@@ -620,6 +620,57 @@ impl Default for AgentToolRegistry {
                                     "type": "array",
                                     "items": { "type": "string" }
                                 }
+                            }
+                        }
+                    }
+                }),
+                risk_level: ToolRiskLevel::Low,
+                permissions: vec![ToolPermission::DelegateSubagent],
+                timeout_ms: 2_000,
+                approval_policy: ApprovalPolicy::AutoApprove,
+            }),
+            local_tool_definition(LocalToolDefinitionSpec {
+                name: SUBAGENT_REDUCE_OUTPUTS_TOOL,
+                description: "Validate and consolidate structured subagent outputs against prepared handoff contracts without executing subagents",
+                category: ToolCategory::Subagent,
+                input_schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["goal", "outputs"],
+                    "properties": {
+                        "goal": { "type": "string" },
+                        "max_members": { "type": "integer", "minimum": 1 },
+                        "approved_subagents": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
+                        "outputs": {
+                            "type": "object",
+                            "additionalProperties": { "type": "object" }
+                        }
+                    }
+                }),
+                output_schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "team": { "type": "object" },
+                        "summary": {
+                            "type": "object",
+                            "properties": {
+                                "total": { "type": "integer" },
+                                "completed": { "type": "integer" },
+                                "failed": { "type": "integer" },
+                                "blocked": { "type": "integer" },
+                                "awaitingApproval": { "type": "integer" },
+                                "acceptedOutputs": { "type": "integer" },
+                                "rejectedOutputs": { "type": "integer" },
+                                "missingOutputs": { "type": "integer" },
+                                "unexpectedOutputs": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                },
+                                "records": { "type": "array" }
                             }
                         }
                     }
@@ -1465,7 +1516,7 @@ mod tests {
     fn agent_registry_defines_local_contracts_without_execution() {
         let registry = AgentToolRegistry::default();
 
-        assert_eq!(registry.definitions().len(), 10);
+        assert_eq!(registry.definitions().len(), 11);
         assert!(registry
             .get(&ToolName::new(LIST_FILES_TOOL).expect("tool name"))
             .is_some());
@@ -1531,6 +1582,20 @@ mod tests {
         );
         assert_eq!(
             subagent_team_plan.permissions,
+            vec![ToolPermission::DelegateSubagent]
+        );
+
+        let subagent_reduce_outputs = registry
+            .get(&ToolName::new(SUBAGENT_REDUCE_OUTPUTS_TOOL).expect("tool name"))
+            .expect("subagent reduce outputs definition");
+        assert_eq!(subagent_reduce_outputs.category, ToolCategory::Subagent);
+        assert_eq!(subagent_reduce_outputs.risk_level, ToolRiskLevel::Low);
+        assert_eq!(
+            subagent_reduce_outputs.approval_policy,
+            ApprovalPolicy::AutoApprove
+        );
+        assert_eq!(
+            subagent_reduce_outputs.permissions,
             vec![ToolPermission::DelegateSubagent]
         );
     }

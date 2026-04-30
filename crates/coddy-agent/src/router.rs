@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -14,10 +14,11 @@ use uuid::Uuid;
 
 use crate::{
     AgentError, AgentToolRegistry, EditPreview, ReadOnlyToolExecutor, ShellApprovalState,
-    ShellExecutionConfig, ShellExecutor, ShellPlan, ShellPlanRequest, ShellPlanner, SubagentMode,
-    SubagentRegistry, ToolExecution, APPLY_EDIT_TOOL, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL,
-    READ_FILE_TOOL, SEARCH_FILES_TOOL, SHELL_RUN_TOOL, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL,
-    SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
+    ShellExecutionConfig, ShellExecutor, ShellPlan, ShellPlanRequest, ShellPlanner,
+    SubagentExecutionCoordinator, SubagentExecutionSummary, SubagentMode, SubagentRegistry,
+    ToolExecution, APPLY_EDIT_TOOL, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL, READ_FILE_TOOL,
+    SEARCH_FILES_TOOL, SHELL_RUN_TOOL, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL,
+    SUBAGENT_REDUCE_OUTPUTS_TOOL, SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
 };
 
 #[derive(Debug, Clone)]
@@ -100,6 +101,7 @@ impl LocalToolRouter {
             SUBAGENT_PREPARE_TOOL => self.prepare_subagent(call),
             SUBAGENT_ROUTE_TOOL => self.route_subagent(call),
             SUBAGENT_TEAM_PLAN_TOOL => self.plan_subagent_team(call),
+            SUBAGENT_REDUCE_OUTPUTS_TOOL => self.reduce_subagent_outputs(call),
             other => failed_outcome(
                 call.id,
                 call.tool_name.to_string(),
@@ -459,6 +461,84 @@ impl LocalToolRouter {
             ],
         })
     }
+
+    fn reduce_subagent_outputs(&self, call: &ToolCall) -> LocalToolRouteOutcome {
+        let started_at = unix_ms_now();
+        let goal = call.input["goal"].as_str().unwrap_or_default();
+        let max_members = optional_usize_field(&call.input, "max_members").unwrap_or(6);
+        let outputs = match subagent_outputs(&call.input) {
+            Ok(outputs) => outputs,
+            Err(error) => {
+                return failed_outcome(
+                    call.id,
+                    SUBAGENT_REDUCE_OUTPUTS_TOOL.to_string(),
+                    error.into_tool_error(),
+                );
+            }
+        };
+        let approved_subagents = match string_array_field(&call.input, "approved_subagents") {
+            Ok(values) => values.into_iter().collect::<BTreeSet<_>>(),
+            Err(error) => {
+                return failed_outcome(
+                    call.id,
+                    SUBAGENT_REDUCE_OUTPUTS_TOOL.to_string(),
+                    error.into_tool_error(),
+                );
+            }
+        };
+
+        let Some(team) = self.subagents.plan_team(goal, max_members) else {
+            return failed_outcome(
+                call.id,
+                SUBAGENT_REDUCE_OUTPUTS_TOOL.to_string(),
+                AgentError::InvalidInput(
+                    "subagent output reduction requires a non-empty goal".to_string(),
+                )
+                .into_tool_error(),
+            );
+        };
+        let handoffs = team
+            .members
+            .iter()
+            .filter_map(|member| self.subagents.prepare_handoff(&member.name, goal))
+            .collect::<Vec<_>>();
+        let summary = SubagentExecutionCoordinator::default().reduce_handoffs(
+            &handoffs,
+            &outputs,
+            &approved_subagents,
+        );
+        let metadata = json!({
+            "team": team.public_metadata(),
+            "summary": subagent_execution_summary_metadata(&summary),
+        });
+        let text = format!(
+            "Reduced {} subagent outputs: {} accepted, {} rejected, {} missing, {} awaiting approval.",
+            summary.total,
+            summary.accepted_outputs,
+            summary.rejected_outputs,
+            summary.missing_outputs,
+            summary.awaiting_approval,
+        );
+        let output = ToolOutput {
+            text,
+            metadata,
+            truncated: false,
+        };
+        let result = ToolResult::succeeded(call.id, output, started_at, unix_ms_now());
+
+        LocalToolRouteOutcome::from_execution(ToolExecution {
+            result,
+            events: vec![
+                ReplEvent::ToolStarted {
+                    name: SUBAGENT_REDUCE_OUTPUTS_TOOL.to_string(),
+                },
+                ReplEvent::ToolCompleted {
+                    name: SUBAGENT_REDUCE_OUTPUTS_TOOL.to_string(),
+                    status: ToolStatus::Succeeded,
+                },
+            ],
+        })
+    }
 }
 
 impl LocalToolRouteOutcome {
@@ -560,6 +640,81 @@ fn optional_usize_field(input: &Value, field: &str) -> Option<usize> {
         .get(field)
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
+}
+
+fn string_array_field(input: &Value, field: &str) -> Result<Vec<String>, AgentError> {
+    let Some(value) = input.get(field) else {
+        return Ok(Vec::new());
+    };
+    let Some(values) = value.as_array() else {
+        return Err(AgentError::InvalidInput(format!(
+            "{field} must be an array"
+        )));
+    };
+
+    values
+        .iter()
+        .map(|value| {
+            value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                AgentError::InvalidInput(format!("{field} must contain only strings"))
+            })
+        })
+        .collect()
+}
+
+fn subagent_outputs(input: &Value) -> Result<BTreeMap<String, Value>, AgentError> {
+    let Some(outputs) = input.get("outputs").and_then(Value::as_object) else {
+        return Err(AgentError::InvalidInput(
+            "outputs must be an object keyed by subagent name".to_string(),
+        ));
+    };
+
+    outputs
+        .iter()
+        .map(|(name, output)| {
+            if !output.is_object() {
+                return Err(AgentError::InvalidInput(format!(
+                    "outputs.{name} must be an object"
+                )));
+            }
+            Ok((name.clone(), output.clone()))
+        })
+        .collect()
+}
+
+fn subagent_execution_summary_metadata(summary: &SubagentExecutionSummary) -> Value {
+    json!({
+        "total": summary.total,
+        "completed": summary.completed,
+        "failed": summary.failed,
+        "blocked": summary.blocked,
+        "awaitingApproval": summary.awaiting_approval,
+        "acceptedOutputs": summary.accepted_outputs,
+        "rejectedOutputs": summary.rejected_outputs,
+        "missingOutputs": summary.missing_outputs,
+        "unexpectedOutputs": summary.unexpected_outputs,
+        "acceptedOutputNames": summary.accepted_output_values.keys().cloned().collect::<Vec<_>>(),
+        "records": summary.records.iter().map(|record| {
+            json!({
+                "name": record.name,
+                "mode": record.mode,
+                "startStatus": format!("{:?}", record.start_status),
+                "outcomeStatus": record.outcome_status.as_str(),
+                "outputStatus": record.output_status.as_str(),
+                "accepted": record.accepted,
+                "missingFields": record.missing_fields,
+                "unexpectedFields": record.unexpected_fields,
+                "reason": record.reason,
+                "lifecycle": record.lifecycle_updates.iter().map(|update| {
+                    json!({
+                        "status": format!("{:?}", update.status),
+                        "readinessScore": update.readiness_score,
+                        "reason": update.reason,
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        }).collect::<Vec<_>>(),
+    })
 }
 
 fn validate_tool_input(definition: &ToolDefinition, input: &Value) -> Result<(), AgentError> {
@@ -996,6 +1151,93 @@ mod tests {
             .any(|risk| risk
                 .as_str()
                 .is_some_and(|risk| risk.contains("Workspace-write"))));
+    }
+
+    #[test]
+    fn routes_subagent_reduce_outputs_as_contract_summary() {
+        let workspace = TempWorkspace::new();
+        let router = LocalToolRouter::new(&workspace.path).expect("router");
+
+        let outcome = router.route(&call(
+            Uuid::new_v4(),
+            SUBAGENT_REDUCE_OUTPUTS_TOOL,
+            json!({
+                "goal": "revise seguranca, secrets e sandbox",
+                "max_members": 2,
+                "outputs": {
+                    "security-reviewer": {
+                        "riskLevel": "low",
+                        "findings": [],
+                        "requiredFixes": [],
+                        "recommendations": []
+                    },
+                    "reviewer": {
+                        "approved": true,
+                        "issues": [],
+                        "suggestions": [],
+                        "blockingProblems": [],
+                        "nonBlockingProblems": []
+                    }
+                }
+            }),
+        ));
+
+        assert_eq!(outcome.status(), Some(ToolResultStatus::Succeeded));
+        let output = outcome.result.expect("result").output.expect("output");
+        let summary = &output.metadata["summary"];
+
+        assert!(output.text.contains("2 accepted"));
+        assert_eq!(summary["total"], json!(2));
+        assert_eq!(summary["completed"], json!(2));
+        assert_eq!(summary["acceptedOutputs"], json!(2));
+        assert_eq!(summary["rejectedOutputs"], json!(0));
+        assert_eq!(summary["missingOutputs"], json!(0));
+        assert_eq!(
+            summary["acceptedOutputNames"],
+            json!(["reviewer", "security-reviewer"])
+        );
+        assert_eq!(summary["records"][0]["outputStatus"], json!("accepted"));
+    }
+
+    #[test]
+    fn subagent_reduce_outputs_does_not_accept_write_outputs_without_approval() {
+        let workspace = TempWorkspace::new();
+        let router = LocalToolRouter::new(&workspace.path).expect("router");
+
+        let outcome = router.route(&call(
+            Uuid::new_v4(),
+            SUBAGENT_REDUCE_OUTPUTS_TOOL,
+            json!({
+                "goal": "implementar fix no code com testes",
+                "max_members": 6,
+                "outputs": {
+                    "coder": {
+                        "changedFiles": ["src/lib.rs"],
+                        "summary": "Implemented change.",
+                        "testsAdded": [],
+                        "risks": [],
+                        "nextSteps": []
+                    }
+                }
+            }),
+        ));
+
+        assert_eq!(outcome.status(), Some(ToolResultStatus::Succeeded));
+        let output = outcome.result.expect("result").output.expect("output");
+        let summary = &output.metadata["summary"];
+        let records = summary["records"].as_array().expect("records");
+        let coder = records
+            .iter()
+            .find(|record| record["name"] == json!("coder"))
+            .expect("coder record");
+
+        assert_eq!(summary["acceptedOutputs"], json!(0));
+        assert_eq!(coder["outcomeStatus"], json!("awaiting-approval"));
+        assert_eq!(coder["outputStatus"], json!("not-requested"));
+        assert_eq!(
+            coder["reason"],
+            json!("approval required before running subagent")
+        );
     }
 
     #[test]

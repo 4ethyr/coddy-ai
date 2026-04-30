@@ -22,10 +22,10 @@ cargo test -p coddy-ipc -p coddy-agent -p coddy-runtime
 Result:
 
 - `coddy`: 44 passed
-- `coddy-agent`: 141 passed
+- `coddy-agent`: 143 passed
 - `coddy-ipc`: 22 passed
 - repository boundaries: 2 passed
-- `coddy-runtime`: 37 passed
+- `coddy-runtime`: 38 passed
 
 Command:
 
@@ -429,6 +429,33 @@ Validation:
 - `npm test -- WorkspacePanel`: 8 tests passed.
 - `npm run typecheck`: passed.
 
+### Battery 18: Runtime Subagent Output Reduction Tool
+
+Goal: let the model/runtime validate structured subagent outputs through the local tool system
+before claiming a multiagent result.
+
+Implemented result:
+
+- Added the low-risk auto-approved `subagent.reduce_outputs` tool.
+- The tool builds the deterministic team plan for a goal, prepares handoff contracts, applies
+  approval gates, and runs `SubagentExecutionCoordinator` against caller-provided JSON outputs.
+- The tool returns safe summary metadata: totals, completed, failed, blocked, awaiting approval,
+  accepted/rejected/missing counts, accepted output names, unexpected output names and per-subagent
+  validation records.
+- The tool intentionally does not echo accepted output values in metadata, reducing the chance of
+  propagating sensitive or verbose subagent payloads through the UI.
+- Runtime coverage verifies that a model-requested `subagent.reduce_outputs` call is executed as a
+  safe local tool, appears in tool observations, emits tool lifecycle events and does not create a
+  pending permission.
+
+Validation:
+
+- `cargo test -p coddy-agent subagent_reduce_outputs`: 2 tests passed.
+- `cargo test -p coddy-agent agent_registry_defines_local_contracts_without_execution`: passed.
+- `cargo test -p coddy-runtime tools_request_returns_sorted_rich_catalog_from_agent_registry`: passed.
+- `cargo test -p coddy-runtime ask_command_executes_model_subagent_output_reducer_tool`: passed.
+- `cargo test -p coddy -p coddy-agent -p coddy-runtime -p coddy-ipc`: passed.
+
 ## Current Assessment
 
 The multiagent harness is now measurable before execution. It can compose a team plan, expose
@@ -439,14 +466,15 @@ Both harnesses are now callable from the Electron workspace with typed IPC contr
 layer now has a strict reducer for consolidating contract-valid subagent outputs, but that reducer
 is not yet connected to a real isolated subagent runtime. The default multiagent eval suite now
 checks the reducer contract as a first-class CI case, and the workspace UI renders those reducer
-metrics when present.
+metrics when present. The runtime now also exposes a safe `subagent.reduce_outputs` tool, so model
+turns can validate declared subagent outputs through the same reducer before responding.
 
 Remaining gaps:
 
 - no real isolated subagent executor yet;
 - sensitive path reads should be guarded before tool execution, not only redacted after observation;
-- multiagent output consolidation exists as a deterministic reducer, but runtime execution still
-  needs to feed it real subagent outputs.
+- multiagent output consolidation exists as a deterministic reducer and local validation tool, but
+  isolated subagent sessions still need to feed it real generated outputs automatically.
 - broad prompts can still consume the full bounded tool budget; the runtime now reports evidence,
   but the next improvement should add adaptive tool budgeting and observation compaction.
 - live model answer quality still needs a sampled harness on top of the deterministic routing
