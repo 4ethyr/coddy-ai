@@ -91,11 +91,11 @@ const VERTEX_RUNTIME_CHAT: RuntimeChatCapability = {
     'Gemini API-key models execute through generateContent, and Claude partner models execute through Vertex AI rawPredict with OAuth/ADC/gcloud project metadata.',
 }
 
-const CLOUD_DISCOVERY_ONLY_CHAT: RuntimeChatCapability = {
-  status: 'adapter_pending',
-  label: 'adapter pending',
+const AZURE_OPENAI_RUNTIME_CHAT: RuntimeChatCapability = {
+  status: 'supported',
+  label: 'runtime ready',
   description:
-    'Model discovery and selection are wired; chat execution still requires a Rust runtime adapter for this provider.',
+    'Azure deployments execute through the Rust Azure OpenAI chat completions adapter with endpoint-scoped API keys.',
 }
 
 const UNKNOWN_RUNTIME_CHAT: RuntimeChatCapability = {
@@ -178,7 +178,7 @@ export const MODEL_PROVIDER_CATALOG: readonly ModelProviderOption[] = [
     endpointPlaceholder: 'https://resource.openai.azure.com',
     requiresCredential: true,
     requiresEndpoint: true,
-    runtimeChat: CLOUD_DISCOVERY_ONLY_CHAT,
+    runtimeChat: AZURE_OPENAI_RUNTIME_CHAT,
     models: [],
   },
 ]

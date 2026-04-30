@@ -114,6 +114,7 @@ pub struct DefaultChatModelClient {
     openrouter: OpenAiCompatibleChatModelClient,
     gemini_api: GeminiApiChatModelClient,
     vertex_anthropic: VertexAnthropicChatModelClient,
+    azure_openai: AzureOpenAiChatModelClient,
     unavailable: UnavailableChatModelClient,
 }
 
@@ -191,6 +192,20 @@ trait VertexAnthropicTransport: std::fmt::Debug + Send + Sync {
         credential: &ModelCredential,
         body: &Value,
     ) -> ChatModelResult;
+}
+
+#[derive(Debug, Clone)]
+pub struct AzureOpenAiChatModelClient {
+    transport: Arc<dyn AzureOpenAiTransport>,
+}
+
+#[derive(Debug, Clone)]
+struct HttpAzureOpenAiTransport {
+    timeout: Duration,
+}
+
+trait AzureOpenAiTransport: std::fmt::Debug + Send + Sync {
+    fn chat(&self, endpoint: &str, credential: &ModelCredential, body: &Value) -> ChatModelResult;
 }
 
 impl ChatMessage {
@@ -329,6 +344,7 @@ impl Default for DefaultChatModelClient {
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
             gemini_api: GeminiApiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::default(),
+            azure_openai: AzureOpenAiChatModelClient::default(),
             unavailable: UnavailableChatModelClient,
         }
     }
@@ -467,6 +483,33 @@ impl HttpVertexAnthropicTransport {
     }
 }
 
+impl Default for AzureOpenAiChatModelClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AzureOpenAiChatModelClient {
+    pub fn new() -> Self {
+        Self {
+            transport: Arc::new(HttpAzureOpenAiTransport::new()),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_transport(transport: Arc<dyn AzureOpenAiTransport>) -> Self {
+        Self { transport }
+    }
+}
+
+impl HttpAzureOpenAiTransport {
+    fn new() -> Self {
+        Self {
+            timeout: Duration::from_secs(120),
+        }
+    }
+}
+
 impl ChatModelClient for DefaultChatModelClient {
     fn complete(&self, request: ChatRequest) -> ChatModelResult {
         match request.model.provider.as_str() {
@@ -477,6 +520,7 @@ impl ChatModelClient for DefaultChatModelClient {
                 self.vertex_anthropic.complete(request)
             }
             "vertex" => self.gemini_api.complete(request),
+            "azure" => self.azure_openai.complete(request),
             _ => self.unavailable.complete(request),
         }
     }
@@ -609,6 +653,32 @@ impl ChatModelClient for VertexAnthropicChatModelClient {
             credential,
             &vertex_anthropic_chat_body(&request)?,
         )
+    }
+}
+
+impl ChatModelClient for AzureOpenAiChatModelClient {
+    fn complete(&self, request: ChatRequest) -> ChatModelResult {
+        if request.model.provider != "azure" {
+            return Err(ChatModelError::UnsupportedModel {
+                provider: request.model.provider,
+                model: request.model.name,
+            });
+        }
+
+        let credential = request.model_credential.as_ref().ok_or_else(|| {
+            ChatModelError::InvalidRequest(
+                "Azure OpenAI chat execution requires an API key and endpoint".to_string(),
+            )
+        })?;
+        if credential.token.trim().is_empty() {
+            return Err(ChatModelError::InvalidRequest(
+                "Azure OpenAI chat execution requires a non-empty API key".to_string(),
+            ));
+        }
+
+        let endpoint = azure_openai_chat_url(&request.model.name, credential)?;
+        self.transport
+            .chat(&endpoint, credential, &azure_openai_chat_body(&request))
     }
 }
 
@@ -776,6 +846,45 @@ impl VertexAnthropicTransport for HttpVertexAnthropicTransport {
             }
             Err(ureq::Error::Transport(error)) => Err(ChatModelError::Transport {
                 provider: "vertex".to_string(),
+                message: error.to_string(),
+                retryable: true,
+            }),
+        }
+    }
+}
+
+impl AzureOpenAiTransport for HttpAzureOpenAiTransport {
+    fn chat(&self, endpoint: &str, credential: &ModelCredential, body: &Value) -> ChatModelResult {
+        let body = serde_json::to_string(body).map_err(|error| {
+            ChatModelError::InvalidRequest(format!(
+                "failed to encode Azure OpenAI chat request: {error}"
+            ))
+        })?;
+        let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
+        let response = agent
+            .post(endpoint)
+            .set("Accept", "application/json")
+            .set("Content-Type", "application/json")
+            .set("api-key", credential.token.trim())
+            .send_string(&body);
+
+        match response {
+            Ok(response) => {
+                let body = response
+                    .into_string()
+                    .map_err(azure_openai_transport_error)?;
+                parse_openai_compatible_chat_body("azure", &body)
+            }
+            Err(ureq::Error::Status(status, response)) => {
+                let body = response.into_string().unwrap_or_default();
+                Err(ChatModelError::ProviderError {
+                    provider: "azure".to_string(),
+                    message: azure_openai_provider_error_message(&body, status),
+                    retryable: status == 429 || status >= 500,
+                })
+            }
+            Err(ureq::Error::Transport(error)) => Err(ChatModelError::Transport {
+                provider: "azure".to_string(),
                 message: error.to_string(),
                 retryable: true,
             }),
@@ -1150,6 +1259,79 @@ fn looks_like_google_oauth_token(token: &str) -> bool {
     token.starts_with("ya29.") || token.to_ascii_lowercase().starts_with("bearer ")
 }
 
+fn azure_openai_chat_body(request: &ChatRequest) -> Value {
+    let mut body = openai_compatible_chat_body(request);
+    if let Some(object) = body.as_object_mut() {
+        object.remove("model");
+    }
+    body
+}
+
+fn azure_openai_chat_url(
+    deployment: &str,
+    credential: &ModelCredential,
+) -> Result<String, ChatModelError> {
+    let endpoint = credential
+        .endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|endpoint| !endpoint.is_empty())
+        .ok_or_else(|| {
+            ChatModelError::InvalidRequest(
+                "Azure OpenAI chat execution requires an HTTPS resource endpoint".to_string(),
+            )
+        })?;
+    if !endpoint.starts_with("https://") {
+        return Err(ChatModelError::InvalidRequest(
+            "Azure OpenAI runtime endpoint must use HTTPS".to_string(),
+        ));
+    }
+
+    let deployment = deployment.trim();
+    validate_azure_deployment_name(deployment)?;
+    let api_version = credential
+        .metadata
+        .get("api_version")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("2024-10-21");
+    validate_azure_api_version(api_version)?;
+
+    Ok(format!(
+        "{}/openai/deployments/{}/chat/completions?api-version={}",
+        endpoint.trim_end_matches('/'),
+        deployment,
+        api_version
+    ))
+}
+
+fn validate_azure_deployment_name(deployment: &str) -> Result<(), ChatModelError> {
+    if deployment.is_empty()
+        || deployment.chars().any(|character| {
+            character.is_whitespace() || matches!(character, '/' | '?' | '&' | '#')
+        })
+    {
+        return Err(ChatModelError::InvalidRequest(
+            "Azure OpenAI deployment name is invalid".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_azure_api_version(api_version: &str) -> Result<(), ChatModelError> {
+    if api_version.is_empty()
+        || api_version
+            .chars()
+            .any(|character| character.is_whitespace() || matches!(character, '&' | '?' | '#'))
+    {
+        return Err(ChatModelError::InvalidRequest(
+            "Azure OpenAI API version is invalid".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn vertex_anthropic_chat_body(request: &ChatRequest) -> Result<Value, ChatModelError> {
     let (system, messages) = vertex_anthropic_messages(&request.messages)?;
     let tools = request
@@ -1478,6 +1660,26 @@ fn vertex_anthropic_provider_error_message(body: &str, status: u16) -> String {
                 .map(ToOwned::to_owned)
         })
         .unwrap_or_else(|| format!("Vertex Anthropic returned HTTP {status}"))
+}
+
+fn azure_openai_transport_error(error: std::io::Error) -> ChatModelError {
+    ChatModelError::Transport {
+        provider: "azure".to_string(),
+        message: error.to_string(),
+        retryable: true,
+    }
+}
+
+fn azure_openai_provider_error_message(body: &str, status: u16) -> String {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value["error"]["message"]
+                .as_str()
+                .or_else(|| value["error"].as_str())
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| format!("Azure OpenAI returned HTTP {status}"))
 }
 
 fn parse_ollama_chat_body(body: &str) -> ChatModelResult {
@@ -1940,6 +2142,30 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct StaticAzureOpenAiTransport {
+        endpoint: String,
+        token: String,
+        body: Value,
+        response: ChatModelResult,
+    }
+
+    impl AzureOpenAiTransport for StaticAzureOpenAiTransport {
+        fn chat(
+            &self,
+            endpoint: &str,
+            credential: &ModelCredential,
+            body: &Value,
+        ) -> ChatModelResult {
+            assert_eq!(endpoint, self.endpoint);
+            assert_eq!(credential.token, self.token);
+            assert_eq!(body, &self.body);
+            assert!(!body.to_string().contains(&self.token));
+            assert!(!endpoint.contains(&self.token));
+            self.response.clone()
+        }
+    }
+
     #[test]
     fn chat_response_builds_streaming_text_from_deltas() {
         let response = ChatResponse::from_deltas(vec!["hello".to_string(), " world".to_string()])
@@ -2095,6 +2321,7 @@ mod tests {
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
             gemini_api: GeminiApiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::default(),
+            azure_openai: AzureOpenAiChatModelClient::default(),
             unavailable: UnavailableChatModelClient,
         };
         let request = ChatRequest::new(
@@ -2208,6 +2435,166 @@ mod tests {
     }
 
     #[test]
+    fn default_client_routes_azure_requests_to_azure_openai_adapter() {
+        let expected_body = serde_json::json!({
+            "messages": [
+                { "role": "user", "content": "hello" }
+            ],
+            "stream": false
+        });
+        let client = DefaultChatModelClient {
+            ollama: OllamaChatModelClient::default(),
+            openai: OpenAiCompatibleChatModelClient::openai(),
+            openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            gemini_api: GeminiApiChatModelClient::default(),
+            vertex_anthropic: VertexAnthropicChatModelClient::default(),
+            azure_openai: AzureOpenAiChatModelClient::with_transport(Arc::new(
+                StaticAzureOpenAiTransport {
+                    endpoint: "https://coddy-resource.openai.azure.com/openai/deployments/gpt-4.1-coddy/chat/completions?api-version=2024-10-21".to_string(),
+                    token: "azure-secret-key".to_string(),
+                    body: expected_body,
+                    response: Ok(ChatResponse::from_text("hi from azure")),
+                },
+            )),
+            unavailable: UnavailableChatModelClient,
+        };
+        let request = ChatRequest::new(
+            ModelRef {
+                provider: "azure".to_string(),
+                name: "gpt-4.1-coddy".to_string(),
+            },
+            vec![ChatMessage::user("hello")],
+        )
+        .expect("request")
+        .with_model_credential(Some(ModelCredential {
+            provider: "azure".to_string(),
+            token: "azure-secret-key".to_string(),
+            endpoint: Some("https://coddy-resource.openai.azure.com".to_string()),
+            metadata: Default::default(),
+        }))
+        .expect("credential");
+
+        assert_eq!(
+            client.complete(request),
+            Ok(ChatResponse::from_text("hi from azure"))
+        );
+    }
+
+    #[test]
+    fn azure_openai_requires_endpoint() {
+        let client = AzureOpenAiChatModelClient::default();
+        let request = ChatRequest::new(
+            ModelRef {
+                provider: "azure".to_string(),
+                name: "gpt-4.1-coddy".to_string(),
+            },
+            vec![ChatMessage::user("hello")],
+        )
+        .expect("request")
+        .with_model_credential(Some(ModelCredential {
+            provider: "azure".to_string(),
+            token: "azure-secret-key".to_string(),
+            endpoint: None,
+            metadata: Default::default(),
+        }))
+        .expect("credential");
+
+        let error = client.complete(request).expect_err("endpoint required");
+
+        assert_eq!(error.code(), "invalid_request");
+    }
+
+    #[test]
+    fn azure_openai_request_projects_tools_and_options_without_model_body_field() {
+        let request = ChatRequest {
+            model: ModelRef {
+                provider: "azure".to_string(),
+                name: "gpt-4.1-coddy".to_string(),
+            },
+            messages: vec![
+                ChatMessage::system("system"),
+                ChatMessage::user("user"),
+                ChatMessage::assistant("assistant"),
+                ChatMessage::tool("filesystem result"),
+            ],
+            tools: vec![ChatToolSpec {
+                name: "filesystem.list_files".to_string(),
+                description: "List files".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" }
+                    }
+                }),
+                risk_level: ToolRiskLevel::Low,
+                approval_policy: ApprovalPolicy::AutoApprove,
+            }],
+            model_credential: None,
+            temperature: Some(0.2),
+            max_output_tokens: Some(128),
+        };
+
+        let body = azure_openai_chat_body(&request);
+
+        assert!(body["model"].is_null());
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][3]["role"], "user");
+        assert_eq!(
+            body["messages"][3]["content"],
+            "Tool observations:\nfilesystem result"
+        );
+        assert_eq!(
+            body["tools"][0]["function"]["name"],
+            "filesystem.list_files"
+        );
+        assert_eq!(body["tool_choice"], "auto");
+        let temperature = body["temperature"].as_f64().expect("temperature");
+        assert!((temperature - 0.2).abs() < 0.000_001);
+        assert_eq!(body["max_tokens"], 128);
+    }
+
+    #[test]
+    fn azure_openai_endpoint_uses_deployment_and_api_version() {
+        let credential = ModelCredential {
+            provider: "azure".to_string(),
+            token: "azure-secret-key".to_string(),
+            endpoint: Some("https://coddy-resource.openai.azure.com/".to_string()),
+            metadata: [("api_version".to_string(), "2025-01-01-preview".to_string())]
+                .into_iter()
+                .collect(),
+        };
+
+        assert_eq!(
+            azure_openai_chat_url("gpt-4.1-coddy", &credential).expect("url"),
+            "https://coddy-resource.openai.azure.com/openai/deployments/gpt-4.1-coddy/chat/completions?api-version=2025-01-01-preview"
+        );
+
+        let error = azure_openai_chat_url("bad/deployment", &credential)
+            .expect_err("deployment slash rejected");
+
+        assert_eq!(error.code(), "invalid_request");
+
+        let error = azure_openai_chat_url("bad?deployment", &credential)
+            .expect_err("deployment query rejected");
+
+        assert_eq!(error.code(), "invalid_request");
+
+        let bad_api_version_credential = ModelCredential {
+            metadata: [(
+                "api_version".to_string(),
+                "2025-01-01-preview#beta".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..credential
+        };
+        let error = azure_openai_chat_url("gpt-4.1-coddy", &bad_api_version_credential)
+            .expect_err("api version fragment rejected");
+
+        assert_eq!(error.code(), "invalid_request");
+    }
+
+    #[test]
     fn default_client_routes_vertex_gemini_requests_to_gemini_api_adapter() {
         let expected_body = serde_json::json!({
             "contents": [
@@ -2238,6 +2625,7 @@ mod tests {
                 }),
             ),
             vertex_anthropic: VertexAnthropicChatModelClient::default(),
+            azure_openai: AzureOpenAiChatModelClient::default(),
             unavailable: UnavailableChatModelClient,
         };
         let request = ChatRequest::new(
@@ -2396,6 +2784,7 @@ mod tests {
                     response: Ok(ChatResponse::from_text("hi from vertex claude")),
                 },
             )),
+            azure_openai: AzureOpenAiChatModelClient::default(),
             unavailable: UnavailableChatModelClient,
         };
         let request = ChatRequest::new(

@@ -310,10 +310,10 @@ The Vertex provider accepts an optional region or endpoint override such as
 `https://us-east5-aiplatform.googleapis.com`.
 
 Runtime chat completion currently supports local Ollama models, Gemini API-key
-models, OpenAI-compatible chat execution for OpenAI/OpenRouter, and Anthropic
-Claude partner models through Vertex AI `rawPredict`. By default Coddy connects
-to `http://127.0.0.1:11434/api/chat` for Ollama; set `OLLAMA_HOST` to override
-the host, for example `OLLAMA_HOST=127.0.0.1:11434` or
+models, OpenAI-compatible chat execution for OpenAI/OpenRouter, Azure OpenAI
+deployments, and Anthropic Claude partner models through Vertex AI `rawPredict`.
+By default Coddy connects to `http://127.0.0.1:11434/api/chat` for Ollama; set
+`OLLAMA_HOST` to override the host, for example `OLLAMA_HOST=127.0.0.1:11434` or
 `OLLAMA_HOST=http://localhost:11434`.
 
 OpenAI and OpenRouter chat execution use non-streaming `/chat/completions`
@@ -328,7 +328,14 @@ Vertex Anthropic form, for example `claude-sonnet-4-5@20250929`. Gemini API-key
 execution is intentionally separate from Vertex Claude: OAuth/ADC credentials
 are rejected by the Gemini API adapter so credential type mistakes surface
 clearly. Azure model discovery is wired in the UI, while the Azure runtime
-adapter remains planned so deployment behavior can be modeled explicitly.
+adapter executes selected deployments through:
+
+```text
+{endpoint}/openai/deployments/{deployment-id}/chat/completions?api-version=2024-10-21
+```
+
+The Azure API key is sent with the `api-key` header. The selected model name is
+treated as the Azure deployment ID.
 
 ## Development Workflow
 
