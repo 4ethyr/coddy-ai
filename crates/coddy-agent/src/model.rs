@@ -822,12 +822,15 @@ impl VertexAnthropicTransport for HttpVertexAnthropicTransport {
         })?;
         let authorization = format!("Bearer {}", credential.token.trim());
         let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
-        let response = agent
+        let mut request = agent
             .post(endpoint)
             .set("Accept", "application/json")
             .set("Authorization", &authorization)
-            .set("Content-Type", "application/json; charset=utf-8")
-            .send_string(&body);
+            .set("Content-Type", "application/json; charset=utf-8");
+        if let Some(quota_project_id) = vertex_quota_project_id(credential) {
+            request = request.set("x-goog-user-project", quota_project_id);
+        }
+        let response = request.send_string(&body);
 
         match response {
             Ok(response) => {
@@ -1479,6 +1482,16 @@ fn vertex_base_url(
     } else {
         Ok(format!("https://{region}-aiplatform.googleapis.com"))
     }
+}
+
+fn vertex_quota_project_id(credential: &ModelCredential) -> Option<&str> {
+    credential
+        .metadata
+        .get("quota_project_id")
+        .or_else(|| credential.metadata.get("project_id"))
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn vertex_region_from_endpoint(endpoint: Option<&str>) -> Option<&str> {
@@ -2899,6 +2912,23 @@ mod tests {
                 .expect("url"),
             "https://europe-west1-aiplatform.googleapis.com/v1/projects/coddy-dev/locations/europe-west1/publishers/anthropic/models/claude-3-5-sonnet@20240620:rawPredict"
         );
+    }
+
+    #[test]
+    fn vertex_quota_project_uses_explicit_quota_before_project_metadata() {
+        let credential = ModelCredential {
+            provider: "vertex".to_string(),
+            token: "ya29.vertex-token".to_string(),
+            endpoint: Some("us-east5".to_string()),
+            metadata: [
+                ("project_id".to_string(), "coddy-dev".to_string()),
+                ("quota_project_id".to_string(), "quota-dev".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        };
+
+        assert_eq!(vertex_quota_project_id(&credential), Some("quota-dev"));
     }
 
     #[test]

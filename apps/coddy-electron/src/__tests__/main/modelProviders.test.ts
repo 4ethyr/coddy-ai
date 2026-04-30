@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import {
   listProviderModels,
+  resolveGoogleApplicationDefaultAccessToken,
   resolveGcloudAccessToken,
   resolveGcloudProjectId,
 } from '../../main/modelProviders'
@@ -24,6 +28,9 @@ function errorResponse(status: number, statusText: string) {
 }
 
 describe('modelProviders', () => {
+  const vertexPublisherQuery =
+    'pageSize=200&listAllVersions=true'
+
   it('lists OpenAI models with bearer authentication', async () => {
     const fetcher = vi.fn().mockResolvedValue(
       jsonResponse({
@@ -123,7 +130,7 @@ describe('modelProviders', () => {
     )
 
     expect(fetcher).toHaveBeenCalledWith(
-      'https://aiplatform.googleapis.com/v1beta1/publishers/google/models?pageSize=100&view=BASIC',
+      `https://aiplatform.googleapis.com/v1beta1/publishers/google/models?${vertexPublisherQuery}`,
       expect.objectContaining({
         headers: expect.objectContaining({
           Authorization: 'Bearer ya29.test-token',
@@ -135,6 +142,7 @@ describe('modelProviders', () => {
   it('lists Anthropic publisher models when using Vertex AI OAuth', async () => {
     const fetcher = vi
       .fn()
+      .mockResolvedValue(jsonResponse({ publisherModels: [] }))
       .mockResolvedValueOnce(
         jsonResponse({
           publisherModels: [{ name: 'publishers/google/models/gemini-test' }],
@@ -163,7 +171,7 @@ describe('modelProviders', () => {
     )
 
     expect(fetcher).toHaveBeenCalledWith(
-      'https://us-east5-aiplatform.googleapis.com/v1beta1/publishers/anthropic/models?pageSize=100&view=BASIC',
+      `https://aiplatform.googleapis.com/v1beta1/publishers/anthropic/models?${vertexPublisherQuery}`,
       expect.objectContaining({
         headers: expect.objectContaining({
           Authorization: 'Bearer ya29.test-token',
@@ -209,8 +217,68 @@ describe('modelProviders', () => {
     )
 
     expect(fetcher).toHaveBeenCalledWith(
-      'https://europe-west1-aiplatform.googleapis.com/v1beta1/publishers/anthropic/models?pageSize=100&view=BASIC',
+      `https://europe-west1-aiplatform.googleapis.com/v1beta1/publishers/anthropic/models?${vertexPublisherQuery}`,
       expect.anything(),
+    )
+  })
+
+  it('requests all Vertex publisher versions across paginated model garden results', async () => {
+    const fetcher = vi.fn((url: string) => {
+      if (url.includes('/publishers/anthropic/models') && url.includes('pageToken=next')) {
+        return Promise.resolve(
+          jsonResponse({
+            publisherModels: [
+              {
+                name: 'publishers/anthropic/models/claude-opus-4-5@20251101',
+                displayName: 'Claude Opus 4.5',
+                launchStage: 'GA',
+              },
+            ],
+          }),
+        )
+      }
+
+      if (url.includes('/publishers/anthropic/models')) {
+        return Promise.resolve(
+          jsonResponse({
+            publisherModels: [
+              {
+                name: 'publishers/anthropic/models/claude-sonnet-4-5@20250929',
+                displayName: 'Claude Sonnet 4.5',
+                launchStage: 'GA',
+              },
+            ],
+            nextPageToken: 'next',
+          }),
+        )
+      }
+
+      return Promise.resolve(jsonResponse({ publisherModels: [] }))
+    })
+
+    const result = await listProviderModels(
+      {
+        provider: 'vertex',
+        apiKey: 'Bearer ya29.test-token',
+        endpoint: 'us-east5',
+      },
+      fetcher,
+    )
+
+    expect(fetcher).toHaveBeenCalledWith(
+      `https://us-east5-aiplatform.googleapis.com/v1beta1/publishers/anthropic/models?${vertexPublisherQuery}&pageToken=next`,
+      expect.anything(),
+    )
+    expect(result.models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          model: {
+            provider: 'vertex',
+            name: 'claude-opus-4-5@20251101',
+          },
+          label: 'Claude Opus 4.5',
+        }),
+      ]),
     )
   })
 
@@ -238,6 +306,7 @@ describe('modelProviders', () => {
   it('lists Vertex publisher models with Application Default Credentials', async () => {
     const fetcher = vi
       .fn()
+      .mockResolvedValue(jsonResponse({ publisherModels: [] }))
       .mockResolvedValueOnce(
         jsonResponse({
           publisherModels: [{ name: 'publishers/google/models/gemini-test' }],
@@ -254,7 +323,11 @@ describe('modelProviders', () => {
           ],
         }),
       )
-    const tokenProvider = vi.fn().mockResolvedValue('adc-access-token')
+    const tokenProvider = vi.fn().mockResolvedValue({
+      token: 'adc-access-token',
+      notice: 'Using Google Application Default Credentials for Vertex AI publisher models.',
+      quotaProjectId: 'coddy-dev',
+    })
 
     const result = await listProviderModels(
       { provider: 'vertex' },
@@ -264,10 +337,11 @@ describe('modelProviders', () => {
 
     expect(tokenProvider).toHaveBeenCalledWith(fetcher)
     expect(fetcher).toHaveBeenCalledWith(
-      'https://us-east5-aiplatform.googleapis.com/v1beta1/publishers/anthropic/models?pageSize=100&view=BASIC',
+      `https://aiplatform.googleapis.com/v1beta1/publishers/anthropic/models?${vertexPublisherQuery}`,
       expect.objectContaining({
         headers: expect.objectContaining({
           Authorization: 'Bearer adc-access-token',
+          'x-goog-user-project': 'coddy-dev',
         }),
       }),
     )
@@ -289,6 +363,7 @@ describe('modelProviders', () => {
   it('lists Vertex publisher models with local gcloud OAuth fallback', async () => {
     const fetcher = vi
       .fn()
+      .mockResolvedValue(jsonResponse({ publisherModels: [] }))
       .mockResolvedValueOnce(
         jsonResponse({
           publisherModels: [{ name: 'publishers/google/models/gemini-test' }],
@@ -317,7 +392,7 @@ describe('modelProviders', () => {
     )
 
     expect(fetcher).toHaveBeenCalledWith(
-      'https://us-east5-aiplatform.googleapis.com/v1beta1/publishers/anthropic/models?pageSize=100&view=BASIC',
+      `https://aiplatform.googleapis.com/v1beta1/publishers/anthropic/models?${vertexPublisherQuery}`,
       expect.objectContaining({
         headers: expect.objectContaining({
           Authorization: 'Bearer gcloud-access-token',
@@ -376,6 +451,52 @@ describe('modelProviders', () => {
     )
   })
 
+  it('prefers local gcloud credentials over ADC for host-login model discovery', async () => {
+    const previousCredentialPath = process.env.GOOGLE_APPLICATION_CREDENTIALS
+    const directory = mkdtempSync(join(tmpdir(), 'coddy-adc-'))
+    const credentialPath = join(directory, 'application_default_credentials.json')
+    writeFileSync(
+      credentialPath,
+      JSON.stringify({
+        type: 'authorized_user',
+        client_id: 'client-id',
+        client_secret: 'client-secret',
+        refresh_token: 'refresh-token',
+        token_uri: 'https://oauth2.googleapis.com/token',
+      }),
+    )
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = credentialPath
+
+    const fetcher = vi.fn()
+    const gcloudTokenProvider = vi.fn().mockResolvedValue('ya29.gcloud-token')
+    const gcloudProjectProvider = vi.fn().mockResolvedValue('coddy-dev')
+
+    try {
+      await expect(
+        resolveGoogleApplicationDefaultAccessToken(
+          fetcher,
+          gcloudTokenProvider,
+          gcloudProjectProvider,
+        ),
+      ).resolves.toEqual({
+        token: 'ya29.gcloud-token',
+        notice:
+          'Using local gcloud OAuth credentials for Vertex AI publisher models. The access token is short-lived and is not stored by Coddy.',
+        quotaProjectId: 'coddy-dev',
+      })
+      expect(fetcher).not.toHaveBeenCalled()
+      expect(gcloudTokenProvider).toHaveBeenCalledOnce()
+      expect(gcloudProjectProvider).toHaveBeenCalledOnce()
+    } finally {
+      if (previousCredentialPath === undefined) {
+        delete process.env.GOOGLE_APPLICATION_CREDENTIALS
+      } else {
+        process.env.GOOGLE_APPLICATION_CREDENTIALS = previousCredentialPath
+      }
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('resolves the active gcloud project for Vertex runtime metadata', async () => {
     const runner = vi.fn((_file, _args, _options, callback) => {
       callback(null, 'coddy-dev\n', '')
@@ -397,6 +518,7 @@ describe('modelProviders', () => {
   it('keeps available Vertex publisher models when one partner publisher fails', async () => {
     const fetcher = vi
       .fn()
+      .mockResolvedValue(jsonResponse({ publisherModels: [] }))
       .mockResolvedValueOnce(
         jsonResponse({
           publisherModels: [{ name: 'publishers/google/models/gemini-test' }],
@@ -415,6 +537,9 @@ describe('modelProviders', () => {
         model: { provider: 'vertex', name: 'gemini-test' },
         tags: expect.arrayContaining(['vertex', 'google']),
       }),
+    ])
+    expect(result.notices).toEqual([
+      'Vertex publisher anthropic listing failed at global: Provider returned 403 Forbidden',
     ])
   })
 

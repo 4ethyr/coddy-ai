@@ -122,6 +122,36 @@ describe('runtimeCredentialBridge', () => {
     })
   })
 
+  it('ignores stored Gemini API keys for Vertex Claude and falls back to gcloud OAuth', async () => {
+    const store = {
+      get: vi.fn().mockResolvedValue({
+        apiKey: 'AIza-gemini-key',
+        endpoint: 'us-east5',
+      }),
+    }
+    const gcloudTokenProvider = vi.fn().mockResolvedValue('ya29.gcloud-token')
+    const gcloudProjectProvider = vi.fn().mockResolvedValue('coddy-dev')
+
+    const env = await buildRuntimeCredentialEnvironment(
+      { provider: 'vertex', name: 'claude-opus-4-5@20251101' },
+      store,
+      gcloudTokenProvider,
+      gcloudProjectProvider,
+    )
+
+    expect(gcloudTokenProvider).toHaveBeenCalledOnce()
+    expect(gcloudProjectProvider).toHaveBeenCalledOnce()
+    expect(JSON.parse(env[CODDY_EPHEMERAL_MODEL_CREDENTIAL_ENV] ?? '{}')).toEqual({
+      provider: 'vertex',
+      token: 'ya29.gcloud-token',
+      endpoint: 'us-east5',
+      metadata: {
+        project_id: 'coddy-dev',
+        region: 'us-east5',
+      },
+    })
+  })
+
   it('does not resolve gcloud project metadata for Gemini API-key runtime calls', async () => {
     const store = {
       get: vi.fn().mockResolvedValue({
@@ -146,6 +176,23 @@ describe('runtimeCredentialBridge', () => {
       token: 'AIza-gemini-key',
       endpoint: 'us-east5',
     })
+  })
+
+  it('does not send gcloud OAuth tokens to Gemini API-key runtime calls', async () => {
+    const store = { get: vi.fn().mockResolvedValue(null) }
+    const gcloudTokenProvider = vi.fn().mockResolvedValue('ya29.gcloud-token')
+    const gcloudProjectProvider = vi.fn().mockResolvedValue('coddy-dev')
+
+    await expect(
+      buildRuntimeCredentialEnvironment(
+        { provider: 'vertex', name: 'gemini-2.5-flash' },
+        store,
+        gcloudTokenProvider,
+        gcloudProjectProvider,
+      ),
+    ).resolves.toEqual({})
+    expect(gcloudTokenProvider).not.toHaveBeenCalled()
+    expect(gcloudProjectProvider).not.toHaveBeenCalled()
   })
 
   it('returns an empty environment when no cloud credential is available', async () => {

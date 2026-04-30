@@ -40,6 +40,16 @@ export async function buildRuntimeCredentialEnvironment(
   const needsVertexMetadata =
     provider === 'vertex' && isVertexAnthropicRuntimeModel(model.name)
   if (storedToken) {
+    if (needsVertexMetadata && !isGoogleOAuthCredential(storedToken)) {
+      return buildGcloudVertexCredentialEnvironment(
+        provider,
+        storedEndpoint,
+        storedApiVersion,
+        gcloudTokenProvider,
+        gcloudProjectProvider,
+      )
+    }
+
     const metadata = await runtimeCredentialMetadata(
       provider,
       needsVertexMetadata,
@@ -55,13 +65,29 @@ export async function buildRuntimeCredentialEnvironment(
     })
   }
 
-  if (provider !== 'vertex') return {}
+  if (provider !== 'vertex' || !needsVertexMetadata) return {}
 
+  return buildGcloudVertexCredentialEnvironment(
+    provider,
+    storedEndpoint,
+    storedApiVersion,
+    gcloudTokenProvider,
+    gcloudProjectProvider,
+  )
+}
+
+async function buildGcloudVertexCredentialEnvironment(
+  provider: ModelProviderId,
+  storedEndpoint: string | undefined,
+  storedApiVersion: string | undefined,
+  gcloudTokenProvider: GcloudTokenProvider,
+  gcloudProjectProvider: GcloudProjectProvider,
+): Promise<Record<string, string>> {
   const gcloudToken = await gcloudTokenProvider()
   if (!gcloudToken) return {}
   const metadata = await runtimeCredentialMetadata(
     provider,
-    needsVertexMetadata,
+    true,
     storedEndpoint,
     storedApiVersion,
     gcloudProjectProvider,
@@ -73,6 +99,10 @@ export async function buildRuntimeCredentialEnvironment(
     ...(storedEndpoint ? { endpoint: storedEndpoint } : {}),
     ...(metadata ? { metadata } : {}),
   })
+}
+
+function isGoogleOAuthCredential(value: string): boolean {
+  return /^Bearer\s+/i.test(value) || value.startsWith('ya29.')
 }
 
 function ephemeralCredentialEnvironment(

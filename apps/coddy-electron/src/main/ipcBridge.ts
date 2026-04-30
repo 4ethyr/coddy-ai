@@ -443,7 +443,7 @@ async function listProviderModelsWithSecureCredentials(
   credentialStore: SecureCredentialStore,
 ): Promise<ModelProviderListPayloadResult> {
   const stored = await credentialStore.get(payload.provider)
-  const apiKey = payload.apiKey?.trim() || stored?.apiKey
+  const apiKey = modelListCredential(payload, stored)
   const endpoint = payload.endpoint?.trim() || stored?.endpoint
   const apiVersion = payload.apiVersion?.trim() || stored?.apiVersion
   const request: ModelProviderListPayload = {
@@ -472,6 +472,27 @@ async function listProviderModelsWithSecureCredentials(
       storageRecord,
     ),
   }
+}
+
+function modelListCredential(
+  payload: ModelProviderListPayload,
+  stored: ProviderCredentialRecord | null,
+): string | undefined {
+  const supplied = payload.apiKey?.trim()
+  if (supplied) return supplied
+
+  const storedToken = stored?.apiKey?.trim()
+  if (!storedToken) return undefined
+
+  if (payload.provider === 'vertex') {
+    return isGoogleOAuthCredential(storedToken) ? storedToken : undefined
+  }
+
+  return storedToken
+}
+
+function isGoogleOAuthCredential(value: string): boolean {
+  return /^Bearer\s+/i.test(value) || value.startsWith('ya29.')
 }
 
 function getCredentialRecordToPersist(

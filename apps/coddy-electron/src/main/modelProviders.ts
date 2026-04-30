@@ -82,6 +82,7 @@ type GoogleAccessTokenResolution =
   | {
       token: string
       notice: string
+      quotaProjectId?: string
     }
 
 type GoogleAccessTokenProvider = (
@@ -107,13 +108,18 @@ const DEFAULT_AZURE_API_VERSION = '2024-10-21'
 const VERTEX_PUBLISHERS = [
   {
     id: 'google',
-    defaultEndpoint: 'https://aiplatform.googleapis.com',
+    defaultEndpoints: ['https://aiplatform.googleapis.com'],
   },
   {
     id: 'anthropic',
-    defaultEndpoint: 'https://us-east5-aiplatform.googleapis.com',
+    defaultEndpoints: [
+      'https://aiplatform.googleapis.com',
+      'https://us-east5-aiplatform.googleapis.com',
+      'https://europe-west1-aiplatform.googleapis.com',
+    ],
   },
 ] as const
+const VERTEX_PUBLISHER_PAGE_SIZE = 200
 
 export async function listProviderModels(
   request: ModelProviderListPayload,
@@ -256,6 +262,7 @@ async function listGoogleModels(
         fetcher,
         [resolvedToken.notice],
         request.endpoint,
+        resolvedToken.quotaProjectId,
       )
     }
     throw new Error(
@@ -304,12 +311,24 @@ async function listVertexPublisherModels(
   fetcher: Fetcher,
   notices: string[] = [],
   endpoint: string | undefined = undefined,
+  quotaProjectId: string | undefined = undefined,
 ): Promise<ModelProviderListPayloadResult> {
   const endpointOverride = normalizeVertexPublisherEndpoint(endpoint)
+  const tasks = VERTEX_PUBLISHERS.flatMap((publisher) =>
+    vertexPublisherEndpoints(publisher, endpointOverride).map((publisherEndpoint) => ({
+      publisher,
+      endpoint: publisherEndpoint,
+      promise: listVertexPublisherModelGroup(
+        publisher,
+        token,
+        fetcher,
+        publisherEndpoint,
+        quotaProjectId,
+      ),
+    })),
+  )
   const modelGroups = await Promise.allSettled(
-    VERTEX_PUBLISHERS.map((publisher) =>
-      listVertexPublisherModelGroup(publisher, token, fetcher, endpointOverride),
-    ),
+    tasks.map((task) => task.promise),
   )
   const models = modelGroups.flatMap((result) =>
     result.status === 'fulfilled' ? result.value : [],
@@ -322,41 +341,93 @@ async function listVertexPublisherModels(
       ? firstError.reason
       : new Error('Unable to list Vertex publisher models.')
   }
-  return successResult('vertex', 'api', models, notices)
+  const failureNotices = modelGroups
+    .map((result, index) => {
+      if (result.status !== 'rejected') return null
+      const task = tasks[index]
+      if (!task) return null
+      return `Vertex publisher ${task.publisher.id} listing failed at ${describeVertexEndpoint(task.endpoint)}: ${errorMessage(result.reason)}`
+    })
+    .filter((notice): notice is string => Boolean(notice))
+
+  return successResult('vertex', 'api', models, [...notices, ...failureNotices])
 }
 
 async function listVertexPublisherModelGroup(
   publisher: (typeof VERTEX_PUBLISHERS)[number],
   token: string,
   fetcher: Fetcher,
-  endpointOverride: string | null,
+  endpoint: string,
+  quotaProjectId: string | undefined,
 ): Promise<ModelCatalogEntryPayload[]> {
-  const data = await fetchJson(
-    `${endpointOverride ?? publisher.defaultEndpoint}/v1beta1/publishers/${publisher.id}/models?pageSize=100&view=BASIC`,
-    {
-      Authorization: `Bearer ${token}`,
-    },
-    fetcher,
-  )
-  return asArray(getObject(data).publisherModels)
-    .map((item) => {
-      const object = getObject(item)
-      const id = lastResourceSegment(getString(object.name))
-      if (!id) return null
-      const launchStage = getString(object.launchStage)
-      const versionId = getString(object.versionId)
-      const label = getString(object.displayName) || id
-      return modelEntry(
-        'vertex',
-        id,
-        label,
-        versionId
-          ? `Vertex ${publisher.id} model version ${versionId}.`
-          : `Vertex ${publisher.id} publisher model.`,
-        ['vertex', publisher.id, launchStage],
-      )
+  const models: ModelCatalogEntryPayload[] = []
+  let pageToken = ''
+
+  do {
+    const query = new URLSearchParams({
+      pageSize: String(VERTEX_PUBLISHER_PAGE_SIZE),
+      listAllVersions: 'true',
     })
-    .filter((item): item is ModelCatalogEntryPayload => Boolean(item))
+    if (pageToken) query.set('pageToken', pageToken)
+
+    const data = await fetchJson(
+      `${endpoint}/v1beta1/publishers/${publisher.id}/models?${query.toString()}`,
+      {
+        Authorization: `Bearer ${token}`,
+        ...(quotaProjectId ? { 'x-goog-user-project': quotaProjectId } : {}),
+      },
+      fetcher,
+    )
+    const object = getObject(data)
+    models.push(
+      ...asArray(object.publisherModels)
+        .map((item) => {
+          const itemObject = getObject(item)
+          const id = lastResourceSegment(getString(itemObject.name))
+          if (!id) return null
+          const launchStage = getString(itemObject.launchStage)
+          const versionId = getString(itemObject.versionId)
+          const label = getString(itemObject.displayName) || id
+          return modelEntry(
+            'vertex',
+            id,
+            label,
+            versionId
+              ? `Vertex ${publisher.id} model version ${versionId}.`
+              : `Vertex ${publisher.id} publisher model.`,
+            ['vertex', publisher.id, launchStage],
+          )
+        })
+        .filter((item): item is ModelCatalogEntryPayload => Boolean(item)),
+    )
+    pageToken = getString(object.nextPageToken) || getString(object.next_page_token)
+  } while (pageToken && models.length < MAX_MODELS_PER_PROVIDER)
+
+  return models
+}
+
+function vertexPublisherEndpoints(
+  publisher: (typeof VERTEX_PUBLISHERS)[number],
+  endpointOverride: string | null,
+): readonly string[] {
+  if (endpointOverride) return [endpointOverride]
+  return publisher.defaultEndpoints
+}
+
+function describeVertexEndpoint(endpoint: string): string {
+  const parsed = new URL(endpoint)
+  if (parsed.hostname === 'aiplatform.googleapis.com') return 'global'
+  return parsed.hostname.replace(/-aiplatform\.googleapis\.com$/i, '')
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'Unknown error'
+}
+
+function providerErrorMessage(data: unknown): string {
+  const object = getObject(data)
+  const error = getObject(object.error)
+  return getString(error.message) || getString(object.message)
 }
 
 async function listAzureModels(
@@ -415,8 +486,15 @@ async function fetchJson(
     })
 
     if (!response.ok) {
+      const data = await response.json().catch(() => ({}))
+      const message = providerErrorMessage(data)
       throw new Error(
-        `Provider returned ${response.status} ${response.statusText}`.trim(),
+        [
+          `Provider returned ${response.status} ${response.statusText}`.trim(),
+          message,
+        ]
+          .filter(Boolean)
+          .join(': '),
       )
     }
 
@@ -584,23 +662,41 @@ function looksLikeGoogleOAuthCredential(value: string | undefined): value is str
   return /^Bearer\s+/i.test(trimmed) || trimmed.startsWith('ya29.')
 }
 
-async function resolveGoogleApplicationDefaultAccessToken(
+export async function resolveGoogleApplicationDefaultAccessToken(
   fetcher: Fetcher,
+  gcloudAccessTokenProvider: () => Promise<string | null> = resolveGcloudAccessToken,
+  gcloudProjectProvider: () => Promise<string | null> = resolveGcloudProjectId,
 ): Promise<GoogleAccessTokenResolution | null> {
-  const adcToken = await resolveGoogleAdcAccessToken(fetcher)
-  if (adcToken) {
-    return {
-      token: adcToken,
-      notice: VERTEX_ADC_NOTICE,
-    }
-  }
-
-  const gcloudToken = await resolveGcloudAccessToken()
+  const gcloudToken = await gcloudAccessTokenProvider()
   if (gcloudToken) {
+    const quotaProjectId = (await gcloudProjectProvider()) ?? undefined
     return {
       token: gcloudToken,
       notice: VERTEX_GCLOUD_NOTICE,
+      ...(quotaProjectId ? { quotaProjectId } : {}),
     }
+  }
+
+  let adcError: string | null = null
+  try {
+    const adcToken = await resolveGoogleAdcAccessToken(fetcher)
+    if (adcToken) {
+      const quotaProjectId =
+        adcToken.quotaProjectId ?? (await gcloudProjectProvider()) ?? undefined
+      return {
+        token: adcToken.token,
+        notice: VERTEX_ADC_NOTICE,
+        ...(quotaProjectId ? { quotaProjectId } : {}),
+      }
+    }
+  } catch (error) {
+    adcError = errorMessage(error)
+  }
+
+  if (adcError) {
+    throw new Error(
+      `Google ADC credential was found but could not be refreshed: ${adcError}`,
+    )
   }
 
   return null
@@ -608,7 +704,7 @@ async function resolveGoogleApplicationDefaultAccessToken(
 
 async function resolveGoogleAdcAccessToken(
   fetcher: Fetcher,
-): Promise<string | null> {
+): Promise<{ token: string; quotaProjectId?: string } | null> {
   const credentialPath = googleApplicationCredentialsPath()
   if (!credentialPath) return null
 
@@ -621,11 +717,16 @@ async function resolveGoogleAdcAccessToken(
 
   const credential = getObject(JSON.parse(raw) as unknown)
   const type = getString(credential.type)
+  const quotaProjectId = getString(credential.quota_project_id)
+  const withQuotaProject = (token: string) => ({
+    token,
+    ...(quotaProjectId ? { quotaProjectId } : {}),
+  })
   if (type === 'service_account') {
-    return serviceAccountAccessToken(credential, fetcher)
+    return withQuotaProject(await serviceAccountAccessToken(credential, fetcher))
   }
   if (type === 'authorized_user') {
-    return authorizedUserAccessToken(credential, fetcher)
+    return withQuotaProject(await authorizedUserAccessToken(credential, fetcher))
   }
   throw new Error('Unsupported Google ADC credential type.')
 }
@@ -777,7 +878,7 @@ function accessTokenFromTokenResponse(data: unknown): string {
 
 function normalizeGoogleAccessTokenResolution(
   value: GoogleAccessTokenResolution | null,
-): { token: string; notice: string } | null {
+): { token: string; notice: string; quotaProjectId?: string } | null {
   if (!value) return null
 
   if (typeof value === 'string') {
@@ -787,7 +888,10 @@ function normalizeGoogleAccessTokenResolution(
 
   const token = value.token.trim()
   const notice = value.notice.trim() || VERTEX_ADC_NOTICE
-  return token ? { token, notice } : null
+  const quotaProjectId = value.quotaProjectId?.trim()
+  return token
+    ? { token, notice, ...(quotaProjectId ? { quotaProjectId } : {}) }
+    : null
 }
 
 function normalizeGcloudTokenOutput(value: string | Buffer): string | null {
