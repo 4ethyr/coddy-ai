@@ -38,6 +38,7 @@ Result: passed.
 Frontend validation:
 
 - `npm test` in `apps/coddy-electron`: 25 files passed, 207 tests passed.
+- `npm run test:e2e` in `apps/coddy-electron`: 1 file passed, 1 smoke test passed.
 - `npm run typecheck` in `apps/coddy-electron`: passed.
 - `npm run build` in `apps/coddy-electron`: passed.
 
@@ -456,6 +457,33 @@ Validation:
 - `cargo test -p coddy-runtime ask_command_executes_model_subagent_output_reducer_tool`: passed.
 - `cargo test -p coddy -p coddy-agent -p coddy-runtime -p coddy-ipc`: passed.
 
+### Battery 19: Electron Agent Flow E2E Smoke
+
+Goal: add a frontend E2E smoke that exercises the real React app and the Electron IPC client
+contract without requiring a graphical Electron process or live provider credentials.
+
+Implemented result:
+
+- Added `npm run test:e2e` with a dedicated `vitest.e2e.config.ts`.
+- Added an App-level smoke under `src/__tests__/e2e`.
+- The smoke renders the real `App`, `SessionProvider`, `ElectronReplIpcClient` and desktop UI
+  against a simulated `window.replApi` backend.
+- The flow loads OpenAI models with a request-scoped API key, selects `openai/gpt-4.1`, sends a
+  user message, receives a `shell.run` approval request, approves it once, renders successful tool
+  activity, renders valid subagent lifecycle activity and shows the final assistant message.
+- The simulated backend clones snapshots before returning them and emits valid subagent lifecycle
+  transitions: `Prepared -> Approved -> Running -> Completed`.
+
+Validation:
+
+- `npm run test:e2e`: 1 file passed, 1 test passed.
+- `npm test`: 25 files passed, 207 tests passed.
+- `npm run typecheck`: passed.
+- `npm run typecheck:main`: passed.
+- `npm run lint`: passed.
+- `npm run build`: passed.
+- `cargo test -p coddy-agent -p coddy-runtime`: passed.
+
 ## Current Assessment
 
 The multiagent harness is now measurable before execution. It can compose a team plan, expose
@@ -467,7 +495,10 @@ layer now has a strict reducer for consolidating contract-valid subagent outputs
 is not yet connected to a real isolated subagent runtime. The default multiagent eval suite now
 checks the reducer contract as a first-class CI case, and the workspace UI renders those reducer
 metrics when present. The runtime now also exposes a safe `subagent.reduce_outputs` tool, so model
-turns can validate declared subagent outputs through the same reducer before responding.
+turns can validate declared subagent outputs through the same reducer before responding. The
+Electron frontend now also has a dedicated E2E smoke for the model-selection, message, tool
+approval and subagent-activity path, using the production React app and IPC client contract against
+a simulated backend.
 
 Remaining gaps:
 
@@ -475,6 +506,8 @@ Remaining gaps:
 - sensitive path reads should be guarded before tool execution, not only redacted after observation;
 - multiagent output consolidation exists as a deterministic reducer and local validation tool, but
   isolated subagent sessions still need to feed it real generated outputs automatically.
+- the E2E smoke validates renderer behavior and IPC contracts, but not a spawned Electron window
+  with the real binary process attached.
 - broad prompts can still consume the full bounded tool budget; the runtime now reports evidence,
   but the next improvement should add adaptive tool budgeting and observation compaction.
 - live model answer quality still needs a sampled harness on top of the deterministic routing
