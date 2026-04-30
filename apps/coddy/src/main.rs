@@ -417,6 +417,8 @@ struct EphemeralModelCredential {
     provider: String,
     token: String,
     endpoint: Option<String>,
+    #[serde(default)]
+    metadata: std::collections::BTreeMap<String, String>,
 }
 
 fn load_ephemeral_model_credential_from_env() -> Result<Option<ModelCredential>> {
@@ -447,6 +449,7 @@ fn load_ephemeral_model_credential_from_env() -> Result<Option<ModelCredential>>
         provider,
         token,
         endpoint,
+        metadata: parsed.metadata,
     }))
 }
 

@@ -54,9 +54,9 @@ describe('DesktopApp', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /Neural_Link/ }))
 
-    expect(screen.getAllByText('adapter pending').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('claude ready').length).toBeGreaterThan(0)
     expect(
-      screen.getByText(/model discovery and selection are wired/i),
+      screen.getByText(/Claude partner models execute through Vertex AI rawPredict/i),
     ).toBeInTheDocument()
   })
 })

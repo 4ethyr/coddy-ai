@@ -1,5 +1,5 @@
 import type { ModelProviderId } from './modelProviders'
-import { resolveGcloudAccessToken } from './modelProviders'
+import { resolveGcloudAccessToken, resolveGcloudProjectId } from './modelProviders'
 import type { ProviderCredentialRecord } from './secureCredentialStore'
 
 export const CODDY_EPHEMERAL_MODEL_CREDENTIAL_ENV =
@@ -15,17 +15,20 @@ export type RuntimeCredentialStore = {
 }
 
 export type GcloudTokenProvider = () => Promise<string | null>
+export type GcloudProjectProvider = () => Promise<string | null>
 
 type EphemeralModelCredentialPayload = {
   provider: ModelProviderId
   token: string
   endpoint?: string
+  metadata?: Record<string, string>
 }
 
 export async function buildRuntimeCredentialEnvironment(
   model: RuntimeCredentialModelRef,
   credentialStore: RuntimeCredentialStore,
   gcloudTokenProvider: GcloudTokenProvider = resolveGcloudAccessToken,
+  gcloudProjectProvider: GcloudProjectProvider = resolveGcloudProjectId,
 ): Promise<Record<string, string>> {
   const provider = normalizeRuntimeCredentialProvider(model.provider)
   if (!provider || provider === 'ollama') return {}
@@ -34,10 +37,15 @@ export async function buildRuntimeCredentialEnvironment(
   const storedToken = stored?.apiKey?.trim()
   const storedEndpoint = stored?.endpoint?.trim()
   if (storedToken) {
+    const metadata =
+      provider === 'vertex'
+        ? await vertexRuntimeMetadata(storedEndpoint, gcloudProjectProvider)
+        : undefined
     return ephemeralCredentialEnvironment({
       provider,
       token: storedToken,
       ...(storedEndpoint ? { endpoint: storedEndpoint } : {}),
+      ...(metadata ? { metadata } : {}),
     })
   }
 
@@ -45,10 +53,13 @@ export async function buildRuntimeCredentialEnvironment(
 
   const gcloudToken = await gcloudTokenProvider()
   if (!gcloudToken) return {}
+  const metadata = await vertexRuntimeMetadata(storedEndpoint, gcloudProjectProvider)
 
   return ephemeralCredentialEnvironment({
     provider,
     token: gcloudToken,
+    ...(storedEndpoint ? { endpoint: storedEndpoint } : {}),
+    ...(metadata ? { metadata } : {}),
   })
 }
 
@@ -73,4 +84,28 @@ function normalizeRuntimeCredentialProvider(
     return provider
   }
   return null
+}
+
+async function vertexRuntimeMetadata(
+  endpoint: string | undefined,
+  gcloudProjectProvider: GcloudProjectProvider,
+): Promise<Record<string, string> | undefined> {
+  const metadata: Record<string, string> = {}
+  const projectId = await gcloudProjectProvider()
+  if (projectId) {
+    metadata.project_id = projectId
+  }
+
+  const region = vertexRegionFromEndpoint(endpoint)
+  if (region) {
+    metadata.region = region
+  }
+
+  return Object.keys(metadata).length > 0 ? metadata : undefined
+}
+
+function vertexRegionFromEndpoint(endpoint: string | undefined): string | null {
+  const value = endpoint?.trim()
+  if (!value || value.startsWith('https://')) return null
+  return /^[a-z0-9-]+$/i.test(value) ? value : null
 }

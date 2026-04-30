@@ -1423,6 +1423,7 @@ mod tests {
             provider: "openai".to_string(),
             token: "sk-secret-token".to_string(),
             endpoint: Some("https://api.openai.com/v1".to_string()),
+            metadata: Default::default(),
         };
         runtime.publish_event(
             ReplEvent::ModelSelected {

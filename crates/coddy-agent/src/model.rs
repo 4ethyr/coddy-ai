@@ -112,6 +112,7 @@ pub struct DefaultChatModelClient {
     ollama: OllamaChatModelClient,
     openai: OpenAiCompatibleChatModelClient,
     openrouter: OpenAiCompatibleChatModelClient,
+    vertex_anthropic: VertexAnthropicChatModelClient,
     unavailable: UnavailableChatModelClient,
 }
 
@@ -146,6 +147,25 @@ trait OpenAiCompatibleTransport: std::fmt::Debug + Send + Sync {
     fn chat(
         &self,
         provider: &str,
+        endpoint: &str,
+        credential: &ModelCredential,
+        body: &Value,
+    ) -> ChatModelResult;
+}
+
+#[derive(Debug, Clone)]
+pub struct VertexAnthropicChatModelClient {
+    transport: Arc<dyn VertexAnthropicTransport>,
+}
+
+#[derive(Debug, Clone)]
+struct HttpVertexAnthropicTransport {
+    timeout: Duration,
+}
+
+trait VertexAnthropicTransport: std::fmt::Debug + Send + Sync {
+    fn raw_predict(
+        &self,
         endpoint: &str,
         credential: &ModelCredential,
         body: &Value,
@@ -286,6 +306,7 @@ impl Default for DefaultChatModelClient {
             ollama: OllamaChatModelClient::default(),
             openai: OpenAiCompatibleChatModelClient::openai(),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            vertex_anthropic: VertexAnthropicChatModelClient::default(),
             unavailable: UnavailableChatModelClient,
         }
     }
@@ -366,12 +387,40 @@ impl HttpOpenAiCompatibleTransport {
     }
 }
 
+impl Default for VertexAnthropicChatModelClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VertexAnthropicChatModelClient {
+    pub fn new() -> Self {
+        Self {
+            transport: Arc::new(HttpVertexAnthropicTransport::new()),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_transport(transport: Arc<dyn VertexAnthropicTransport>) -> Self {
+        Self { transport }
+    }
+}
+
+impl HttpVertexAnthropicTransport {
+    fn new() -> Self {
+        Self {
+            timeout: Duration::from_secs(120),
+        }
+    }
+}
+
 impl ChatModelClient for DefaultChatModelClient {
     fn complete(&self, request: ChatRequest) -> ChatModelResult {
         match request.model.provider.as_str() {
             "ollama" => self.ollama.complete(request),
             "openai" => self.openai.complete(request),
             "openrouter" => self.openrouter.complete(request),
+            "vertex" => self.vertex_anthropic.complete(request),
             _ => self.unavailable.complete(request),
         }
     }
@@ -431,6 +480,42 @@ impl ChatModelClient for OpenAiCompatibleChatModelClient {
             &endpoint,
             credential,
             &openai_compatible_chat_body(&request),
+        )
+    }
+}
+
+impl ChatModelClient for VertexAnthropicChatModelClient {
+    fn complete(&self, request: ChatRequest) -> ChatModelResult {
+        if request.model.provider != "vertex" {
+            return Err(ChatModelError::UnsupportedModel {
+                provider: request.model.provider,
+                model: request.model.name,
+            });
+        }
+        if !is_vertex_anthropic_model(&request.model.name) {
+            return Err(ChatModelError::UnsupportedModel {
+                provider: request.model.provider,
+                model: request.model.name,
+            });
+        }
+
+        let credential = request.model_credential.as_ref().ok_or_else(|| {
+            ChatModelError::InvalidRequest(
+                "Vertex Anthropic chat execution requires a Google OAuth credential".to_string(),
+            )
+        })?;
+        if credential.token.trim().is_empty() {
+            return Err(ChatModelError::InvalidRequest(
+                "Vertex Anthropic chat execution requires a non-empty Google OAuth credential"
+                    .to_string(),
+            ));
+        }
+
+        let endpoint = vertex_anthropic_raw_predict_url(&request.model.name, credential)?;
+        self.transport.raw_predict(
+            &endpoint,
+            credential,
+            &vertex_anthropic_chat_body(&request)?,
         )
     }
 }
@@ -514,6 +599,51 @@ impl OpenAiCompatibleTransport for HttpOpenAiCompatibleTransport {
             }
             Err(ureq::Error::Transport(error)) => Err(ChatModelError::Transport {
                 provider: provider.to_string(),
+                message: error.to_string(),
+                retryable: true,
+            }),
+        }
+    }
+}
+
+impl VertexAnthropicTransport for HttpVertexAnthropicTransport {
+    fn raw_predict(
+        &self,
+        endpoint: &str,
+        credential: &ModelCredential,
+        body: &Value,
+    ) -> ChatModelResult {
+        let body = serde_json::to_string(body).map_err(|error| {
+            ChatModelError::InvalidRequest(format!(
+                "failed to encode Vertex Anthropic request: {error}"
+            ))
+        })?;
+        let authorization = format!("Bearer {}", credential.token.trim());
+        let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
+        let response = agent
+            .post(endpoint)
+            .set("Accept", "application/json")
+            .set("Authorization", &authorization)
+            .set("Content-Type", "application/json; charset=utf-8")
+            .send_string(&body);
+
+        match response {
+            Ok(response) => {
+                let body = response
+                    .into_string()
+                    .map_err(vertex_anthropic_transport_error)?;
+                parse_vertex_anthropic_response(&body)
+            }
+            Err(ureq::Error::Status(status, response)) => {
+                let body = response.into_string().unwrap_or_default();
+                Err(ChatModelError::ProviderError {
+                    provider: "vertex".to_string(),
+                    message: vertex_anthropic_provider_error_message(&body, status),
+                    retryable: status == 429 || status >= 500,
+                })
+            }
+            Err(ureq::Error::Transport(error)) => Err(ChatModelError::Transport {
+                provider: "vertex".to_string(),
                 message: error.to_string(),
                 retryable: true,
             }),
@@ -733,6 +863,180 @@ fn openai_compatible_chat_url(
     }
 }
 
+fn vertex_anthropic_chat_body(request: &ChatRequest) -> Result<Value, ChatModelError> {
+    let (system, messages) = vertex_anthropic_messages(&request.messages)?;
+    let tools = request
+        .tools
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.input_schema,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut body = serde_json::json!({
+        "anthropic_version": "vertex-2023-10-16",
+        "max_tokens": request.max_output_tokens.unwrap_or(1024),
+        "stream": false,
+        "messages": messages,
+    });
+    if !system.is_empty() {
+        body["system"] = Value::String(system);
+    }
+    if !tools.is_empty() {
+        body["tools"] = Value::Array(tools);
+    }
+    if let Some(temperature) = request.temperature {
+        body["temperature"] = serde_json::json!(temperature);
+    }
+    Ok(body)
+}
+
+fn vertex_anthropic_messages(
+    messages: &[ChatMessage],
+) -> Result<(String, Vec<Value>), ChatModelError> {
+    let mut system = Vec::new();
+    let mut normalized = Vec::<(String, String)>::new();
+
+    for message in messages {
+        match message.role {
+            ChatMessageRole::System => system.push(message.content.trim().to_string()),
+            ChatMessageRole::User => normalized.push(("user".to_string(), message.content.clone())),
+            ChatMessageRole::Assistant => {
+                normalized.push(("assistant".to_string(), message.content.clone()))
+            }
+            ChatMessageRole::Tool => normalized.push((
+                "user".to_string(),
+                normalized_tool_observation_content(&message.content),
+            )),
+        }
+    }
+
+    let mut collapsed = Vec::<(String, String)>::new();
+    for (role, content) in normalized {
+        if content.trim().is_empty() {
+            continue;
+        }
+        if let Some((last_role, last_content)) = collapsed.last_mut() {
+            if *last_role == role {
+                last_content.push_str("\n\n");
+                last_content.push_str(&content);
+                continue;
+            }
+        }
+        collapsed.push((role, content));
+    }
+
+    if collapsed.is_empty() || collapsed[0].0 != "user" {
+        return Err(ChatModelError::InvalidRequest(
+            "Vertex Anthropic requests require at least one user message".to_string(),
+        ));
+    }
+
+    let messages = collapsed
+        .into_iter()
+        .map(|(role, content)| {
+            serde_json::json!({
+                "role": role,
+                "content": content,
+            })
+        })
+        .collect();
+    let system = system
+        .into_iter()
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Ok((system, messages))
+}
+
+fn vertex_anthropic_raw_predict_url(
+    model: &str,
+    credential: &ModelCredential,
+) -> Result<String, ChatModelError> {
+    let project_id = credential
+        .metadata
+        .get("project_id")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ChatModelError::InvalidRequest(
+                "Vertex Anthropic chat execution requires metadata.project_id from gcloud config"
+                    .to_string(),
+            )
+        })?;
+    validate_vertex_path_segment("project id", project_id)?;
+
+    let region = credential
+        .metadata
+        .get("region")
+        .map(String::as_str)
+        .or_else(|| vertex_region_from_endpoint(credential.endpoint.as_deref()))
+        .unwrap_or("us-east5")
+        .trim();
+    validate_vertex_path_segment("region", region)?;
+    validate_vertex_path_segment("model", model)?;
+
+    let base_url = vertex_base_url(region, credential.endpoint.as_deref())?;
+    Ok(format!(
+        "{base_url}/v1/projects/{project_id}/locations/{region}/publishers/anthropic/models/{model}:rawPredict"
+    ))
+}
+
+fn vertex_base_url(
+    region: &str,
+    endpoint_override: Option<&str>,
+) -> Result<String, ChatModelError> {
+    if let Some(endpoint) = endpoint_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if endpoint.starts_with("https://") {
+            return Ok(endpoint.trim_end_matches('/').to_string());
+        }
+        if endpoint.contains("://") {
+            return Err(ChatModelError::InvalidRequest(
+                "Vertex runtime endpoint must use HTTPS".to_string(),
+            ));
+        }
+    }
+
+    if region == "global" {
+        Ok("https://aiplatform.googleapis.com".to_string())
+    } else {
+        Ok(format!("https://{region}-aiplatform.googleapis.com"))
+    }
+}
+
+fn vertex_region_from_endpoint(endpoint: Option<&str>) -> Option<&str> {
+    let value = endpoint?.trim();
+    if value.is_empty() || value.starts_with("https://") {
+        return None;
+    }
+    Some(value)
+}
+
+fn validate_vertex_path_segment(label: &str, value: &str) -> Result<(), ChatModelError> {
+    if value.is_empty()
+        || value
+            .chars()
+            .any(|character| character.is_whitespace() || character == '/')
+    {
+        return Err(ChatModelError::InvalidRequest(format!(
+            "Vertex {label} is invalid"
+        )));
+    }
+    Ok(())
+}
+
+fn is_vertex_anthropic_model(model: &str) -> bool {
+    model.starts_with("claude-")
+}
+
 fn chat_role_name(role: ChatMessageRole) -> &'static str {
     match role {
         ChatMessageRole::System => "system",
@@ -847,6 +1151,26 @@ fn openai_compatible_provider_error_message(provider: &str, body: &str, status: 
                 .map(ToOwned::to_owned)
         })
         .unwrap_or_else(|| format!("{provider} returned HTTP {status}"))
+}
+
+fn vertex_anthropic_transport_error(error: std::io::Error) -> ChatModelError {
+    ChatModelError::Transport {
+        provider: "vertex".to_string(),
+        message: error.to_string(),
+        retryable: true,
+    }
+}
+
+fn vertex_anthropic_provider_error_message(body: &str, status: u16) -> String {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value["error"]["message"]
+                .as_str()
+                .or_else(|| value["error"].as_str())
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| format!("Vertex Anthropic returned HTTP {status}"))
 }
 
 fn parse_ollama_chat_body(body: &str) -> ChatModelResult {
@@ -1031,6 +1355,84 @@ fn parse_openai_compatible_tool_calls(
         .collect()
 }
 
+fn parse_vertex_anthropic_response(body: &str) -> ChatModelResult {
+    let value: Value =
+        serde_json::from_str(body).map_err(|error| ChatModelError::InvalidProviderResponse {
+            provider: "vertex".to_string(),
+            message: format!("invalid JSON response: {error}"),
+        })?;
+    if let Some(message) = value["error"]["message"]
+        .as_str()
+        .or_else(|| value["error"].as_str())
+    {
+        return Err(ChatModelError::ProviderError {
+            provider: "vertex".to_string(),
+            message: message.to_string(),
+            retryable: false,
+        });
+    }
+
+    let content =
+        value["content"]
+            .as_array()
+            .ok_or_else(|| ChatModelError::InvalidProviderResponse {
+                provider: "vertex".to_string(),
+                message: "response did not include content".to_string(),
+            })?;
+    let mut text_parts = Vec::new();
+    let mut tool_calls = Vec::new();
+
+    for item in content {
+        match item["type"].as_str() {
+            Some("text") => {
+                if let Some(text) = item["text"].as_str() {
+                    if !text.is_empty() {
+                        text_parts.push(text.to_string());
+                    }
+                }
+            }
+            Some("tool_use") => {
+                let name = item["name"].as_str().ok_or_else(|| {
+                    ChatModelError::InvalidProviderResponse {
+                        provider: "vertex".to_string(),
+                        message: "Vertex Anthropic tool use is missing name".to_string(),
+                    }
+                })?;
+                tool_calls.push(ChatToolCall {
+                    id: item["id"].as_str().map(ToOwned::to_owned),
+                    name: name.to_string(),
+                    arguments: item["input"].clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    if text_parts.is_empty() && tool_calls.is_empty() {
+        return Err(ChatModelError::InvalidProviderResponse {
+            provider: "vertex".to_string(),
+            message: "response did not include assistant content or tool calls".to_string(),
+        });
+    }
+
+    let mut finish_reason = match value["stop_reason"].as_str() {
+        Some("max_tokens") => ChatFinishReason::Length,
+        Some("tool_use") => ChatFinishReason::ToolCalls,
+        _ => ChatFinishReason::Stop,
+    };
+    if !tool_calls.is_empty() {
+        finish_reason = ChatFinishReason::ToolCalls;
+    }
+    let text = text_parts.concat();
+
+    Ok(ChatResponse {
+        text,
+        deltas: text_parts,
+        finish_reason,
+        tool_calls,
+    })
+}
+
 fn parse_tool_arguments(arguments: &Value) -> Result<Value, ChatModelError> {
     parse_tool_arguments_for_provider("ollama", arguments)
 }
@@ -1103,6 +1505,29 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct StaticVertexAnthropicTransport {
+        endpoint: String,
+        token: String,
+        body: Value,
+        response: ChatModelResult,
+    }
+
+    impl VertexAnthropicTransport for StaticVertexAnthropicTransport {
+        fn raw_predict(
+            &self,
+            endpoint: &str,
+            credential: &ModelCredential,
+            body: &Value,
+        ) -> ChatModelResult {
+            assert_eq!(endpoint, self.endpoint);
+            assert_eq!(credential.token, self.token);
+            assert_eq!(body, &self.body);
+            assert!(!body.to_string().contains(&self.token));
+            self.response.clone()
+        }
+    }
+
     #[test]
     fn chat_response_builds_streaming_text_from_deltas() {
         let response = ChatResponse::from_deltas(vec!["hello".to_string(), " world".to_string()])
@@ -1143,6 +1568,7 @@ mod tests {
                 provider: "vertex".to_string(),
                 token: "secret-token".to_string(),
                 endpoint: None,
+                metadata: Default::default(),
             }))
             .expect_err("mismatched credential rejected");
 
@@ -1255,6 +1681,7 @@ mod tests {
                 }),
             ),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            vertex_anthropic: VertexAnthropicChatModelClient::default(),
             unavailable: UnavailableChatModelClient,
         };
         let request = ChatRequest::new(
@@ -1269,6 +1696,7 @@ mod tests {
             provider: "openai".to_string(),
             token: "secret-openai-token".to_string(),
             endpoint: None,
+            metadata: Default::default(),
         }))
         .expect("credential");
 
@@ -1364,6 +1792,145 @@ mod tests {
             .expect_err("http rejected");
 
         assert_eq!(error.code(), "invalid_request");
+    }
+
+    #[test]
+    fn default_client_routes_vertex_claude_requests_to_vertex_anthropic_adapter() {
+        let expected_body = serde_json::json!({
+            "anthropic_version": "vertex-2023-10-16",
+            "max_tokens": 1024,
+            "stream": false,
+            "system": "system",
+            "messages": [
+                { "role": "user", "content": "hello" }
+            ]
+        });
+        let client = DefaultChatModelClient {
+            ollama: OllamaChatModelClient::default(),
+            openai: OpenAiCompatibleChatModelClient::openai(),
+            openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            vertex_anthropic: VertexAnthropicChatModelClient::with_transport(Arc::new(
+                StaticVertexAnthropicTransport {
+                    endpoint: "https://us-east5-aiplatform.googleapis.com/v1/projects/coddy-dev/locations/us-east5/publishers/anthropic/models/claude-sonnet-4-5@20250929:rawPredict".to_string(),
+                    token: "ya29.vertex-token".to_string(),
+                    body: expected_body,
+                    response: Ok(ChatResponse::from_text("hi from vertex claude")),
+                },
+            )),
+            unavailable: UnavailableChatModelClient,
+        };
+        let request = ChatRequest::new(
+            ModelRef {
+                provider: "vertex".to_string(),
+                name: "claude-sonnet-4-5@20250929".to_string(),
+            },
+            vec![ChatMessage::system("system"), ChatMessage::user("hello")],
+        )
+        .expect("request")
+        .with_model_credential(Some(ModelCredential {
+            provider: "vertex".to_string(),
+            token: "ya29.vertex-token".to_string(),
+            endpoint: Some("us-east5".to_string()),
+            metadata: [("project_id".to_string(), "coddy-dev".to_string())]
+                .into_iter()
+                .collect(),
+        }))
+        .expect("credential");
+
+        assert_eq!(
+            client.complete(request),
+            Ok(ChatResponse::from_text("hi from vertex claude"))
+        );
+    }
+
+    #[test]
+    fn vertex_anthropic_requires_project_metadata() {
+        let client = VertexAnthropicChatModelClient::default();
+        let request = ChatRequest::new(
+            ModelRef {
+                provider: "vertex".to_string(),
+                name: "claude-sonnet-4-5@20250929".to_string(),
+            },
+            vec![ChatMessage::user("hello")],
+        )
+        .expect("request")
+        .with_model_credential(Some(ModelCredential {
+            provider: "vertex".to_string(),
+            token: "ya29.vertex-token".to_string(),
+            endpoint: Some("us-east5".to_string()),
+            metadata: Default::default(),
+        }))
+        .expect("credential");
+
+        let error = client.complete(request).expect_err("project required");
+
+        assert_eq!(error.code(), "invalid_request");
+    }
+
+    #[test]
+    fn vertex_anthropic_request_projects_tools_options_and_observations() {
+        let request = ChatRequest {
+            model: ModelRef {
+                provider: "vertex".to_string(),
+                name: "claude-sonnet-4-5@20250929".to_string(),
+            },
+            messages: vec![
+                ChatMessage::system("system one"),
+                ChatMessage::system("system two"),
+                ChatMessage::user("user"),
+                ChatMessage::assistant("assistant"),
+                ChatMessage::tool("filesystem result"),
+            ],
+            tools: vec![ChatToolSpec {
+                name: "filesystem.list_files".to_string(),
+                description: "List files".to_string(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" }
+                    }
+                }),
+                risk_level: ToolRiskLevel::Low,
+                approval_policy: ApprovalPolicy::AutoApprove,
+            }],
+            model_credential: None,
+            temperature: Some(0.2),
+            max_output_tokens: Some(128),
+        };
+
+        let body = vertex_anthropic_chat_body(&request).expect("body");
+
+        assert_eq!(body["anthropic_version"], "vertex-2023-10-16");
+        assert_eq!(body["system"], "system one\n\nsystem two");
+        assert_eq!(body["messages"][0]["role"], "user");
+        assert_eq!(body["messages"][2]["role"], "user");
+        assert_eq!(
+            body["messages"][2]["content"],
+            "Tool observations:\nfilesystem result"
+        );
+        assert_eq!(body["tools"][0]["name"], "filesystem.list_files");
+        let temperature = body["temperature"].as_f64().expect("temperature");
+        assert!((temperature - 0.2).abs() < 0.000_001);
+        assert_eq!(body["max_tokens"], 128);
+        assert_eq!(body["stream"], false);
+    }
+
+    #[test]
+    fn vertex_anthropic_endpoint_uses_project_region_and_model() {
+        let credential = ModelCredential {
+            provider: "vertex".to_string(),
+            token: "ya29.vertex-token".to_string(),
+            endpoint: Some("europe-west1".to_string()),
+            metadata: [("project_id".to_string(), "coddy-dev".to_string())]
+                .into_iter()
+                .collect(),
+        };
+
+        assert_eq!(
+            vertex_anthropic_raw_predict_url("claude-3-5-sonnet@20240620", &credential)
+                .expect("url"),
+            "https://europe-west1-aiplatform.googleapis.com/v1/projects/coddy-dev/locations/europe-west1/publishers/anthropic/models/claude-3-5-sonnet@20240620:rawPredict"
+        );
     }
 
     #[test]
@@ -1544,6 +2111,60 @@ mod tests {
             response.tool_calls,
             vec![ChatToolCall {
                 id: Some("call-1".to_string()),
+                name: "filesystem.list_files".to_string(),
+                arguments: serde_json::json!({ "path": "." }),
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_vertex_anthropic_text_response() {
+        let body = serde_json::json!({
+            "id": "msg-test",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                { "type": "text", "text": "hello" },
+                { "type": "text", "text": " from vertex" }
+            ],
+            "stop_reason": "end_turn"
+        })
+        .to_string();
+
+        let response = parse_vertex_anthropic_response(&body).expect("response");
+
+        assert_eq!(response.text, "hello from vertex");
+        assert_eq!(response.deltas, vec!["hello", " from vertex"]);
+        assert_eq!(response.finish_reason, ChatFinishReason::Stop);
+    }
+
+    #[test]
+    fn parses_vertex_anthropic_tool_use_response() {
+        let body = serde_json::json!({
+            "id": "msg-test",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu-test",
+                    "name": "filesystem.list_files",
+                    "input": { "path": "." }
+                }
+            ],
+            "stop_reason": "tool_use"
+        })
+        .to_string();
+
+        let response = parse_vertex_anthropic_response(&body).expect("response");
+
+        assert_eq!(response.text, "");
+        assert!(response.deltas.is_empty());
+        assert_eq!(response.finish_reason, ChatFinishReason::ToolCalls);
+        assert_eq!(
+            response.tool_calls,
+            vec![ChatToolCall {
+                id: Some("toolu-test".to_string()),
                 name: "filesystem.list_files".to_string(),
                 arguments: serde_json::json!({ "path": "." }),
             }]

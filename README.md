@@ -30,8 +30,8 @@ scaffolded and should be evolved incrementally with tests.
   watch streams.
 - Model selector with provider search, responsive dropdown, secure credential
   persistence and provider-specific notices.
-- Runtime-backed chat responses for selected local Ollama models through the
-  `/api/chat` endpoint.
+- Runtime-backed chat responses for local Ollama, OpenAI-compatible providers
+  and Anthropic Claude partner models through Vertex AI.
 - Provider model listing for:
   - Local Ollama.
   - OpenAI models.
@@ -85,6 +85,8 @@ The Electron main process resolves credentials in this order:
 
 1. `GOOGLE_APPLICATION_CREDENTIALS` or the default ADC file.
 2. `gcloud auth print-access-token`.
+3. `gcloud config get-value project` for request-scoped Vertex runtime
+   metadata.
 
 The `gcloud` token is short-lived, kept only in memory for the Vertex model list
 request and never persisted by Coddy. Run these before opening the UI:
@@ -105,7 +107,8 @@ short-lived credential to the Rust CLI through the internal
 payload, forwards it to the runtime over Coddy IPC and redacts the token from
 debug output. This is a credential bridge for runtime adapters; providers that
 do not yet have a Rust chat adapter still remain marked as adapter pending in
-the UI.
+the UI. The bridge may include non-secret metadata such as `project_id` and
+`region`; metadata values are not shown in Rust debug output.
 
 ## Repository Layout
 
@@ -297,10 +300,11 @@ The Vertex provider accepts an optional region or endpoint override such as
 `global`, `us-east5`, `europe-west1`, or
 `https://us-east5-aiplatform.googleapis.com`.
 
-Runtime chat completion currently supports local Ollama models plus
-OpenAI-compatible chat execution for OpenAI and OpenRouter. By default Coddy
-connects to `http://127.0.0.1:11434/api/chat` for Ollama; set `OLLAMA_HOST` to
-override the host, for example `OLLAMA_HOST=127.0.0.1:11434` or
+Runtime chat completion currently supports local Ollama models,
+OpenAI-compatible chat execution for OpenAI/OpenRouter, and Anthropic Claude
+partner models through Vertex AI `rawPredict`. By default Coddy connects to
+`http://127.0.0.1:11434/api/chat` for Ollama; set `OLLAMA_HOST` to override the
+host, for example `OLLAMA_HOST=127.0.0.1:11434` or
 `OLLAMA_HOST=http://localhost:11434`.
 
 OpenAI and OpenRouter chat execution use non-streaming `/chat/completions`
@@ -309,9 +313,12 @@ provider credential to the CLI as a request-scoped environment payload; the
 token is not stored in renderer state and is redacted from Rust debug output.
 Custom OpenAI-compatible runtime endpoints must use HTTPS.
 
-Vertex and Azure model discovery are wired in the UI. Runtime chat adapters for
-Vertex partner models and Azure deployments remain planned so project, region,
-deployment and IAM behavior can be modeled explicitly.
+Vertex Claude execution uses Google OAuth/ADC/gcloud credentials, the active
+gcloud project, and the selected Vertex region. Claude model IDs must use the
+Vertex Anthropic form, for example `claude-sonnet-4-5@20250929`. Gemini API-key
+models are still discovery-only until the Gemini runtime adapter is wired.
+Azure model discovery is wired in the UI, while the Azure runtime adapter remains
+planned so deployment behavior can be modeled explicitly.
 
 ## Development Workflow
 

@@ -41,31 +41,70 @@ describe('runtimeCredentialBridge', () => {
   it('falls back to a short-lived gcloud token for Vertex without storing it', async () => {
     const store = { get: vi.fn().mockResolvedValue(null) }
     const gcloudTokenProvider = vi.fn().mockResolvedValue('ya29.gcloud-token')
+    const gcloudProjectProvider = vi.fn().mockResolvedValue('coddy-dev')
 
     const env = await buildRuntimeCredentialEnvironment(
       { provider: 'vertex', name: 'claude-sonnet-test' },
       store,
       gcloudTokenProvider,
+      gcloudProjectProvider,
     )
 
     expect(gcloudTokenProvider).toHaveBeenCalledOnce()
+    expect(gcloudProjectProvider).toHaveBeenCalledOnce()
     expect(JSON.parse(env[CODDY_EPHEMERAL_MODEL_CREDENTIAL_ENV] ?? '{}')).toEqual({
       provider: 'vertex',
       token: 'ya29.gcloud-token',
+      metadata: {
+        project_id: 'coddy-dev',
+      },
+    })
+  })
+
+  it('adds Vertex project and region metadata for stored OAuth credentials', async () => {
+    const store = {
+      get: vi.fn().mockResolvedValue({
+        apiKey: 'ya29.vertex-token',
+        endpoint: 'us-east5',
+      }),
+    }
+    const gcloudTokenProvider = vi.fn().mockResolvedValue('unused-token')
+    const gcloudProjectProvider = vi.fn().mockResolvedValue('coddy-dev')
+
+    const env = await buildRuntimeCredentialEnvironment(
+      { provider: 'vertex', name: 'claude-sonnet-test' },
+      store,
+      gcloudTokenProvider,
+      gcloudProjectProvider,
+    )
+
+    expect(gcloudTokenProvider).not.toHaveBeenCalled()
+    expect(gcloudProjectProvider).toHaveBeenCalledOnce()
+    expect(JSON.parse(env[CODDY_EPHEMERAL_MODEL_CREDENTIAL_ENV] ?? '{}')).toEqual({
+      provider: 'vertex',
+      token: 'ya29.vertex-token',
+      endpoint: 'us-east5',
+      metadata: {
+        project_id: 'coddy-dev',
+        region: 'us-east5',
+      },
     })
   })
 
   it('returns an empty environment when no cloud credential is available', async () => {
     const store = { get: vi.fn().mockResolvedValue(null) }
     const gcloudTokenProvider = vi.fn().mockResolvedValue(null)
+    const gcloudProjectProvider = vi.fn().mockResolvedValue('coddy-dev')
 
     await expect(
       buildRuntimeCredentialEnvironment(
         { provider: 'openrouter', name: 'anthropic/claude' },
         store,
         gcloudTokenProvider,
+        gcloudProjectProvider,
       ),
     ).resolves.toEqual({})
     expect(gcloudTokenProvider).not.toHaveBeenCalled()
+    expect(gcloudProjectProvider).not.toHaveBeenCalled()
   })
 })

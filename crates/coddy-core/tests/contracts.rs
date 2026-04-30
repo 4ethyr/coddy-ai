@@ -42,6 +42,9 @@ fn ask_command_debug_redacts_ephemeral_model_credential() {
             provider: "openai".to_string(),
             token: "sk-secret-token".to_string(),
             endpoint: Some("https://api.openai.com/v1".to_string()),
+            metadata: [("project_id".to_string(), "coddy-dev".to_string())]
+                .into_iter()
+                .collect(),
         }),
     };
 
@@ -49,7 +52,21 @@ fn ask_command_debug_redacts_ephemeral_model_credential() {
 
     assert!(rendered.contains("ModelCredential"));
     assert!(rendered.contains("<redacted>"));
+    assert!(rendered.contains("project_id"));
     assert!(!rendered.contains("sk-secret-token"));
+    assert!(!rendered.contains("coddy-dev"));
+}
+
+#[test]
+fn model_credential_accepts_legacy_json_without_metadata() {
+    let decoded: ModelCredential =
+        serde_json::from_str(r#"{"provider":"openai","token":"sk-secret-token","endpoint":null}"#)
+            .expect("deserialize credential");
+
+    assert_eq!(decoded.provider, "openai");
+    assert_eq!(decoded.token, "sk-secret-token");
+    assert!(decoded.endpoint.is_none());
+    assert!(decoded.metadata.is_empty());
 }
 
 #[test]

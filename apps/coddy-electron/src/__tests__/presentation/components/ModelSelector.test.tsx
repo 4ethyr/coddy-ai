@@ -123,7 +123,7 @@ describe('ModelSelector', () => {
     expect(within(providerGroup('Local Ollama')).getByText('runtime ready')).toBeInTheDocument()
     expect(within(providerGroup('OpenAI')).getByText('runtime ready')).toBeInTheDocument()
     expect(within(providerGroup('OpenRouter')).getByText('runtime ready')).toBeInTheDocument()
-    expect(within(providerGroup('Google Vertex')).getByText('adapter pending')).toBeInTheDocument()
+    expect(within(providerGroup('Google Vertex')).getByText('claude ready')).toBeInTheDocument()
   })
 
   it('allows Vertex model loading through local gcloud or ADC without pasting a token', async () => {

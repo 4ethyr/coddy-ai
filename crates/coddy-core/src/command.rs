@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct ModelRef {
@@ -12,15 +12,19 @@ pub struct ModelCredential {
     pub provider: String,
     pub token: String,
     pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
 }
 
 impl fmt::Debug for ModelCredential {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let metadata_keys = self.metadata.keys().collect::<Vec<_>>();
         formatter
             .debug_struct("ModelCredential")
             .field("provider", &self.provider)
             .field("token", &"<redacted>")
             .field("endpoint", &self.endpoint)
+            .field("metadata_keys", &metadata_keys)
             .finish()
     }
 }

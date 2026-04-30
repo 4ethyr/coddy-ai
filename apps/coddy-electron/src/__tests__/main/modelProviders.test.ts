@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   listProviderModels,
   resolveGcloudAccessToken,
+  resolveGcloudProjectId,
 } from '../../main/modelProviders'
 
 function jsonResponse(body: unknown) {
@@ -369,6 +370,24 @@ describe('modelProviders', () => {
       expect.objectContaining({
         maxBuffer: 4096,
         timeout: 10_000,
+        windowsHide: true,
+      }),
+      expect.any(Function),
+    )
+  })
+
+  it('resolves the active gcloud project for Vertex runtime metadata', async () => {
+    const runner = vi.fn((_file, _args, _options, callback) => {
+      callback(null, 'coddy-dev\n', '')
+    })
+
+    await expect(resolveGcloudProjectId(runner)).resolves.toBe('coddy-dev')
+    expect(runner).toHaveBeenCalledWith(
+      'gcloud',
+      ['config', 'get-value', 'project'],
+      expect.objectContaining({
+        maxBuffer: 1024,
+        timeout: 5_000,
         windowsHide: true,
       }),
       expect.any(Function),

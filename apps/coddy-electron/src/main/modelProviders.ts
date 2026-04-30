@@ -91,6 +91,8 @@ const MODEL_LIST_TIMEOUT_MS = 12_000
 const MAX_MODELS_PER_PROVIDER = 500
 const GCLOUD_TOKEN_TIMEOUT_MS = 10_000
 const GCLOUD_TOKEN_MAX_BUFFER_BYTES = 4_096
+const GCLOUD_PROJECT_TIMEOUT_MS = 5_000
+const GCLOUD_PROJECT_MAX_BUFFER_BYTES = 1_024
 const GOOGLE_AUTH_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
 const GOOGLE_JWT_BEARER_GRANT =
   'urn:ietf:params:oauth:grant-type:jwt-bearer'
@@ -635,6 +637,29 @@ export async function resolveGcloudAccessToken(
   })
 }
 
+export async function resolveGcloudProjectId(
+  runner: ExecFileRunner = nodeExecFile as ExecFileRunner,
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    runner(
+      'gcloud',
+      ['config', 'get-value', 'project'],
+      {
+        maxBuffer: GCLOUD_PROJECT_MAX_BUFFER_BYTES,
+        timeout: GCLOUD_PROJECT_TIMEOUT_MS,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (error) {
+          resolve(null)
+          return
+        }
+        resolve(normalizeGcloudProjectOutput(stdout))
+      },
+    )
+  })
+}
+
 function googleApplicationCredentialsPath(): string | null {
   const explicit = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()
   if (explicit) return explicit
@@ -752,6 +777,12 @@ function normalizeGoogleAccessTokenResolution(
 function normalizeGcloudTokenOutput(value: string | Buffer): string | null {
   const token = value.toString('utf8').trim().split(/\s+/)[0] ?? ''
   return token ? token : null
+}
+
+function normalizeGcloudProjectOutput(value: string | Buffer): string | null {
+  const projectId = value.toString('utf8').trim().split(/\s+/)[0] ?? ''
+  if (!projectId || projectId === '(unset)') return null
+  return projectId
 }
 
 function requiredCredentialField(
