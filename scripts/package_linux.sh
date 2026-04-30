@@ -18,8 +18,12 @@ esac
 VERSION="$(node -p "require('$APP_DIR/package.json').version")"
 APPIMAGE_NAME="Coddy.AppImage"
 ASSET="$OUT_DIR/coddy-linux-$CODDY_ARCH.tar.gz"
+APP_ID="ai.coddy.Coddy"
+LOGO_SOURCE="${CODDY_LOGO:-$ROOT_DIR/logo.png}"
+APP_BUILDER_ICON="$APP_DIR/build/logo.png"
 STAGE_PARENT="$(mktemp -d)"
 STAGE_DIR="$STAGE_PARENT/coddy-linux-$CODDY_ARCH"
+HAS_LOGO=0
 
 cleanup() {
   rm -r "$STAGE_PARENT"
@@ -27,6 +31,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/share/coddy" "$STAGE_DIR/share/applications"
+mkdir -p "$STAGE_DIR/share/icons/hicolor/512x512/apps"
 mkdir -p "$OUT_DIR"
 
 if [[ "${CODDY_SKIP_SECRET_GUARD:-0}" != "1" ]]; then
@@ -36,9 +41,21 @@ fi
 echo "Building Coddy backend..."
 cargo build --release -p coddy
 
+if [[ -f "$LOGO_SOURCE" ]]; then
+  mkdir -p "$(dirname "$APP_BUILDER_ICON")"
+  cp "$LOGO_SOURCE" "$APP_BUILDER_ICON"
+  HAS_LOGO=1
+else
+  echo "Warning: logo source not found at $LOGO_SOURCE; package will use Electron's default AppImage icon." >&2
+fi
+
 echo "Building Coddy Electron frontend..."
 npm --prefix "$APP_DIR" run build
-npm --prefix "$APP_DIR" run electron:build -- --linux AppImage
+if [[ "$HAS_LOGO" == "1" ]]; then
+  npm --prefix "$APP_DIR" run electron:build -- --linux AppImage --config.icon=build/logo.png
+else
+  npm --prefix "$APP_DIR" run electron:build -- --linux AppImage
+fi
 
 APPIMAGE_PATH="$(
   find "$APP_DIR/release" -maxdepth 1 -type f -name 'Coddy-*.AppImage' -printf '%T@ %p\n' \
@@ -54,6 +71,10 @@ fi
 cp "$ROOT_DIR/target/release/coddy" "$STAGE_DIR/bin/coddy"
 cp "$APPIMAGE_PATH" "$STAGE_DIR/share/coddy/$APPIMAGE_NAME"
 cp "$ROOT_DIR/scripts/install.sh" "$STAGE_DIR/install.sh"
+if [[ "$HAS_LOGO" == "1" ]]; then
+  cp "$LOGO_SOURCE" "$STAGE_DIR/share/coddy/logo.png"
+  cp "$LOGO_SOURCE" "$STAGE_DIR/share/icons/hicolor/512x512/apps/$APP_ID.png"
+fi
 
 cat > "$STAGE_DIR/bin/coddy-desktop" <<'WRAPPER'
 #!/usr/bin/env sh
@@ -97,16 +118,19 @@ fi
 echo "Coddy Desktop started. Logs: $LOG_FILE"
 WRAPPER
 
-cat > "$STAGE_DIR/share/applications/ai.coddy.Coddy.desktop" <<'DESKTOP'
-[Desktop Entry]
-Type=Application
-Name=Coddy
-Comment=Coddy agentic coding REPL
-Exec=coddy-desktop
-Terminal=false
-Categories=Development;IDE;
-StartupWMClass=Coddy
-DESKTOP
+{
+  echo "[Desktop Entry]"
+  echo "Type=Application"
+  echo "Name=Coddy"
+  echo "Comment=Coddy agentic coding REPL"
+  echo "Exec=coddy-desktop"
+  if [[ "$HAS_LOGO" == "1" ]]; then
+    echo "Icon=$APP_ID"
+  fi
+  echo "Terminal=false"
+  echo "Categories=Development;IDE;"
+  echo "StartupWMClass=Coddy"
+} > "$STAGE_DIR/share/applications/$APP_ID.desktop"
 
 chmod 755 "$STAGE_DIR/bin/coddy" "$STAGE_DIR/bin/coddy-desktop" "$STAGE_DIR/share/coddy/$APPIMAGE_NAME"
 

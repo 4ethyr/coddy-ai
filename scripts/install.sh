@@ -7,6 +7,9 @@ INSTALL_PREFIX="${CODDY_INSTALL_PREFIX:-$HOME/.local}"
 BIN_DIR="${CODDY_BIN_DIR:-$INSTALL_PREFIX/bin}"
 APP_DIR="${CODDY_APP_DIR:-$INSTALL_PREFIX/share/coddy}"
 DESKTOP_DIR="${CODDY_DESKTOP_DIR:-$HOME/.local/share/applications}"
+DESKTOP_SHORTCUT_DIR="${CODDY_DESKTOP_SHORTCUT_DIR:-$HOME/Desktop}"
+ICON_DIR="${CODDY_ICON_DIR:-$INSTALL_PREFIX/share/icons/hicolor/512x512/apps}"
+APP_ID="ai.coddy.Coddy"
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -32,6 +35,81 @@ else
   base_url="https://github.com/$REPO/releases/download/$VERSION"
 fi
 
+install_system_dependencies_if_requested() {
+  if [ "${CODDY_INSTALL_SYSTEM_DEPS:-0}" != "1" ]; then
+    return
+  fi
+
+  if [ "$(id -u)" != "0" ] && ! command -v sudo >/dev/null 2>&1; then
+    echo "CODDY_INSTALL_SYSTEM_DEPS=1 requires root or sudo." >&2
+    exit 1
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo_cmd=""
+    if [ "$(id -u)" != "0" ]; then
+      sudo_cmd="sudo"
+    fi
+    $sudo_cmd apt-get update
+    $sudo_cmd apt-get install -y \
+      ca-certificates curl tar desktop-file-utils xdg-utils \
+      pipewire-bin alsa-utils libfuse2
+    return
+  fi
+
+  if command -v dnf >/dev/null 2>&1; then
+    sudo_cmd=""
+    if [ "$(id -u)" != "0" ]; then
+      sudo_cmd="sudo"
+    fi
+    $sudo_cmd dnf install -y \
+      ca-certificates curl tar desktop-file-utils xdg-utils \
+      pipewire-utils alsa-utils fuse-libs
+    return
+  fi
+
+  echo "Automatic dependency install is not supported for this distro." >&2
+  echo "Install: curl or wget, tar, desktop-file-utils, xdg-utils, pw-record or arecord, and FUSE/AppImage support." >&2
+}
+
+warn_missing_runtime_dependencies() {
+  missing=""
+  if ! command -v tar >/dev/null 2>&1; then
+    missing="$missing tar"
+  fi
+  if ! command -v update-desktop-database >/dev/null 2>&1; then
+    missing="$missing desktop-file-utils"
+  fi
+  if ! command -v pw-record >/dev/null 2>&1 && ! command -v arecord >/dev/null 2>&1; then
+    missing="$missing pipewire-bin-or-alsa-utils"
+  fi
+
+  if [ -n "$missing" ]; then
+    echo "Coddy installed, but these optional runtime dependencies may be missing:$missing" >&2
+    echo "Rerun with CODDY_INSTALL_SYSTEM_DEPS=1 to let the installer try apt/dnf package installation." >&2
+  fi
+}
+
+write_desktop_entry() {
+  entry_path="$1"
+  exec_path="$2"
+  icon_path="$3"
+
+  {
+    echo "[Desktop Entry]"
+    echo "Type=Application"
+    echo "Name=Coddy"
+    echo "Comment=Coddy agentic coding REPL"
+    echo "Exec=$exec_path"
+    if [ -n "$icon_path" ]; then
+      echo "Icon=$icon_path"
+    fi
+    echo "Terminal=false"
+    echo "Categories=Development;IDE;"
+    echo "StartupWMClass=Coddy"
+  } > "$entry_path"
+}
+
 tmp_dir="$(mktemp -d)"
 archive="$tmp_dir/$asset"
 checksum="$archive.sha256"
@@ -40,6 +118,8 @@ cleanup() {
   rm -r "$tmp_dir"
 }
 trap cleanup EXIT INT TERM
+
+install_system_dependencies_if_requested
 
 download() {
   url="$1"
@@ -103,9 +183,17 @@ require_payload_file() {
 require_payload_file "$payload/bin/coddy" "bin/coddy"
 require_payload_file "$payload/share/coddy/Coddy.AppImage" "share/coddy/Coddy.AppImage"
 
-mkdir -p "$BIN_DIR" "$APP_DIR" "$DESKTOP_DIR"
+mkdir -p "$BIN_DIR" "$APP_DIR" "$DESKTOP_DIR" "$DESKTOP_SHORTCUT_DIR"
 cp "$payload/bin/coddy" "$BIN_DIR/coddy"
 cp "$payload/share/coddy/Coddy.AppImage" "$APP_DIR/Coddy.AppImage"
+
+desktop_icon_path=""
+if [ -f "$payload/share/coddy/logo.png" ]; then
+  mkdir -p "$ICON_DIR"
+  cp "$payload/share/coddy/logo.png" "$APP_DIR/logo.png"
+  cp "$payload/share/coddy/logo.png" "$ICON_DIR/$APP_ID.png"
+  desktop_icon_path="$APP_DIR/logo.png"
+fi
 
 cat > "$BIN_DIR/coddy-desktop" <<WRAPPER
 #!/usr/bin/env sh
@@ -149,25 +237,27 @@ fi
 echo "Coddy Desktop started. Logs: \$LOG_FILE"
 WRAPPER
 
-cat > "$DESKTOP_DIR/ai.coddy.Coddy.desktop" <<DESKTOP
-[Desktop Entry]
-Type=Application
-Name=Coddy
-Comment=Coddy agentic coding REPL
-Exec=$BIN_DIR/coddy-desktop
-Terminal=false
-Categories=Development;IDE;
-StartupWMClass=Coddy
-DESKTOP
+write_desktop_entry "$DESKTOP_DIR/$APP_ID.desktop" "$BIN_DIR/coddy-desktop" "$desktop_icon_path"
+write_desktop_entry "$DESKTOP_SHORTCUT_DIR/Coddy.desktop" "$BIN_DIR/coddy-desktop" "$desktop_icon_path"
 
 chmod 755 "$BIN_DIR/coddy" "$BIN_DIR/coddy-desktop" "$APP_DIR/Coddy.AppImage"
+chmod 644 "$DESKTOP_DIR/$APP_ID.desktop"
+chmod 755 "$DESKTOP_SHORTCUT_DIR/Coddy.desktop"
 
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
 fi
 
+if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -f "$ICON_DIR/$APP_ID.png" ]; then
+  gtk-update-icon-cache "$(dirname "$(dirname "$(dirname "$ICON_DIR")")")" >/dev/null 2>&1 || true
+fi
+
+warn_missing_runtime_dependencies
+
 echo "Coddy installed:"
 echo "  CLI:     $BIN_DIR/coddy"
 echo "  Desktop: $BIN_DIR/coddy-desktop"
+echo "  Menu:    $DESKTOP_DIR/$APP_ID.desktop"
+echo "  Shortcut:$DESKTOP_SHORTCUT_DIR/Coddy.desktop"
 echo
 echo "Add $BIN_DIR to PATH if needed."
