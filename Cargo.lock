@@ -219,6 +219,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "coddy-agent",
  "coddy-client",
  "coddy-core",
  "coddy-ipc",

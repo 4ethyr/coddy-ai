@@ -8,6 +8,7 @@ use crate::{
 pub const SUBAGENT_LIST_TOOL: &str = "subagent.list";
 pub const SUBAGENT_PREPARE_TOOL: &str = "subagent.prepare";
 pub const SUBAGENT_ROUTE_TOOL: &str = "subagent.route";
+pub const SUBAGENT_TEAM_PLAN_TOOL: &str = "subagent.team_plan";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubagentMode {
@@ -130,6 +131,116 @@ impl SubagentHandoffPlan {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentTeamGateStatus {
+    ReadyToStart,
+    AwaitingApproval,
+    Blocked,
+}
+
+impl SubagentTeamGateStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadyToStart => "ready-to-start",
+            Self::AwaitingApproval => "awaiting-approval",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentTeamMember {
+    pub sequence: usize,
+    pub name: String,
+    pub mode: SubagentMode,
+    pub rationale: String,
+    pub approval_required: bool,
+    pub gate_status: SubagentTeamGateStatus,
+    pub readiness_score: u8,
+    pub readiness_issues: Vec<String>,
+    pub allowed_tools: Vec<String>,
+    pub required_output_fields: Vec<String>,
+    pub output_additional_properties_allowed: bool,
+    pub timeout_ms: u64,
+    pub max_context_tokens: u32,
+}
+
+impl SubagentTeamMember {
+    pub fn public_metadata(&self) -> Value {
+        json!({
+            "sequence": self.sequence,
+            "name": self.name,
+            "mode": self.mode.as_str(),
+            "rationale": self.rationale,
+            "approvalRequired": self.approval_required,
+            "gateStatus": self.gate_status.as_str(),
+            "readinessScore": self.readiness_score,
+            "readinessIssues": self.readiness_issues,
+            "allowedTools": self.allowed_tools,
+            "requiredOutputFields": self.required_output_fields,
+            "outputAdditionalPropertiesAllowed": self.output_additional_properties_allowed,
+            "timeoutMs": self.timeout_ms,
+            "maxContextTokens": self.max_context_tokens,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentTeamMetrics {
+    pub member_count: usize,
+    pub ready_to_start: usize,
+    pub awaiting_approval: usize,
+    pub blocked: usize,
+    pub approval_required: usize,
+    pub read_only: usize,
+    pub workspace_write: usize,
+    pub evaluation: usize,
+    pub average_readiness: u8,
+    pub min_readiness: u8,
+    pub strict_output_contracts: usize,
+    pub hardness_score: u8,
+}
+
+impl SubagentTeamMetrics {
+    pub fn public_metadata(&self) -> Value {
+        json!({
+            "memberCount": self.member_count,
+            "readyToStart": self.ready_to_start,
+            "awaitingApproval": self.awaiting_approval,
+            "blocked": self.blocked,
+            "approvalRequired": self.approval_required,
+            "readOnly": self.read_only,
+            "workspaceWrite": self.workspace_write,
+            "evaluation": self.evaluation,
+            "averageReadiness": self.average_readiness,
+            "minReadiness": self.min_readiness,
+            "strictOutputContracts": self.strict_output_contracts,
+            "hardnessScore": self.hardness_score,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentTeamPlan {
+    pub goal: String,
+    pub members: Vec<SubagentTeamMember>,
+    pub metrics: SubagentTeamMetrics,
+    pub risks: Vec<String>,
+    pub validation_strategy: Vec<String>,
+}
+
+impl SubagentTeamPlan {
+    pub fn public_metadata(&self) -> Value {
+        json!({
+            "goal": self.goal,
+            "members": self.members.iter().map(SubagentTeamMember::public_metadata).collect::<Vec<_>>(),
+            "metrics": self.metrics.public_metadata(),
+            "risks": self.risks,
+            "validationStrategy": self.validation_strategy,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SubagentRegistry {
     definitions: Vec<SubagentDefinition>,
@@ -214,6 +325,9 @@ impl Default for SubagentRegistry {
                         "continue",
                         "implementar",
                         "corrigir",
+                        "aprimorar",
+                        "aprimore",
+                        "melhorar",
                     ],
                     structured_report_schema(&[
                         "changedFiles",
@@ -294,6 +408,9 @@ impl Default for SubagentRegistry {
                         "regression",
                         "teste",
                         "testar",
+                        "prompt",
+                        "prompts",
+                        "bateria",
                     ],
                     structured_report_schema(&[
                         "testsCreated",
@@ -318,6 +435,10 @@ impl Default for SubagentRegistry {
                         "harness",
                         "hardness",
                         "gate",
+                        "multiagent",
+                        "multiagents",
+                        "metrif",
+                        "metrificar",
                         "metrica",
                         "métrica",
                     ],
@@ -447,6 +568,39 @@ impl SubagentRegistry {
         Some(handoff_plan_from_definition(definition, goal))
     }
 
+    pub fn plan_team(&self, goal: &str, max_members: usize) -> Option<SubagentTeamPlan> {
+        let goal = goal.trim();
+        if goal.is_empty() {
+            return None;
+        }
+
+        let max_members = max_members.max(1).min(self.definitions.len());
+        let names = self.team_candidate_names(goal, max_members);
+        if names.is_empty() {
+            return None;
+        }
+
+        let members = names
+            .iter()
+            .enumerate()
+            .filter_map(|(index, name)| {
+                let handoff = self.prepare_handoff(name, goal)?;
+                Some(team_member_from_handoff(index + 1, handoff))
+            })
+            .collect::<Vec<_>>();
+        let metrics = team_metrics(&members);
+        let risks = team_risks(&members);
+        let validation_strategy = team_validation_strategy(&members);
+
+        Some(SubagentTeamPlan {
+            goal: goal.to_string(),
+            members,
+            metrics,
+            risks,
+            validation_strategy,
+        })
+    }
+
     fn fallback_definition(&self, mode: Option<SubagentMode>) -> Option<&SubagentDefinition> {
         self.get("planner")
             .filter(|definition| mode.is_none_or(|mode| definition.mode == mode))
@@ -455,6 +609,90 @@ impl SubagentRegistry {
                     .iter()
                     .find(|definition| mode.is_none_or(|mode| definition.mode == mode))
             })
+    }
+
+    fn team_candidate_names(&self, goal: &str, max_members: usize) -> Vec<String> {
+        let normalized_goal = normalize_text(goal);
+        let recommendations = self.recommend(goal, None, self.definitions.len());
+        let mut names = Vec::<String>::new();
+
+        if needs_repository_context(&normalized_goal) {
+            push_team_name(&mut names, "explorer");
+        }
+        if contains_any_term(
+            &normalized_goal,
+            &["plan", "planejar", "arquitetura", "strategy"],
+        ) {
+            push_team_name(&mut names, "planner");
+        }
+        for recommendation in recommendations {
+            push_team_name(&mut names, &recommendation.name);
+        }
+
+        if contains_any_term(
+            &normalized_goal,
+            &[
+                "implement",
+                "implementar",
+                "aprimorar",
+                "aprimore",
+                "melhorar",
+                "fix",
+                "corrigir",
+                "code",
+                "codigo",
+                "código",
+            ],
+        ) {
+            push_team_name(&mut names, "coder");
+        }
+        if contains_any_term(
+            &normalized_goal,
+            &[
+                "test", "teste", "testar", "tdd", "coverage", "bateria", "prompt",
+            ],
+        ) {
+            push_team_name(&mut names, "test-writer");
+            push_team_name(&mut names, "eval-runner");
+        }
+        if contains_any_term(
+            &normalized_goal,
+            &[
+                "eval",
+                "metric",
+                "metrica",
+                "métrica",
+                "metrif",
+                "harness",
+                "hardness",
+                "regression",
+                "regressao",
+                "regressão",
+            ],
+        ) {
+            push_team_name(&mut names, "eval-runner");
+        }
+        if contains_any_term(
+            &normalized_goal,
+            &["security", "seguranca", "segurança", "secret", "sandbox"],
+        ) {
+            push_team_name(&mut names, "security-reviewer");
+        }
+
+        let has_write_member = names.iter().any(|name| {
+            self.get(name)
+                .is_some_and(|definition| definition.mode == SubagentMode::WorkspaceWrite)
+        });
+        if has_write_member {
+            push_team_name(&mut names, "security-reviewer");
+            push_team_name(&mut names, "reviewer");
+        }
+
+        if names.is_empty() {
+            push_team_name(&mut names, "planner");
+        }
+        names.truncate(max_members);
+        names
     }
 }
 
@@ -700,6 +938,228 @@ fn routing_score(matched_signal_count: usize) -> u8 {
     (40 + matched_signal_count.saturating_mul(12)).min(100) as u8
 }
 
+fn team_member_from_handoff(sequence: usize, handoff: SubagentHandoffPlan) -> SubagentTeamMember {
+    let required_output_fields = required_schema_fields(&handoff.output_schema);
+    let output_additional_properties_allowed = handoff
+        .output_schema
+        .get("additionalProperties")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let gate_status = if handoff.readiness_score != 100 || !handoff.readiness_issues.is_empty() {
+        SubagentTeamGateStatus::Blocked
+    } else if handoff.approval_required {
+        SubagentTeamGateStatus::AwaitingApproval
+    } else {
+        SubagentTeamGateStatus::ReadyToStart
+    };
+
+    SubagentTeamMember {
+        sequence,
+        name: handoff.name,
+        mode: handoff.mode,
+        rationale: team_member_rationale(handoff.mode),
+        approval_required: handoff.approval_required,
+        gate_status,
+        readiness_score: handoff.readiness_score,
+        readiness_issues: handoff.readiness_issues,
+        allowed_tools: handoff.allowed_tools,
+        required_output_fields,
+        output_additional_properties_allowed,
+        timeout_ms: handoff.timeout_ms,
+        max_context_tokens: handoff.max_context_tokens,
+    }
+}
+
+fn team_member_rationale(mode: SubagentMode) -> String {
+    match mode {
+        SubagentMode::ReadOnly => {
+            "Ground the workflow in repository evidence without side effects.".to_string()
+        }
+        SubagentMode::WorkspaceWrite => {
+            "Perform scoped implementation through preview/apply approval boundaries.".to_string()
+        }
+        SubagentMode::Evaluation => {
+            "Measure quality, regressions and validation coverage through guarded checks."
+                .to_string()
+        }
+    }
+}
+
+fn team_metrics(members: &[SubagentTeamMember]) -> SubagentTeamMetrics {
+    let member_count = members.len();
+    let ready_to_start = members
+        .iter()
+        .filter(|member| member.gate_status == SubagentTeamGateStatus::ReadyToStart)
+        .count();
+    let awaiting_approval = members
+        .iter()
+        .filter(|member| member.gate_status == SubagentTeamGateStatus::AwaitingApproval)
+        .count();
+    let blocked = members
+        .iter()
+        .filter(|member| member.gate_status == SubagentTeamGateStatus::Blocked)
+        .count();
+    let approval_required = members
+        .iter()
+        .filter(|member| member.approval_required)
+        .count();
+    let read_only = members
+        .iter()
+        .filter(|member| member.mode == SubagentMode::ReadOnly)
+        .count();
+    let workspace_write = members
+        .iter()
+        .filter(|member| member.mode == SubagentMode::WorkspaceWrite)
+        .count();
+    let evaluation = members
+        .iter()
+        .filter(|member| member.mode == SubagentMode::Evaluation)
+        .count();
+    let average_readiness = if member_count == 0 {
+        100
+    } else {
+        (members
+            .iter()
+            .map(|member| usize::from(member.readiness_score))
+            .sum::<usize>()
+            / member_count) as u8
+    };
+    let min_readiness = members
+        .iter()
+        .map(|member| member.readiness_score)
+        .min()
+        .unwrap_or(100);
+    let strict_output_contracts = members
+        .iter()
+        .filter(|member| {
+            !member.output_additional_properties_allowed
+                && !member.required_output_fields.is_empty()
+        })
+        .count();
+    let contract_component = percent(strict_output_contracts, member_count);
+    let gate_component = percent(member_count.saturating_sub(blocked), member_count);
+    let hardness_score = ((usize::from(average_readiness) * 60)
+        + (usize::from(contract_component) * 20)
+        + (usize::from(gate_component) * 20))
+        / 100;
+
+    SubagentTeamMetrics {
+        member_count,
+        ready_to_start,
+        awaiting_approval,
+        blocked,
+        approval_required,
+        read_only,
+        workspace_write,
+        evaluation,
+        average_readiness,
+        min_readiness,
+        strict_output_contracts,
+        hardness_score: hardness_score as u8,
+    }
+}
+
+fn team_risks(members: &[SubagentTeamMember]) -> Vec<String> {
+    let mut risks = Vec::new();
+    if members
+        .iter()
+        .any(|member| member.mode == SubagentMode::WorkspaceWrite)
+    {
+        risks.push(
+            "Workspace-write members must stay behind preview/apply and explicit approval gates."
+                .to_string(),
+        );
+    }
+    if members
+        .iter()
+        .any(|member| member.mode == SubagentMode::Evaluation && member.approval_required)
+    {
+        risks.push(
+            "Evaluation members that use shell require user approval before executing commands."
+                .to_string(),
+        );
+    }
+    if members
+        .iter()
+        .any(|member| member.name == "security-reviewer")
+    {
+        risks.push(
+            "Security findings must avoid exposing secret values while preserving actionable evidence."
+                .to_string(),
+        );
+    }
+    if risks.is_empty() {
+        risks.push("No elevated multiagent orchestration risk detected.".to_string());
+    }
+    risks
+}
+
+fn team_validation_strategy(members: &[SubagentTeamMember]) -> Vec<String> {
+    let mut strategy = vec![
+        "Run read-only exploration before any mutating handoff.".to_string(),
+        "Validate every member output against its strict JSON contract.".to_string(),
+    ];
+    if members
+        .iter()
+        .any(|member| member.mode == SubagentMode::WorkspaceWrite)
+    {
+        strategy.push(
+            "Require preview/apply approval and focused tests for write members.".to_string(),
+        );
+    }
+    if members
+        .iter()
+        .any(|member| member.mode == SubagentMode::Evaluation)
+    {
+        strategy
+            .push("Record eval score, failed checks and regression recommendations.".to_string());
+    }
+    strategy
+}
+
+fn push_team_name(names: &mut Vec<String>, name: &str) {
+    if !names.iter().any(|existing| existing == name) {
+        names.push(name.to_string());
+    }
+}
+
+fn needs_repository_context(normalized_goal: &str) -> bool {
+    contains_any_term(
+        normalized_goal,
+        &[
+            "agent",
+            "codigo",
+            "código",
+            "code",
+            "repo",
+            "workspace",
+            "test",
+            "teste",
+            "eval",
+            "metric",
+            "metrif",
+            "hardness",
+            "multiagent",
+            "multiagents",
+        ],
+    )
+}
+
+fn contains_any_term(haystack: &str, terms: &[&str]) -> bool {
+    let haystack = format!(" {haystack} ");
+    terms.iter().any(|term| {
+        let term = normalize_text(term);
+        !term.is_empty() && haystack.contains(&format!(" {term} "))
+    })
+}
+
+fn percent(numerator: usize, denominator: usize) -> u8 {
+    if denominator == 0 {
+        return 100;
+    }
+    ((numerator * 100) / denominator) as u8
+}
+
 fn normalize_text(value: &str) -> String {
     let mut normalized = String::with_capacity(value.len());
 
@@ -808,6 +1268,62 @@ mod tests {
                 "nextSteps".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn plans_multiagent_team_with_metrics_for_hardness_work() {
+        let registry = SubagentRegistry::default();
+
+        let plan = registry
+            .plan_team(
+                "revise, aprimore e teste multiagents, harness, prompts e metricas",
+                6,
+            )
+            .expect("team plan");
+
+        let names = plan
+            .members
+            .iter()
+            .map(|member| member.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"explorer"));
+        assert!(names.contains(&"coder"));
+        assert!(names.contains(&"test-writer"));
+        assert!(names.contains(&"eval-runner"));
+        assert!(names.contains(&"reviewer"));
+        assert_eq!(plan.metrics.member_count, plan.members.len());
+        assert_eq!(plan.metrics.blocked, 0);
+        assert_eq!(plan.metrics.min_readiness, 100);
+        assert_eq!(plan.metrics.average_readiness, 100);
+        assert_eq!(plan.metrics.strict_output_contracts, plan.members.len());
+        assert_eq!(plan.metrics.hardness_score, 100);
+        assert!(plan.metrics.awaiting_approval >= 2);
+        assert!(plan
+            .risks
+            .iter()
+            .any(|risk| risk.contains("Workspace-write")));
+        assert!(plan
+            .validation_strategy
+            .iter()
+            .any(|item| item.contains("strict JSON contract")));
+    }
+
+    #[test]
+    fn team_plan_keeps_read_only_security_work_auto_startable() {
+        let registry = SubagentRegistry::default();
+
+        let plan = registry
+            .plan_team("revise seguranca, secrets e sandbox", 3)
+            .expect("team plan");
+
+        assert_eq!(plan.members[0].name, "security-reviewer");
+        assert_eq!(plan.members[0].mode, SubagentMode::ReadOnly);
+        assert_eq!(
+            plan.members[0].gate_status,
+            SubagentTeamGateStatus::ReadyToStart
+        );
+        assert!(!plan.members[0].approval_required);
+        assert_eq!(plan.metrics.blocked, 0);
     }
 
     #[test]

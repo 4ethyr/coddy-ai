@@ -4,6 +4,7 @@ pub mod context;
 pub mod event;
 pub mod event_broker;
 pub mod event_log;
+mod json_value_wire;
 pub mod permission;
 pub mod policy;
 pub mod repl_shell;

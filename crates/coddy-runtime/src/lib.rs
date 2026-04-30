@@ -1,9 +1,10 @@
 use coddy_agent::{
-    AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError, ChatRequest, ChatResponse,
-    ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, SubagentExecutionGate,
-    SubagentExecutionHandoff, SubagentExecutionStartPlan, SubagentExecutionStartStatus,
-    SubagentOutputContract, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL,
-    SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
+    AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError, ChatModelResult, ChatRequest,
+    ChatResponse, ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime,
+    SubagentExecutionGate, SubagentExecutionHandoff, SubagentExecutionStartPlan,
+    SubagentExecutionStartStatus, SubagentOutputContract, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL,
+    READ_FILE_TOOL, SEARCH_FILES_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
+    SUBAGENT_TEAM_PLAN_TOOL,
 };
 use coddy_core::{
     ApprovalPolicy, ContextItem, ContextPolicy, ModelCredential, ModelRef, PermissionReply,
@@ -26,7 +27,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixListener;
 use uuid::Uuid;
 
-const MAX_MODEL_TOOL_ROUNDS: usize = 3;
+const MAX_MODEL_TOOL_ROUNDS: usize = 5;
 
 #[derive(Debug, Clone)]
 pub struct CoddyRuntime {
@@ -575,6 +576,7 @@ impl CoddyRuntime {
             ChatMessage::user(context.goal.clone()),
         ];
         let mut response = response;
+        let mut last_tool_observations = None;
 
         for _ in 0..MAX_MODEL_TOOL_ROUNDS {
             let round =
@@ -582,18 +584,32 @@ impl CoddyRuntime {
             if round.executed_tool_calls == 0 {
                 return round.response;
             }
+            last_tool_observations = Some(round.response.text.clone());
 
             if !response.text.trim().is_empty() {
                 messages.push(ChatMessage::assistant(response.text.clone()));
             }
             messages.push(ChatMessage::tool(round.response.text.clone()));
 
-            let Some(next_response) = self.complete_after_tool_messages(
+            let next_response = match self.complete_after_tool_messages(
                 context.selected_model,
                 context.model_credential.clone(),
                 messages.clone(),
-            ) else {
-                return round.response;
+            ) {
+                Ok(response) => response,
+                Err(error) => {
+                    let mut text = round.response.text;
+                    text.push_str("\n\n");
+                    text.push_str(
+                        "Coddy could not get a follow-up response after tool observations: ",
+                    );
+                    text.push_str(&model_error_message(
+                        &error,
+                        context.selected_model,
+                        self.tool_registry.definitions().len(),
+                    ));
+                    return AssistantResponse::from_text(redact_context_text(&text));
+                }
             };
             if next_response.tool_calls.is_empty() {
                 return AssistantResponse::from_chat_response(next_response);
@@ -602,16 +618,11 @@ impl CoddyRuntime {
         }
 
         let tool_summary = summarize_chat_tool_calls(&response.tool_calls);
-        let text = if response.text.trim().is_empty() {
-            format!(
-                "Model requested additional tools after {MAX_MODEL_TOOL_ROUNDS} tool observation rounds: {tool_summary}. Coddy stopped the automatic loop to avoid an unbounded run."
-            )
-        } else {
-            format!(
-                "{}\n\nModel requested additional tools after {MAX_MODEL_TOOL_ROUNDS} tool observation rounds: {tool_summary}. Coddy stopped the automatic loop to avoid an unbounded run.",
-                response.text.trim()
-            )
-        };
+        let text = build_tool_round_limit_response(
+            response.text.trim(),
+            &tool_summary,
+            last_tool_observations.as_deref(),
+        );
         AssistantResponse::from_text(redact_context_text(&text))
     }
 
@@ -669,8 +680,49 @@ impl CoddyRuntime {
                 sections.push(handoff_context);
             }
         }
+        if let Some(team_context) =
+            self.prepare_subagent_team_context(agent_runtime, &mut state, session_id, run_id, goal)
+        {
+            sections.push(team_context);
+        }
 
         Some(sections.join("\n\n"))
+    }
+
+    fn prepare_subagent_team_context(
+        &self,
+        agent_runtime: &LocalAgentRuntime,
+        state: &mut coddy_agent::RunState,
+        session_id: Uuid,
+        run_id: Uuid,
+        goal: &str,
+    ) -> Option<String> {
+        agent_runtime.add_plan_item(
+            state,
+            "Compose measurable multiagent team plan",
+            Some(ToolName::new(SUBAGENT_TEAM_PLAN_TOOL).expect("built-in tool name")),
+        );
+        let call = ToolCall::new(
+            session_id,
+            run_id,
+            ToolName::new(SUBAGENT_TEAM_PLAN_TOOL).expect("built-in tool name"),
+            json!({
+                "goal": goal,
+                "max_members": 6,
+            }),
+            unix_ms_now(),
+        );
+        let outcome = agent_runtime.execute_tool_call(state, &call);
+        for event in outcome.events {
+            self.publish_event_with_run_now(event, run_id);
+        }
+
+        let result = outcome.result?;
+        if result.status != ToolResultStatus::Succeeded {
+            return None;
+        }
+        let output = result.output.as_ref()?;
+        Some(format_subagent_team_context(output))
     }
 
     fn prepare_subagent_handoff_context(
@@ -859,13 +911,11 @@ impl CoddyRuntime {
         selected_model: &ModelRef,
         model_credential: Option<ModelCredential>,
         messages: Vec<ChatMessage>,
-    ) -> Option<ChatResponse> {
+    ) -> ChatModelResult {
         let request = ChatRequest::new(selected_model.clone(), messages)
-            .ok()?
-            .with_model_credential(model_credential)
-            .ok()?
+            .and_then(|request| request.with_model_credential(model_credential))?
             .with_tools(self.chat_tool_specs());
-        self.chat_client.complete(request).ok()
+        self.chat_client.complete(request)
     }
 
     fn chat_tool_specs(&self) -> Vec<ChatToolSpec> {
@@ -1120,6 +1170,30 @@ fn summarize_chat_tool_calls(tool_calls: &[ChatToolCall]) -> String {
         .join(", ")
 }
 
+fn build_tool_round_limit_response(
+    model_text: &str,
+    pending_tool_summary: &str,
+    last_tool_observations: Option<&str>,
+) -> String {
+    let mut sections = Vec::new();
+    if !model_text.trim().is_empty() {
+        sections.push(model_text.trim().to_string());
+    }
+    sections.push(format!(
+        "Coddy reached the bounded tool loop limit after {MAX_MODEL_TOOL_ROUNDS} tool observation rounds. Pending model-requested tools were not executed: {pending_tool_summary}."
+    ));
+    if let Some(observations) = last_tool_observations
+        .map(str::trim)
+        .filter(|observations| !observations.is_empty())
+    {
+        sections.push(format!("Last tool observations:\n{observations}"));
+    }
+    sections.push(
+        "Continue with a narrower prompt or explicitly ask Coddy to proceed with the next safe inspection step.".to_string(),
+    );
+    sections.join("\n\n")
+}
+
 fn build_model_system_prompt(
     context_policy: ContextPolicy,
     session: &ReplSession,
@@ -1357,6 +1431,77 @@ fn format_subagent_routing_context(output: &ToolOutput) -> String {
         ));
     }
     lines.join("\n")
+}
+
+fn format_subagent_team_context(output: &ToolOutput) -> String {
+    let Some(team) = output
+        .metadata
+        .get("team")
+        .and_then(|value| value.as_object())
+    else {
+        return "Multiagent team plan: no structured team plan was available.".to_string();
+    };
+    let metrics = team.get("metrics").and_then(|value| value.as_object());
+    let hardness_score = metrics
+        .and_then(|metrics| metrics.get("hardnessScore"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let average_readiness = metrics
+        .and_then(|metrics| metrics.get("averageReadiness"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let awaiting_approval = metrics
+        .and_then(|metrics| metrics.get("awaitingApproval"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let blocked = metrics
+        .and_then(|metrics| metrics.get("blocked"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+
+    let members = team
+        .get("members")
+        .and_then(|value| value.as_array())
+        .map(|members| {
+            members
+                .iter()
+                .take(6)
+                .filter_map(|member| {
+                    let name = member.get("name")?.as_str()?;
+                    let mode = member
+                        .get("mode")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("unknown");
+                    let gate = member
+                        .get("gateStatus")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("unknown");
+                    let readiness = member
+                        .get("readinessScore")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or_default();
+                    Some(format!("{name} [{mode}, {gate}, readiness {readiness}]"))
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .filter(|members| !members.is_empty())
+        .unwrap_or_else(|| "none".to_string());
+    let risks = array_string_preview(team.get("risks"), 3);
+    let validation = array_string_preview(team.get("validationStrategy"), 3);
+
+    [
+        "Multiagent team plan:".to_string(),
+        "- This is a measurable orchestration plan only; no subagent execution has started."
+            .to_string(),
+        format!(
+            "- Metrics: hardness score {hardness_score}; average readiness {average_readiness}; awaiting approval {awaiting_approval}; blocked {blocked}."
+        ),
+        format!("- Members: {members}"),
+        format!("- Risks: {risks}"),
+        format!("- Validation strategy: {validation}"),
+    ]
+    .join("\n")
 }
 
 fn format_subagent_handoff_context(output: &ToolOutput) -> String {
@@ -1937,6 +2082,7 @@ mod tests {
                 "subagent.list",
                 "subagent.prepare",
                 "subagent.route",
+                "subagent.team_plan",
             ]
         );
 
@@ -1995,6 +2141,21 @@ mod tests {
             vec![ToolPermission::DelegateSubagent]
         );
         assert_eq!(subagent_route.approval_policy, ApprovalPolicy::AutoApprove);
+
+        let subagent_team_plan = tools
+            .iter()
+            .find(|tool| tool.name == "subagent.team_plan")
+            .expect("subagent team plan tool");
+        assert_eq!(subagent_team_plan.category, ToolCategory::Subagent);
+        assert_eq!(subagent_team_plan.risk_level, ToolRiskLevel::Low);
+        assert_eq!(
+            subagent_team_plan.permissions,
+            vec![ToolPermission::DelegateSubagent]
+        );
+        assert_eq!(
+            subagent_team_plan.approval_policy,
+            ApprovalPolicy::AutoApprove
+        );
     }
 
     #[test]
@@ -2390,6 +2551,10 @@ mod tests {
         assert!(system_prompt.contains("Additional properties: rejected."));
         assert!(system_prompt
             .contains("Free-form prose outside the structured JSON output is not accepted."));
+        assert!(system_prompt.contains("Multiagent team plan:"));
+        assert!(system_prompt.contains("hardness score"));
+        assert!(system_prompt.contains("eval-runner [evaluation"));
+        assert!(system_prompt.contains("no subagent execution has started"));
         assert!(events.iter().any(|event| matches!(
             &event.event,
             ReplEvent::ToolStarted { name } if name == SUBAGENT_ROUTE_TOOL
@@ -2405,6 +2570,14 @@ mod tests {
         assert!(events.iter().any(|event| matches!(
             &event.event,
             ReplEvent::ToolCompleted { name, .. } if name == SUBAGENT_PREPARE_TOOL
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolStarted { name } if name == SUBAGENT_TEAM_PLAN_TOOL
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolCompleted { name, .. } if name == SUBAGENT_TEAM_PLAN_TOOL
         )));
         assert!(events.iter().any(|event| matches!(
             &event.event,
@@ -2782,6 +2955,61 @@ mod tests {
     }
 
     #[test]
+    fn ask_command_surfaces_tool_followup_model_errors() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("src/main.rs", "fn main() {}\n");
+        let (chat_client, requests) = QueuedChatClient::new(vec![ChatResponse {
+            text: "I will inspect the workspace.".to_string(),
+            deltas: vec!["I will inspect the workspace.".to_string()],
+            finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+            tool_calls: vec![ChatToolCall {
+                id: Some("call-1".to_string()),
+                name: LIST_FILES_TOOL.to_string(),
+                arguments: json!({ "path": ".", "max_entries": 20 }),
+            }],
+        }]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect the workspace".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+
+        assert_eq!(captured_requests.len(), 2);
+        assert!(text.contains("Tool observations:"));
+        assert!(text.contains("filesystem.list_files"));
+        assert!(text.contains("could not get a follow-up response after tool observations"));
+        assert!(text.contains("missing queued response"));
+    }
+
+    #[test]
     fn ask_command_redacts_secret_like_tool_observations_before_model_followup() {
         let request_id = Uuid::new_v4();
         let workspace = TempWorkspace::new();
@@ -2836,9 +3064,7 @@ mod tests {
             .find(|message| message.role == coddy_agent::ChatMessageRole::Tool)
             .expect("tool observation message");
 
-        assert!(tool_message
-            .content
-            .contains("OPENAI_API_KEY=sk-[REDACTED]"));
+        assert!(tool_message.content.contains("OPENAI_API_KEY=[REDACTED]"));
         assert!(!tool_message.content.contains("sk-secret-token"));
     }
 
@@ -3177,12 +3403,10 @@ mod tests {
                 arguments: json!({ "path": ".", "max_entries": 20 }),
             }],
         };
-        let (chat_client, requests) = QueuedChatClient::new(vec![
-            repeated_tool_response("call-1"),
-            repeated_tool_response("call-2"),
-            repeated_tool_response("call-3"),
-            repeated_tool_response("call-4"),
-        ]);
+        let responses = (1..=(MAX_MODEL_TOOL_ROUNDS + 1))
+            .map(|index| repeated_tool_response(&format!("call-{index}")))
+            .collect::<Vec<_>>();
+        let (chat_client, requests) = QueuedChatClient::new(responses);
         let runtime = CoddyRuntime::with_workspace_and_chat_client(
             AgentToolRegistry::default(),
             &workspace.path,
@@ -3218,8 +3442,10 @@ mod tests {
         let events = runtime.events_after(2).0;
 
         assert_eq!(captured_requests.len(), MAX_MODEL_TOOL_ROUNDS + 1);
-        assert!(text.contains("stopped the automatic loop"));
+        assert!(text.contains("bounded tool loop limit"));
         assert!(text.contains("filesystem.list_files"));
+        assert!(text.contains("Last tool observations:"));
+        assert!(text.contains("README.md"));
         assert_eq!(
             events
                 .iter()

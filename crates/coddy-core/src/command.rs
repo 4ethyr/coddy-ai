@@ -12,7 +12,7 @@ pub struct ModelCredential {
     pub provider: String,
     pub token: String,
     pub endpoint: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub metadata: BTreeMap<String, String>,
 }
 

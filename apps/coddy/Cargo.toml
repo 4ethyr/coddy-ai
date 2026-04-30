@@ -9,6 +9,7 @@ default = []
 gtk-overlay = ["coddy-voice-input/gtk-overlay"]
 
 [dependencies]
+coddy-agent.workspace = true
 coddy-client.workspace = true
 coddy-core.workspace = true
 coddy-ipc.workspace = true

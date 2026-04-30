@@ -130,6 +130,7 @@ pub struct PermissionRequest {
     pub permission: ToolPermission,
     pub patterns: Vec<String>,
     pub risk_level: ToolRiskLevel,
+    #[serde(with = "crate::json_value_wire")]
     pub metadata: Value,
     pub requested_at_unix_ms: u64,
 }
