@@ -1246,10 +1246,21 @@ fn path_looks_sensitive(path: &str) -> bool {
     normalized == ".env"
         || normalized.ends_with("/.env")
         || normalized.contains(".env.")
+        || normalized == ".npmrc"
+        || normalized.ends_with("/.npmrc")
+        || normalized == ".netrc"
+        || normalized.ends_with("/.netrc")
+        || normalized == ".pypirc"
+        || normalized.ends_with("/.pypirc")
+        || normalized.ends_with("/.aws/credentials")
+        || normalized.ends_with("/.ssh/config")
+        || normalized.contains("/.ssh/")
+        || normalized.contains("/.gnupg/")
         || normalized.contains("credential")
         || normalized.contains("secret")
         || normalized.contains("token")
         || normalized.ends_with(".pem")
+        || normalized.ends_with(".key")
         || normalized.ends_with(".p12")
         || normalized.ends_with(".pfx")
         || normalized.ends_with("id_rsa")
@@ -1732,6 +1743,24 @@ mod tests {
         assert_eq!(output.metadata["path"], ".env");
         assert_eq!(output.metadata["sensitive"], json!(true));
         assert!(!output.text.contains("super-secret-token"));
+    }
+
+    #[test]
+    fn read_file_redacts_common_credential_files() {
+        let workspace = TempWorkspace::new();
+        workspace.write(
+            ".npmrc",
+            "//registry.npmjs.org/:_authToken=npm-secret-token\n",
+        );
+        let executor = ReadOnlyToolExecutor::new(&workspace.path).expect("executor");
+
+        let result = executor.execute(&call(READ_FILE_TOOL, json!({ "path": ".npmrc" })));
+
+        assert_eq!(result.status, ToolResultStatus::Succeeded);
+        let output = result.output.expect("tool output");
+        assert_eq!(output.text, "//registry.npmjs.org/:_authToken=[REDACTED]");
+        assert_eq!(output.metadata["sensitive"], json!(true));
+        assert!(!output.text.contains("npm-secret-token"));
     }
 
     #[test]
