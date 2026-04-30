@@ -201,6 +201,11 @@ trabalhem com o mesmo contrato de saída. `ReplSession.subagent_activity`
 preserva esses campos após replay e reconnect, e os updates de lifecycle mantêm
 o contrato já preparado em vez de descartá-lo.
 
+Durante a preparação do handoff, o runtime injeta no prompt uma seção
+`Subagent output contract` com os campos JSON obrigatórios e a política de
+propriedades extras. Isso reduz respostas livres e prepara o caminho para o
+executor real validar a conclusão com o mesmo contrato.
+
 ### Evals de harness
 
 O crate `coddy-agent` possui `EvalRunner` para casos determinísticos de

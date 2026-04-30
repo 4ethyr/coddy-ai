@@ -2,8 +2,8 @@ use coddy_agent::{
     AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError, ChatRequest, ChatResponse,
     ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, SubagentExecutionGate,
     SubagentExecutionHandoff, SubagentExecutionStartPlan, SubagentExecutionStartStatus,
-    LIST_FILES_TOOL, PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL, SUBAGENT_PREPARE_TOOL,
-    SUBAGENT_ROUTE_TOOL,
+    SubagentOutputContract, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL,
+    SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
 };
 use coddy_core::{
     ApprovalPolicy, ContextItem, ContextPolicy, ModelCredential, ModelRef, PermissionReply,
@@ -708,8 +708,10 @@ impl CoddyRuntime {
         }
         let output = result.output.as_ref()?;
         let mut execution_gate_context = None;
+        let mut output_contract_context = None;
         if let Some(handoff) = subagent_handoff_prepared_from_output(output) {
             let execution_handoff = SubagentExecutionHandoff::from(&handoff);
+            let output_contract = SubagentOutputContract::from(&handoff);
             let execution_plan = SubagentExecutionGate.plan_start_for(&execution_handoff, false);
             let update = execution_plan
                 .lifecycle_updates
@@ -719,11 +721,20 @@ impl CoddyRuntime {
             self.publish_event_with_run_now(ReplEvent::SubagentHandoffPrepared { handoff }, run_id);
             self.publish_event_with_run_now(ReplEvent::SubagentLifecycleUpdated { update }, run_id);
             execution_gate_context = Some(format_subagent_execution_gate_context(&execution_plan));
+            output_contract_context =
+                Some(format_subagent_output_contract_context(&output_contract));
         }
-        Some(match execution_gate_context {
-            Some(context) => format!("{}\n\n{context}", format_subagent_handoff_context(output)),
-            None => format_subagent_handoff_context(output),
-        })
+        Some(
+            [
+                Some(format_subagent_handoff_context(output)),
+                execution_gate_context,
+                output_contract_context,
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        )
     }
 
     fn execute_model_tool_round(
@@ -1423,6 +1434,28 @@ fn format_subagent_execution_gate_context(plan: &SubagentExecutionStartPlan) -> 
             "- Reason: {}.",
             truncate_context_text(&redact_context_text(reason), 240)
         ),
+    ]
+    .join("\n")
+}
+
+fn format_subagent_output_contract_context(contract: &SubagentOutputContract) -> String {
+    let required_fields = if contract.required_fields.is_empty() {
+        "none".to_string()
+    } else {
+        contract.required_fields.join(", ")
+    };
+    let extra_fields_policy = if contract.additional_properties_allowed {
+        "allowed"
+    } else {
+        "rejected"
+    };
+
+    [
+        "Subagent output contract:".to_string(),
+        format!("- Role: `{}` in {} mode.", contract.name, contract.mode),
+        format!("- Required JSON fields: {required_fields}."),
+        format!("- Additional properties: {extra_fields_policy}."),
+        "- Free-form prose outside the structured JSON output is not accepted.".to_string(),
     ]
     .join("\n")
 }
@@ -2350,6 +2383,13 @@ mod tests {
         assert!(system_prompt.contains("Subagent execution gate preview:"));
         assert!(system_prompt.contains("no subagent execution has started"));
         assert!(system_prompt.contains("Gate status: awaiting approval"));
+        assert!(system_prompt.contains("Subagent output contract:"));
+        assert!(system_prompt.contains(
+            "Required JSON fields: score, passed, failedChecks, metrics, recommendations."
+        ));
+        assert!(system_prompt.contains("Additional properties: rejected."));
+        assert!(system_prompt
+            .contains("Free-form prose outside the structured JSON output is not accepted."));
         assert!(events.iter().any(|event| matches!(
             &event.event,
             ReplEvent::ToolStarted { name } if name == SUBAGENT_ROUTE_TOOL

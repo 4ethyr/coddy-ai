@@ -787,6 +787,8 @@ Escopo entregue:
   preserva `output_additional_properties_allowed` para diferenciar saidas
   estritas de saidas abertas; o snapshot e os paineis agentic exibem esse
   contrato por subagent;
+- o runtime injeta `Subagent output contract` no prompt para orientar o modelo a
+  retornar JSON estruturado sem prosa livre antes da validacao de conclusao;
 - o system prompt recebe um resumo do score, mas o evento preserva valores
   completos para observabilidade;
 - o frontend exibe a atividade de subagents no painel agentic mantendo o padrao

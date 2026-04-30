@@ -166,7 +166,8 @@ evento `SubagentHandoffPrepared` carrega `required_output_fields` e
 `output_additional_properties_allowed` para manter UI, runtime e executor
 alinhados no mesmo contrato; `subagent_activity` preserva esses campos no
 snapshot e o frontend exibe se a saida esperada e estrita ou aberta no painel
-agentic.
+agentic. O runtime tambem injeta esse contrato no prompt do modelo antes de
+qualquer execucao real de subagent.
 
 ### `crates/coddy-core`
 
