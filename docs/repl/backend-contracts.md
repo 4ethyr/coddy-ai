@@ -130,6 +130,14 @@ subagents declarativos disponíveis com modo, tools permitidas, timeout,
 orçamento de contexto e schema de resposta. Ela prepara a futura execução real
 de subagents sem acoplar a UI a um runtime paralelo prematuro.
 
+### Evals de harness
+
+O crate `coddy-agent` possui `EvalRunner` para casos determinísticos de
+filesystem, shell, approval e edição. Cada `EvalReport` retorna `score` de 0 a
+100, e `EvalSuiteReport` agrega `passed`, `failed`, `score` médio e
+`passes_score_threshold(minimum_score)`. Esse score é a base local para gates de
+qualidade antes de expandir para benchmarks externos como SWE-bench Verified.
+
 ### Stream de eventos
 
 ```bash

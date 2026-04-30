@@ -35,6 +35,7 @@ pub struct EvalExpectations {
 pub struct EvalReport {
     pub case_name: String,
     pub status: EvalStatus,
+    pub score: u8,
     pub final_plan_status: DeterministicPlanStatus,
     pub approvals_requested: usize,
     pub failures: Vec<String>,
@@ -79,17 +80,18 @@ impl EvalRunner {
             );
         }
 
-        let failures = evaluate_expectations(case, &report, approvals_requested);
+        let evaluation = evaluate_expectations(case, &report, approvals_requested);
         EvalReport {
             case_name: case.name.clone(),
-            status: if failures.is_empty() {
+            status: if evaluation.failures.is_empty() {
                 EvalStatus::Passed
             } else {
                 EvalStatus::Failed
             },
+            score: evaluation.score(),
             final_plan_status: report.status,
             approvals_requested,
-            failures,
+            failures: evaluation.failures,
             plan_report: report,
         }
     }
@@ -105,6 +107,7 @@ pub struct EvalSuiteReport {
     pub reports: Vec<EvalReport>,
     pub passed: usize,
     pub failed: usize,
+    pub score: u8,
 }
 
 impl EvalSuiteReport {
@@ -114,15 +117,21 @@ impl EvalSuiteReport {
             .filter(|report| report.status == EvalStatus::Passed)
             .count();
         let failed = reports.len().saturating_sub(passed);
+        let score = suite_score(&reports);
         Self {
             reports,
             passed,
             failed,
+            score,
         }
     }
 
     pub fn is_success(&self) -> bool {
         self.failed == 0
+    }
+
+    pub fn passes_score_threshold(&self, minimum_score: u8) -> bool {
+        self.score >= minimum_score
     }
 }
 
@@ -170,13 +179,31 @@ impl EvalExpectations {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EvalCaseEvaluation {
+    failures: Vec<String>,
+    total_checks: usize,
+}
+
+impl EvalCaseEvaluation {
+    fn score(&self) -> u8 {
+        if self.total_checks == 0 {
+            return 100;
+        }
+        let passed = self.total_checks.saturating_sub(self.failures.len());
+        ((passed * 100) / self.total_checks) as u8
+    }
+}
+
 fn evaluate_expectations(
     case: &EvalCase,
     report: &DeterministicPlanReport,
     approvals_requested: usize,
-) -> Vec<String> {
+) -> EvalCaseEvaluation {
     let mut failures = Vec::new();
+    let mut total_checks = 0_usize;
 
+    total_checks += 1;
     if report.status != case.expectations.final_status {
         failures.push(format!(
             "expected final status {:?}, got {:?}",
@@ -184,6 +211,7 @@ fn evaluate_expectations(
         ));
     }
 
+    total_checks += 1;
     if approvals_requested != case.expectations.approvals_requested {
         failures.push(format!(
             "expected {} approval requests, got {approvals_requested}",
@@ -192,6 +220,7 @@ fn evaluate_expectations(
     }
 
     for expected in &case.expectations.required_observation_substrings {
+        total_checks += 1;
         if !report
             .state
             .observations
@@ -203,6 +232,7 @@ fn evaluate_expectations(
     }
 
     for expected in &case.expectations.required_error_codes {
+        total_checks += 1;
         if !report
             .state
             .observations
@@ -213,7 +243,21 @@ fn evaluate_expectations(
         }
     }
 
-    failures
+    EvalCaseEvaluation {
+        failures,
+        total_checks,
+    }
+}
+
+fn suite_score(reports: &[EvalReport]) -> u8 {
+    if reports.is_empty() {
+        return 100;
+    }
+    let total = reports
+        .iter()
+        .map(|report| usize::from(report.score))
+        .sum::<usize>();
+    (total / reports.len()) as u8
 }
 
 #[cfg(test)]
@@ -282,6 +326,7 @@ mod tests {
         let report = runner.run_case(&case);
 
         assert_eq!(report.status, EvalStatus::Passed);
+        assert_eq!(report.score, 100);
         assert_eq!(report.approvals_requested, 0);
     }
 
@@ -451,6 +496,9 @@ mod tests {
 
         assert_eq!(suite.passed, 1);
         assert_eq!(suite.failed, 1);
+        assert_eq!(suite.score, 75);
         assert!(!suite.is_success());
+        assert!(suite.passes_score_threshold(75));
+        assert!(!suite.passes_score_threshold(76));
     }
 }
