@@ -135,6 +135,12 @@ A tool `subagent.route` também é read-only/auto-approved e recebe `goal`,
 prepara a futura execução real de subagents com seleção mensurável, sem acoplar
 a UI a um runtime paralelo prematuro.
 
+`subagent.prepare` recebe `name` e `goal`, valida o papel solicitado e devolve
+um contrato de handoff sem executar o subagent. O retorno inclui allowed tools,
+timeout, orçamento de contexto, `approvalRequired`, prompt de handoff, checklist
+de validação, notas de segurança e output schema. Esse contrato é a ponte segura
+entre roteamento e um executor real com contexto isolado.
+
 Em turns com modelo, o runtime executa `subagent.route` antes da primeira
 inferência e injeta um bloco `Subagent routing guidance` no system prompt. O
 modelo recebe papéis recomendados como sinais de planejamento/validação, e a UI

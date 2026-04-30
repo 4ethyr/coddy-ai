@@ -6,6 +6,7 @@ use crate::{
 };
 
 pub const SUBAGENT_LIST_TOOL: &str = "subagent.list";
+pub const SUBAGENT_PREPARE_TOOL: &str = "subagent.prepare";
 pub const SUBAGENT_ROUTE_TOOL: &str = "subagent.route";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +86,41 @@ impl SubagentRecommendation {
             "allowedTools": self.allowed_tools,
             "timeoutMs": self.timeout_ms,
             "maxContextTokens": self.max_context_tokens,
+            "outputSchema": self.output_schema,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubagentHandoffPlan {
+    pub name: String,
+    pub description: String,
+    pub mode: SubagentMode,
+    pub goal: String,
+    pub allowed_tools: Vec<String>,
+    pub timeout_ms: u64,
+    pub max_context_tokens: u32,
+    pub approval_required: bool,
+    pub handoff_prompt: String,
+    pub validation_checklist: Vec<String>,
+    pub safety_notes: Vec<String>,
+    pub output_schema: Value,
+}
+
+impl SubagentHandoffPlan {
+    pub fn public_metadata(&self) -> Value {
+        json!({
+            "name": self.name,
+            "description": self.description,
+            "mode": self.mode.as_str(),
+            "goal": self.goal,
+            "allowedTools": self.allowed_tools,
+            "timeoutMs": self.timeout_ms,
+            "maxContextTokens": self.max_context_tokens,
+            "approvalRequired": self.approval_required,
+            "handoffPrompt": self.handoff_prompt,
+            "validationChecklist": self.validation_checklist,
+            "safetyNotes": self.safety_notes,
             "outputSchema": self.output_schema,
         })
     }
@@ -397,6 +433,16 @@ impl SubagentRegistry {
         recommendations
     }
 
+    pub fn prepare_handoff(&self, name: &str, goal: &str) -> Option<SubagentHandoffPlan> {
+        let definition = self.get(name)?;
+        let goal = goal.trim();
+        if goal.is_empty() {
+            return None;
+        }
+
+        Some(handoff_plan_from_definition(definition, goal))
+    }
+
     fn fallback_definition(&self, mode: Option<SubagentMode>) -> Option<&SubagentDefinition> {
         self.get("planner")
             .filter(|definition| mode.is_none_or(|mode| definition.mode == mode))
@@ -406,6 +452,119 @@ impl SubagentRegistry {
                     .find(|definition| mode.is_none_or(|mode| definition.mode == mode))
             })
     }
+}
+
+fn handoff_plan_from_definition(
+    definition: &SubagentDefinition,
+    goal: &str,
+) -> SubagentHandoffPlan {
+    let validation_checklist = validation_checklist(definition);
+    let safety_notes = safety_notes(definition);
+    let output_fields = required_schema_fields(&definition.output_schema);
+    let approval_required = definition.mode != SubagentMode::ReadOnly
+        || definition
+            .allowed_tools
+            .iter()
+            .any(|tool| tool == APPLY_EDIT_TOOL || tool == SHELL_RUN_TOOL);
+    let handoff_prompt = [
+        format!("You are the `{}` Coddy subagent.", definition.name),
+        format!("Purpose: {}", definition.description),
+        format!("Mode: {}", definition.mode.as_str()),
+        format!("Goal: {goal}"),
+        format!("Allowed tools: {}", definition.allowed_tools.join(", ")),
+        format!(
+            "Context budget: {} tokens. Timeout: {} ms.",
+            definition.max_context_tokens, definition.timeout_ms
+        ),
+        "Rules: use only the allowed tools; preserve least privilege; do not claim side effects without a successful tool observation; return structured output only.".to_string(),
+        format!("Required output fields: {}", output_fields.join(", ")),
+    ]
+    .join("\n");
+
+    SubagentHandoffPlan {
+        name: definition.name.clone(),
+        description: definition.description.clone(),
+        mode: definition.mode,
+        goal: goal.to_string(),
+        allowed_tools: definition.allowed_tools.clone(),
+        timeout_ms: definition.timeout_ms,
+        max_context_tokens: definition.max_context_tokens,
+        approval_required,
+        handoff_prompt,
+        validation_checklist,
+        safety_notes,
+        output_schema: definition.output_schema.clone(),
+    }
+}
+
+fn validation_checklist(definition: &SubagentDefinition) -> Vec<String> {
+    let mut checklist = vec![
+        "Confirm the task scope and constraints before acting.".to_string(),
+        "Use only tools listed in allowedTools.".to_string(),
+        "Return output that matches the subagent outputSchema.".to_string(),
+    ];
+
+    match definition.mode {
+        SubagentMode::ReadOnly => checklist.extend([
+            "Do not report file modifications as completed.".to_string(),
+            "Ground findings in repository evidence when available.".to_string(),
+        ]),
+        SubagentMode::WorkspaceWrite => checklist.extend([
+            "Read relevant files before preparing edits.".to_string(),
+            "Preview edits before applying workspace changes.".to_string(),
+            "Run focused validation or report why it was not run.".to_string(),
+        ]),
+        SubagentMode::Evaluation => checklist.extend([
+            "Use deterministic checks and report score, pass/fail counts and regressions."
+                .to_string(),
+            "Treat command execution as guarded by the runtime approval policy.".to_string(),
+        ]),
+    }
+
+    checklist
+}
+
+fn safety_notes(definition: &SubagentDefinition) -> Vec<String> {
+    let mut notes = vec![
+        "Do not expose secrets, credentials, tokens or hidden configuration values.".to_string(),
+        "Stop and report if required context is missing or redacted.".to_string(),
+    ];
+
+    if definition
+        .allowed_tools
+        .iter()
+        .any(|tool| tool == SHELL_RUN_TOOL)
+    {
+        notes.push(
+            "Shell commands must remain workspace-scoped and pass the command guard.".to_string(),
+        );
+    }
+    if definition
+        .allowed_tools
+        .iter()
+        .any(|tool| tool == APPLY_EDIT_TOOL)
+    {
+        notes.push(
+            "Workspace writes require preview/apply flow and explicit approval boundaries."
+                .to_string(),
+        );
+    }
+
+    notes
+}
+
+fn required_schema_fields(schema: &Value) -> Vec<String> {
+    schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|fields| {
+            fields
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
 }
 
 fn subagent(
@@ -549,5 +708,50 @@ mod tests {
             recommendations[0].matched_signals,
             vec!["fallback:ambiguous-goal".to_string()]
         );
+    }
+
+    #[test]
+    fn prepares_handoff_with_role_tools_and_safety_contract() {
+        let registry = SubagentRegistry::default();
+
+        let handoff = registry
+            .prepare_handoff("coder", "implement a focused parser fix")
+            .expect("handoff");
+
+        assert_eq!(handoff.name, "coder");
+        assert_eq!(handoff.mode, SubagentMode::WorkspaceWrite);
+        assert!(handoff.approval_required);
+        assert!(handoff.allowed_tools.contains(&APPLY_EDIT_TOOL.to_string()));
+        assert!(handoff
+            .handoff_prompt
+            .contains("You are the `coder` Coddy subagent."));
+        assert!(handoff
+            .validation_checklist
+            .iter()
+            .any(|item| item.contains("Preview edits")));
+        assert!(handoff
+            .safety_notes
+            .iter()
+            .any(|item| item.contains("Workspace writes require")));
+        assert_eq!(
+            required_schema_fields(&handoff.output_schema),
+            vec![
+                "changedFiles".to_string(),
+                "summary".to_string(),
+                "testsAdded".to_string(),
+                "risks".to_string(),
+                "nextSteps".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_or_empty_handoff_requests() {
+        let registry = SubagentRegistry::default();
+
+        assert!(registry
+            .prepare_handoff("unknown", "inspect code")
+            .is_none());
+        assert!(registry.prepare_handoff("explorer", "   ").is_none());
     }
 }

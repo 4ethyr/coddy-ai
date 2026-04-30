@@ -1,7 +1,8 @@
 use coddy_agent::{
     AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError, ChatRequest, ChatResponse,
     ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, LIST_FILES_TOOL,
-    PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL, SUBAGENT_ROUTE_TOOL,
+    PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL, SUBAGENT_PREPARE_TOOL,
+    SUBAGENT_ROUTE_TOOL,
 };
 use coddy_core::{
     ApprovalPolicy, ContextItem, ContextPolicy, ModelCredential, ModelRef, PermissionReply,
@@ -647,10 +648,63 @@ impl CoddyRuntime {
         }
         let output = result.output.as_ref()?;
         let recommendations = subagent_recommendations_from_output(output);
+        let top_recommendation = recommendations
+            .first()
+            .map(|recommendation| recommendation.name.clone());
         if !recommendations.is_empty() {
             self.publish_event_with_run_now(ReplEvent::SubagentRouted { recommendations }, run_id);
         }
-        Some(format_subagent_routing_context(output))
+        let mut sections = vec![format_subagent_routing_context(output)];
+        if let Some(subagent_name) = top_recommendation {
+            if let Some(handoff_context) = self.prepare_subagent_handoff_context(
+                agent_runtime,
+                &mut state,
+                session_id,
+                run_id,
+                goal,
+                &subagent_name,
+            ) {
+                sections.push(handoff_context);
+            }
+        }
+
+        Some(sections.join("\n\n"))
+    }
+
+    fn prepare_subagent_handoff_context(
+        &self,
+        agent_runtime: &LocalAgentRuntime,
+        state: &mut coddy_agent::RunState,
+        session_id: Uuid,
+        run_id: Uuid,
+        goal: &str,
+        subagent_name: &str,
+    ) -> Option<String> {
+        agent_runtime.add_plan_item(
+            state,
+            format!("Prepare handoff contract for {subagent_name}"),
+            Some(ToolName::new(SUBAGENT_PREPARE_TOOL).expect("built-in tool name")),
+        );
+        let call = ToolCall::new(
+            session_id,
+            run_id,
+            ToolName::new(SUBAGENT_PREPARE_TOOL).expect("built-in tool name"),
+            json!({
+                "name": subagent_name,
+                "goal": goal,
+            }),
+            unix_ms_now(),
+        );
+        let outcome = agent_runtime.execute_tool_call(state, &call);
+        for event in outcome.events {
+            self.publish_event_with_run_now(event, run_id);
+        }
+
+        let result = outcome.result?;
+        if result.status != ToolResultStatus::Succeeded {
+            return None;
+        }
+        result.output.as_ref().map(format_subagent_handoff_context)
     }
 
     fn execute_model_tool_round(
@@ -1275,6 +1329,49 @@ fn format_subagent_routing_context(output: &ToolOutput) -> String {
     lines.join("\n")
 }
 
+fn format_subagent_handoff_context(output: &ToolOutput) -> String {
+    let Some(handoff) = output
+        .metadata
+        .get("handoff")
+        .and_then(|value| value.as_object())
+    else {
+        return "Subagent handoff preview: no structured handoff was available.".to_string();
+    };
+
+    let name = handoff
+        .get("name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let mode = handoff
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown");
+    let approval_required = handoff
+        .get("approvalRequired")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    let handoff_prompt = handoff
+        .get("handoffPrompt")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let checklist = array_string_preview(handoff.get("validationChecklist"), 3);
+    let safety_notes = array_string_preview(handoff.get("safetyNotes"), 2);
+
+    [
+        "Subagent handoff preview:".to_string(),
+        "- Use this handoff as planning guidance only; do not claim the subagent executed."
+            .to_string(),
+        format!("- Prepared `{name}` in {mode} mode; approval required: {approval_required}."),
+        format!(
+            "- Handoff prompt: {}",
+            truncate_context_text(&redact_context_text(handoff_prompt), 700)
+        ),
+        format!("- Validation checklist: {checklist}"),
+        format!("- Safety notes: {safety_notes}"),
+    ]
+    .join("\n")
+}
+
 fn subagent_recommendations_from_output(output: &ToolOutput) -> Vec<SubagentRouteRecommendation> {
     subagent_recommendation_values(output)
         .iter()
@@ -1320,6 +1417,26 @@ fn subagent_recommendation_values(output: &ToolOutput) -> Vec<serde_json::Value>
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default()
+}
+
+fn array_string_preview(value: Option<&serde_json::Value>, limit: usize) -> String {
+    let values = value
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .take(limit)
+                .map(|item| truncate_context_text(&redact_context_text(item), 160))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if values.is_empty() {
+        "none".to_string()
+    } else {
+        values.join(" | ")
+    }
 }
 
 fn redact_context_text(text: &str) -> String {
@@ -1515,7 +1632,9 @@ fn default_workspace_root() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use coddy_agent::{PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SUBAGENT_ROUTE_TOOL};
+    use coddy_agent::{
+        PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
+    };
     use coddy_client::CoddyClient;
     use coddy_core::{
         ApprovalPolicy, ModelRef, ModelRole, PermissionReply, ReplEvent, ToolCategory,
@@ -1650,6 +1769,7 @@ mod tests {
                 "filesystem.search_files",
                 "shell.run",
                 "subagent.list",
+                "subagent.prepare",
                 "subagent.route",
             ]
         );
@@ -1682,6 +1802,21 @@ mod tests {
             vec![ToolPermission::DelegateSubagent]
         );
         assert_eq!(subagent_list.approval_policy, ApprovalPolicy::AutoApprove);
+
+        let subagent_prepare = tools
+            .iter()
+            .find(|tool| tool.name == "subagent.prepare")
+            .expect("subagent prepare tool");
+        assert_eq!(subagent_prepare.category, ToolCategory::Subagent);
+        assert_eq!(subagent_prepare.risk_level, ToolRiskLevel::Low);
+        assert_eq!(
+            subagent_prepare.permissions,
+            vec![ToolPermission::DelegateSubagent]
+        );
+        assert_eq!(
+            subagent_prepare.approval_policy,
+            ApprovalPolicy::AutoApprove
+        );
 
         let subagent_route = tools
             .iter()
@@ -2075,6 +2210,9 @@ mod tests {
         assert!(system_prompt.contains("eval-runner [evaluation]"));
         assert!(system_prompt.contains("matched: eval"));
         assert!(system_prompt.contains("do not claim a subagent executed"));
+        assert!(system_prompt.contains("Subagent handoff preview:"));
+        assert!(system_prompt.contains("Prepared `eval-runner` in evaluation mode"));
+        assert!(system_prompt.contains("Validation checklist:"));
         assert!(events.iter().any(|event| matches!(
             &event.event,
             ReplEvent::ToolStarted { name } if name == SUBAGENT_ROUTE_TOOL
@@ -2082,6 +2220,14 @@ mod tests {
         assert!(events.iter().any(|event| matches!(
             &event.event,
             ReplEvent::ToolCompleted { name, .. } if name == SUBAGENT_ROUTE_TOOL
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolStarted { name } if name == SUBAGENT_PREPARE_TOOL
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolCompleted { name, .. } if name == SUBAGENT_PREPARE_TOOL
         )));
         assert!(events.iter().any(|event| matches!(
             &event.event,

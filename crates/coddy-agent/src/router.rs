@@ -16,7 +16,8 @@ use crate::{
     AgentError, AgentToolRegistry, EditPreview, ReadOnlyToolExecutor, ShellApprovalState,
     ShellExecutionConfig, ShellExecutor, ShellPlan, ShellPlanRequest, ShellPlanner, SubagentMode,
     SubagentRegistry, ToolExecution, APPLY_EDIT_TOOL, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL,
-    READ_FILE_TOOL, SEARCH_FILES_TOOL, SHELL_RUN_TOOL, SUBAGENT_LIST_TOOL, SUBAGENT_ROUTE_TOOL,
+    READ_FILE_TOOL, SEARCH_FILES_TOOL, SHELL_RUN_TOOL, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL,
+    SUBAGENT_ROUTE_TOOL,
 };
 
 #[derive(Debug, Clone)]
@@ -96,6 +97,7 @@ impl LocalToolRouter {
             APPLY_EDIT_TOOL => self.apply_permission_reply_tool(call),
             SHELL_RUN_TOOL => self.plan_or_execute_shell(call),
             SUBAGENT_LIST_TOOL => self.list_subagents(call),
+            SUBAGENT_PREPARE_TOOL => self.prepare_subagent(call),
             SUBAGENT_ROUTE_TOOL => self.route_subagent(call),
             other => failed_outcome(
                 call.id,
@@ -308,6 +310,48 @@ impl LocalToolRouter {
                 },
                 ReplEvent::ToolCompleted {
                     name: SUBAGENT_LIST_TOOL.to_string(),
+                    status: ToolStatus::Succeeded,
+                },
+            ],
+        })
+    }
+
+    fn prepare_subagent(&self, call: &ToolCall) -> LocalToolRouteOutcome {
+        let started_at = unix_ms_now();
+        let name = call.input["name"].as_str().unwrap_or_default();
+        let goal = call.input["goal"].as_str().unwrap_or_default();
+        let Some(handoff) = self.subagents.prepare_handoff(name, goal) else {
+            return failed_outcome(
+                call.id,
+                SUBAGENT_PREPARE_TOOL.to_string(),
+                AgentError::InvalidInput(format!(
+                    "unknown subagent or empty goal for handoff: {name}"
+                ))
+                .into_tool_error(),
+            );
+        };
+        let handoff_metadata = handoff.public_metadata();
+        let output = ToolOutput {
+            text: format!(
+                "Prepared {} handoff in {} mode.",
+                handoff.name,
+                handoff.mode.as_str()
+            ),
+            metadata: json!({
+                "handoff": handoff_metadata,
+            }),
+            truncated: false,
+        };
+        let result = ToolResult::succeeded(call.id, output, started_at, unix_ms_now());
+
+        LocalToolRouteOutcome::from_execution(ToolExecution {
+            result,
+            events: vec![
+                ReplEvent::ToolStarted {
+                    name: SUBAGENT_PREPARE_TOOL.to_string(),
+                },
+                ReplEvent::ToolCompleted {
+                    name: SUBAGENT_PREPARE_TOOL.to_string(),
                     status: ToolStatus::Succeeded,
                 },
             ],
@@ -825,6 +869,44 @@ mod tests {
             .as_array()
             .expect("matched signals")
             .contains(&json!("harness")));
+    }
+
+    #[test]
+    fn routes_subagent_prepare_as_handoff_contract() {
+        let workspace = TempWorkspace::new();
+        let router = LocalToolRouter::new(&workspace.path).expect("router");
+
+        let outcome = router.route(&call(
+            Uuid::new_v4(),
+            SUBAGENT_PREPARE_TOOL,
+            json!({
+                "name": "security-reviewer",
+                "goal": "review secrets and shell guardrails"
+            }),
+        ));
+
+        assert_eq!(outcome.status(), Some(ToolResultStatus::Succeeded));
+        let output = outcome.result.expect("result").output.expect("output");
+        let handoff = &output.metadata["handoff"];
+
+        assert_eq!(handoff["name"], json!("security-reviewer"));
+        assert_eq!(handoff["mode"], json!("read-only"));
+        assert_eq!(handoff["approvalRequired"], json!(false));
+        assert!(handoff["allowedTools"]
+            .as_array()
+            .expect("allowed tools")
+            .contains(&json!(READ_FILE_TOOL)));
+        assert!(handoff["handoffPrompt"]
+            .as_str()
+            .expect("handoff prompt")
+            .contains("review secrets and shell guardrails"));
+        assert!(handoff["validationChecklist"]
+            .as_array()
+            .expect("validation checklist")
+            .iter()
+            .any(|item| item
+                .as_str()
+                .is_some_and(|value| value.contains("Ground findings"))));
     }
 
     #[test]

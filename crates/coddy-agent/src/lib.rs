@@ -47,8 +47,8 @@ pub use shell_plan::{
     MAX_SHELL_TIMEOUT_MS,
 };
 pub use subagent::{
-    SubagentDefinition, SubagentMode, SubagentRecommendation, SubagentRegistry, SUBAGENT_LIST_TOOL,
-    SUBAGENT_ROUTE_TOOL,
+    SubagentDefinition, SubagentHandoffPlan, SubagentMode, SubagentRecommendation,
+    SubagentRegistry, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
 };
 
 use coddy_core::{
@@ -441,6 +441,56 @@ impl Default for AgentToolRegistry {
                                     "maxContextTokens": { "type": "integer" },
                                     "outputSchema": { "type": "object" }
                                 }
+                            }
+                        }
+                    }
+                }),
+                risk_level: ToolRiskLevel::Low,
+                permissions: vec![ToolPermission::DelegateSubagent],
+                timeout_ms: 2_000,
+                approval_policy: ApprovalPolicy::AutoApprove,
+            }),
+            local_tool_definition(LocalToolDefinitionSpec {
+                name: SUBAGENT_PREPARE_TOOL,
+                description: "Prepare a safe subagent handoff contract with allowed tools, prompt, checklist and output schema without executing the subagent",
+                category: ToolCategory::Subagent,
+                input_schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["name", "goal"],
+                    "properties": {
+                        "name": { "type": "string" },
+                        "goal": { "type": "string" }
+                    }
+                }),
+                output_schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "handoff": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "description": { "type": "string" },
+                                "mode": { "type": "string" },
+                                "goal": { "type": "string" },
+                                "allowedTools": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                },
+                                "timeoutMs": { "type": "integer" },
+                                "maxContextTokens": { "type": "integer" },
+                                "approvalRequired": { "type": "boolean" },
+                                "handoffPrompt": { "type": "string" },
+                                "validationChecklist": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                },
+                                "safetyNotes": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                },
+                                "outputSchema": { "type": "object" }
                             }
                         }
                     }
@@ -1265,7 +1315,7 @@ mod tests {
     fn agent_registry_defines_local_contracts_without_execution() {
         let registry = AgentToolRegistry::default();
 
-        assert_eq!(registry.definitions().len(), 8);
+        assert_eq!(registry.definitions().len(), 9);
         assert!(registry
             .get(&ToolName::new(LIST_FILES_TOOL).expect("tool name"))
             .is_some());
@@ -1292,6 +1342,20 @@ mod tests {
         assert_eq!(subagent_list.approval_policy, ApprovalPolicy::AutoApprove);
         assert_eq!(
             subagent_list.permissions,
+            vec![ToolPermission::DelegateSubagent]
+        );
+
+        let subagent_prepare = registry
+            .get(&ToolName::new(SUBAGENT_PREPARE_TOOL).expect("tool name"))
+            .expect("subagent prepare definition");
+        assert_eq!(subagent_prepare.category, ToolCategory::Subagent);
+        assert_eq!(subagent_prepare.risk_level, ToolRiskLevel::Low);
+        assert_eq!(
+            subagent_prepare.approval_policy,
+            ApprovalPolicy::AutoApprove
+        );
+        assert_eq!(
+            subagent_prepare.permissions,
             vec![ToolPermission::DelegateSubagent]
         );
 
