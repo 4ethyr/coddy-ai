@@ -16,6 +16,7 @@ function testSession(overrides?: Partial<ReplSession>): ReplSession {
     workspace_context: [],
     messages: [],
     active_run: null,
+    pending_permission: null,
     tool_activity: [],
     streaming_text: '',
     ...overrides,
@@ -489,7 +490,7 @@ describe('sessionReducer', () => {
       ])
     })
 
-    it('PermissionRequested transitions to AwaitingToolApproval', () => {
+    it('PermissionRequested transitions to AwaitingToolApproval and stores the request', () => {
       const session = testSession({ status: 'Thinking', active_run: 'run-001' })
       const event: ReplEvent = {
         PermissionRequested: {
@@ -511,12 +512,55 @@ describe('sessionReducer', () => {
       const result = sessionReducer(session, event)
 
       expect(result.status).toBe('AwaitingToolApproval')
+      expect(result.pending_permission?.id).toBe('perm-1')
+    })
+
+    it('RunCompleted preserves AwaitingToolApproval while permission is pending', () => {
+      const session = testSession({
+        status: 'AwaitingToolApproval',
+        active_run: 'run-001',
+        pending_permission: {
+          id: 'perm-1',
+          session_id: 'session-1',
+          run_id: 'run-001',
+          tool_call_id: 'call-1',
+          tool_name: 'filesystem.apply_edit',
+          permission: 'WriteWorkspace',
+          patterns: ['src/App.tsx'],
+          risk_level: 'High',
+          metadata: { path: 'src/App.tsx' },
+          requested_at_unix_ms: 1775000000000,
+        },
+        streaming_text: 'finished',
+      })
+      const event: ReplEvent = {
+        RunCompleted: { run_id: 'run-001' },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result.status).toBe('AwaitingToolApproval')
+      expect(result.active_run).toBeNull()
+      expect(result.pending_permission?.id).toBe('perm-1')
+      expect(result.streaming_text).toBe('')
     })
 
     it('PermissionReplied returns to Thinking when an active run exists', () => {
       const session = testSession({
         status: 'AwaitingToolApproval',
         active_run: 'run-001',
+        pending_permission: {
+          id: 'perm-1',
+          session_id: 'session-1',
+          run_id: 'run-001',
+          tool_call_id: null,
+          tool_name: 'filesystem.apply_edit',
+          permission: 'WriteWorkspace',
+          patterns: ['src/App.tsx'],
+          risk_level: 'High',
+          metadata: { path: 'src/App.tsx' },
+          requested_at_unix_ms: 1775000000000,
+        },
       })
       const event: ReplEvent = {
         PermissionReplied: { request_id: 'perm-1', reply: 'Once' },
@@ -525,12 +569,25 @@ describe('sessionReducer', () => {
       const result = sessionReducer(session, event)
 
       expect(result.status).toBe('Thinking')
+      expect(result.pending_permission).toBeNull()
     })
 
     it('PermissionReplied returns to Idle when no active run exists', () => {
       const session = testSession({
         status: 'AwaitingToolApproval',
         active_run: null,
+        pending_permission: {
+          id: 'perm-1',
+          session_id: 'session-1',
+          run_id: 'run-001',
+          tool_call_id: null,
+          tool_name: 'filesystem.apply_edit',
+          permission: 'WriteWorkspace',
+          patterns: ['src/App.tsx'],
+          risk_level: 'High',
+          metadata: { path: 'src/App.tsx' },
+          requested_at_unix_ms: 1775000000000,
+        },
       })
       const event: ReplEvent = {
         PermissionReplied: { request_id: 'perm-1', reply: 'Reject' },
@@ -539,6 +596,7 @@ describe('sessionReducer', () => {
       const result = sessionReducer(session, event)
 
       expect(result.status).toBe('Idle')
+      expect(result.pending_permission).toBeNull()
     })
   })
 

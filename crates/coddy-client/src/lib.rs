@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use coddy_core::{ReplCommand, ReplEventEnvelope, ReplSessionSnapshot};
+use coddy_core::{PermissionReply, ReplCommand, ReplEventEnvelope, ReplSessionSnapshot};
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcError, CoddyRequest, CoddyResult, CoddyWireRequest,
     CoddyWireResult, ReplCommandJob, ReplEventStreamJob, ReplEventsJob, ReplSessionSnapshotJob,
@@ -101,6 +101,15 @@ impl CoddyClient {
 
     pub async fn stop_active_run(&self) -> Result<CoddyResult> {
         self.send_command(ReplCommand::StopActiveRun, false).await
+    }
+
+    pub async fn reply_permission(
+        &self,
+        request_id: Uuid,
+        reply: PermissionReply,
+    ) -> Result<CoddyResult> {
+        self.send_command(ReplCommand::ReplyPermission { request_id, reply }, false)
+            .await
     }
 
     pub async fn snapshot(&self) -> Result<ReplSessionSnapshot> {

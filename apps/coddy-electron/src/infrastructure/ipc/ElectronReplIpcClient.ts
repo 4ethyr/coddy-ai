@@ -9,6 +9,7 @@ import type {
   ModelProviderListResult,
   ModelRole,
   AssessmentPolicy,
+  PermissionReply,
   ReplEventEnvelope,
   ReplMode,
   ReplSessionSnapshot,
@@ -225,6 +226,17 @@ export class ElectronReplIpcClient implements ReplIpcClient {
   async dismissConfirmation(): Promise<ReplCommandResult> {
     return (await window.replApi.invoke(
       'repl:dismiss-confirmation',
+    )) as ReplCommandResult
+  }
+
+  async replyPermission(
+    requestId: string,
+    reply: PermissionReply,
+  ): Promise<ReplCommandResult> {
+    return (await window.replApi.invoke(
+      'repl:permission-reply',
+      requestId,
+      reply,
     )) as ReplCommandResult
   }
 

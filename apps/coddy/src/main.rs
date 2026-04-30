@@ -8,7 +8,8 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use coddy_client::CoddyClient;
 use coddy_core::{
-    AssessmentPolicy, ContextPolicy, ModelCredential, ModelRef, ModelRole, ReplCommand, ReplMode,
+    AssessmentPolicy, ContextPolicy, ModelCredential, ModelRef, ModelRole, PermissionReply,
+    ReplCommand, ReplMode,
 };
 use coddy_core::{ReplShellContext, ScreenAssistMode, SessionStatus};
 use coddy_ipc::CoddyResult;
@@ -68,6 +69,10 @@ enum Command {
         #[command(subcommand)]
         command: ScreenCommand,
     },
+    Permission {
+        #[command(subcommand)]
+        command: PermissionCommand,
+    },
     Shortcuts {
         #[command(subcommand)]
         command: ShortcutCommand,
@@ -96,6 +101,34 @@ enum ScreenCommand {
         policy: CliAssessmentPolicy,
     },
     DismissConfirmation,
+}
+
+#[derive(Debug, Subcommand)]
+enum PermissionCommand {
+    Reply {
+        #[arg(long)]
+        request_id: uuid::Uuid,
+
+        #[arg(long, value_enum)]
+        reply: CliPermissionReply,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliPermissionReply {
+    Once,
+    Always,
+    Reject,
+}
+
+impl From<CliPermissionReply> for PermissionReply {
+    fn from(value: CliPermissionReply) -> Self {
+        match value {
+            CliPermissionReply::Once => Self::Once,
+            CliPermissionReply::Always => Self::Always,
+            CliPermissionReply::Reject => Self::Reject,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -376,6 +409,20 @@ async fn main() -> Result<()> {
                 send_repl_command(&config, ReplCommand::DismissConfirmation, false).await?;
             print_job_result(result)
         }
+        Some(Command::Permission {
+            command: PermissionCommand::Reply { request_id, reply },
+        }) => {
+            let result = send_repl_command(
+                &config,
+                ReplCommand::ReplyPermission {
+                    request_id,
+                    reply: reply.into(),
+                },
+                cli.speak,
+            )
+            .await?;
+            print_job_result(result)
+        }
         Some(Command::Shortcuts {
             command: ShortcutCommand::Test,
         }) => run_shortcuts_test(&config).await,
@@ -406,7 +453,7 @@ async fn main() -> Result<()> {
             command: RuntimeCommand::Serve { socket },
         }) => run_runtime_serve(&config, socket).await,
         None => {
-            println!("Use `coddy repl`, `coddy ask`, `coddy voice`, `coddy screen explain`, `coddy model select`, `coddy ui open`, `coddy stop-speaking`, `coddy stop-active-run`, `coddy session snapshot`, `coddy runtime serve`, `coddy shortcuts test` ou `coddy doctor shortcuts`.");
+            println!("Use `coddy repl`, `coddy ask`, `coddy voice`, `coddy screen explain`, `coddy permission reply`, `coddy model select`, `coddy ui open`, `coddy stop-speaking`, `coddy stop-active-run`, `coddy session snapshot`, `coddy runtime serve`, `coddy shortcuts test` ou `coddy doctor shortcuts`.");
             Ok(())
         }
     }
@@ -977,6 +1024,35 @@ mod tests {
             Some(Command::Ui {
                 command: UiCommand::Open { mode },
             }) => assert!(matches!(mode, CliReplMode::DesktopApp)),
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_permission_reply_command() {
+        let request_id = uuid::Uuid::new_v4();
+        let cli = Cli::try_parse_from([
+            "coddy",
+            "permission",
+            "reply",
+            "--request-id",
+            &request_id.to_string(),
+            "--reply",
+            "once",
+        ])
+        .expect("parse permission reply");
+
+        match cli.command {
+            Some(Command::Permission {
+                command:
+                    PermissionCommand::Reply {
+                        request_id: id,
+                        reply,
+                    },
+            }) => {
+                assert_eq!(id, request_id);
+                assert!(matches!(reply, CliPermissionReply::Once));
+            }
             _ => panic!("unexpected command"),
         }
     }

@@ -12,12 +12,23 @@ export interface FloatingAppearanceSettings {
   accentColor: string
 }
 
+export type ModelThinkingEffort = 'minimal' | 'balanced' | 'deep'
+export type ThinkingAnimation = 'pulse' | 'scan' | 'orbit'
+
+export interface ModelThinkingSettings {
+  enabled: boolean
+  effort: ModelThinkingEffort
+  budgetTokens: number
+  animation: ThinkingAnimation
+}
+
 export interface UserSettings {
   selectedModel: ModelRef
   mode: ReplMode
   voiceEnabled: boolean
   voiceMuted: boolean
   floatingAppearance: FloatingAppearanceSettings
+  modelThinking: ModelThinkingSettings
 }
 
 const STORAGE_KEY = 'coddy:settings'
@@ -30,12 +41,20 @@ export const DEFAULT_FLOATING_APPEARANCE: FloatingAppearanceSettings = {
   accentColor: '#00dbe9',
 }
 
+export const DEFAULT_MODEL_THINKING: ModelThinkingSettings = {
+  enabled: true,
+  effort: 'balanced',
+  budgetTokens: 2048,
+  animation: 'scan',
+}
+
 const DEFAULT_SETTINGS: UserSettings = {
   selectedModel: { provider: 'ollama', name: 'gemma4:e2b' },
   mode: 'FloatingTerminal',
   voiceEnabled: true,
   voiceMuted: false,
   floatingAppearance: { ...DEFAULT_FLOATING_APPEARANCE },
+  modelThinking: { ...DEFAULT_MODEL_THINKING },
 }
 
 function isBrowser(): boolean {
@@ -56,9 +75,29 @@ export function loadSettings(): UserSettings {
       voiceEnabled: parsed.voiceEnabled ?? DEFAULT_SETTINGS.voiceEnabled,
       voiceMuted: parsed.voiceMuted ?? DEFAULT_SETTINGS.voiceMuted,
       floatingAppearance: normalizeFloatingAppearance(parsed.floatingAppearance),
+      modelThinking: normalizeModelThinking(parsed.modelThinking),
     }
   } catch {
     return { ...DEFAULT_SETTINGS }
+  }
+}
+
+export function normalizeModelThinking(
+  value: Partial<ModelThinkingSettings> | undefined,
+): ModelThinkingSettings {
+  return {
+    enabled:
+      typeof value?.enabled === 'boolean'
+        ? value.enabled
+        : DEFAULT_MODEL_THINKING.enabled,
+    effort: validThinkingEffort(value?.effort),
+    budgetTokens: clampNumber(
+      value?.budgetTokens,
+      0,
+      32_768,
+      DEFAULT_MODEL_THINKING.budgetTokens,
+    ),
+    animation: validThinkingAnimation(value?.animation),
   }
 }
 
@@ -109,4 +148,20 @@ function clampNumber(
 function validHexColor(value: string | undefined, fallback: string): string {
   if (!value) return fallback
   return /^#[0-9a-f]{6}$/i.test(value) ? value : fallback
+}
+
+function validThinkingEffort(
+  value: ModelThinkingEffort | undefined,
+): ModelThinkingEffort {
+  return value === 'minimal' || value === 'balanced' || value === 'deep'
+    ? value
+    : DEFAULT_MODEL_THINKING.effort
+}
+
+function validThinkingAnimation(
+  value: ThinkingAnimation | undefined,
+): ThinkingAnimation {
+  return value === 'pulse' || value === 'scan' || value === 'orbit'
+    ? value
+    : DEFAULT_MODEL_THINKING.animation
 }

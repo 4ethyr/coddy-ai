@@ -3,7 +3,10 @@
 // Uses the same useSession hook as FloatingTerminal.
 
 import { useCallback, useState, type ComponentProps } from 'react'
-import type { FloatingAppearanceSettings } from '@/application'
+import type {
+  FloatingAppearanceSettings,
+  ModelThinkingSettings,
+} from '@/application'
 import { loadSettings, saveSettings } from '@/application'
 import { getRuntimeChatCapability } from '@/domain'
 import { useSessionContext } from '@/presentation/hooks'
@@ -25,11 +28,15 @@ export function DesktopApp() {
     selectModel,
     listProviderModels,
     openUi,
+    replyPermission,
   } = useSessionContext()
   const [activeTab, setActiveTab] = useState<DesktopTab>('chat')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
     () => loadSettings().floatingAppearance,
+  )
+  const [modelThinking, setModelThinking] = useState<ModelThinkingSettings>(
+    () => loadSettings().modelThinking,
   )
 
   const handleClose = useCallback(() => {
@@ -54,6 +61,14 @@ export function DesktopApp() {
     (next: FloatingAppearanceSettings) => {
       setAppearance(next)
       saveSettings({ floatingAppearance: next })
+    },
+    [],
+  )
+
+  const handleModelThinkingChange = useCallback(
+    (next: ModelThinkingSettings) => {
+      setModelThinking(next)
+      saveSettings({ modelThinking: next })
     },
     [],
   )
@@ -143,7 +158,14 @@ export function DesktopApp() {
 
         <div className="relative min-h-0 flex-1 overflow-hidden">
           {activeTab === 'chat' && (
-            <ConversationPanel session={session} onSend={ask} />
+            <ConversationPanel
+              session={session}
+              onSend={ask}
+              onPermissionReply={(requestId, reply) => {
+                void replyPermission(requestId, reply)
+              }}
+              thinkingAnimation={modelThinking.animation}
+            />
           )}
 
           {activeTab === 'workspace' && (
@@ -166,7 +188,9 @@ export function DesktopApp() {
           {activeTab === 'settings' && (
             <SettingsTab
               appearance={appearance}
+              modelThinking={modelThinking}
               onOpenAppearance={() => setSettingsOpen(true)}
+              onModelThinkingChange={handleModelThinkingChange}
             />
           )}
         </div>
@@ -300,11 +324,19 @@ function ModelsTab({
 
 function SettingsTab({
   appearance,
+  modelThinking,
   onOpenAppearance,
+  onModelThinkingChange,
 }: {
   appearance: FloatingAppearanceSettings
+  modelThinking: ModelThinkingSettings
   onOpenAppearance: () => void
+  onModelThinkingChange: (next: ModelThinkingSettings) => void
 }) {
+  const setThinking = (patch: Partial<ModelThinkingSettings>) => {
+    onModelThinkingChange({ ...modelThinking, ...patch })
+  }
+
   return (
     <div className="h-full overflow-y-auto p-5 sm:p-8">
       <div className="mx-auto max-w-5xl">
@@ -341,6 +373,106 @@ function SettingsTab({
             </button>
           </div>
         </section>
+
+        <section className="desktop-glass-panel mt-4 rounded-xl p-5">
+          <div className="flex flex-col gap-5">
+            <div className="flex flex-col justify-between gap-3 md:flex-row md:items-center">
+              <div>
+                <h2 className="font-display text-lg text-on-surface">
+                  Model thinking
+                </h2>
+                <p className="mt-1 max-w-2xl text-sm leading-6 text-on-surface-variant">
+                  Configure o comportamento visual e o orçamento pretendido
+                  para respostas com raciocínio mais profundo.
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-pressed={modelThinking.enabled}
+                onClick={() => setThinking({ enabled: !modelThinking.enabled })}
+                className={`rounded-full border px-4 py-2 font-mono text-xs transition-colors ${
+                  modelThinking.enabled
+                    ? 'border-primary/45 bg-primary/10 text-primary'
+                    : 'border-white/15 bg-surface-container-high/70 text-on-surface-variant'
+                }`}
+              >
+                {modelThinking.enabled ? 'Enabled' : 'Disabled'}
+              </button>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <SegmentedControl
+                label="Effort"
+                value={modelThinking.effort}
+                options={['minimal', 'balanced', 'deep']}
+                onChange={(effort) => setThinking({ effort })}
+              />
+              <SegmentedControl
+                label="Animation"
+                value={modelThinking.animation}
+                options={['pulse', 'scan', 'orbit']}
+                onChange={(animation) => setThinking({ animation })}
+              />
+              <label className="flex flex-col gap-2 rounded-lg border border-white/10 bg-surface-container-low/50 p-4">
+                <span className="font-display text-[10px] uppercase tracking-[0.2em] text-on-surface-variant">
+                  Budget
+                </span>
+                <input
+                  type="range"
+                  min="0"
+                  max="32768"
+                  step="512"
+                  value={modelThinking.budgetTokens}
+                  onChange={(event) =>
+                    setThinking({
+                      budgetTokens: Number(event.currentTarget.value),
+                    })
+                  }
+                  className="accent-primary"
+                />
+                <span className="font-mono text-xs text-primary">
+                  {modelThinking.budgetTokens} tokens
+                </span>
+              </label>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+}
+
+function SegmentedControl<TValue extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string
+  value: TValue
+  options: readonly TValue[]
+  onChange: (value: TValue) => void
+}) {
+  return (
+    <div className="rounded-lg border border-white/10 bg-surface-container-low/50 p-4">
+      <p className="mb-3 font-display text-[10px] uppercase tracking-[0.2em] text-on-surface-variant">
+        {label}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {options.map((option) => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => onChange(option)}
+            className={`rounded-full border px-3 py-1 font-mono text-xs capitalize transition-colors ${
+              option === value
+                ? 'border-primary/45 bg-primary/10 text-primary'
+                : 'border-white/10 bg-surface-container-high/50 text-on-surface-variant hover:text-on-surface'
+            }`}
+          >
+            {option}
+          </button>
+        ))}
       </div>
     </div>
   )

@@ -15,6 +15,7 @@ const sessionContext = {
     workspace_context: [],
     messages: [],
     active_run: null,
+    pending_permission: null,
     tool_activity: [],
     streaming_text: '',
   },
@@ -31,6 +32,7 @@ const sessionContext = {
   cancelVoiceCapture: vi.fn(),
   captureAndExplain: vi.fn(),
   dismissConfirmation: vi.fn(),
+  replyPermission: vi.fn(),
 }
 
 vi.mock('@/presentation/hooks', () => ({
@@ -40,6 +42,7 @@ vi.mock('@/presentation/hooks', () => ({
 describe('DesktopApp', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    window.localStorage.clear()
     Object.defineProperty(window, 'replApi', {
       configurable: true,
       value: {
@@ -58,5 +61,15 @@ describe('DesktopApp', () => {
     expect(
       screen.getByText(/Gemini API-key models execute through generateContent/i),
     ).toBeInTheDocument()
+  })
+
+  it('renders model thinking controls in settings', async () => {
+    render(<DesktopApp />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open config' }))
+
+    expect(screen.getByText('Model thinking')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'deep' })).toBeInTheDocument()
+    expect(screen.getByText('2048 tokens')).toBeInTheDocument()
   })
 })

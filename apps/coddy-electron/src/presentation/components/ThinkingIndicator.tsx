@@ -1,0 +1,46 @@
+import { Icon } from '@/presentation/components/Icon'
+
+export type ThinkingAnimation = 'pulse' | 'scan' | 'orbit'
+
+interface Props {
+  animation?: ThinkingAnimation
+  label?: string
+}
+
+export function ThinkingIndicator({
+  animation = 'scan',
+  label = 'coddy_thinking',
+}: Props) {
+  const motionClass =
+    animation === 'orbit'
+      ? 'animate-spin'
+      : animation === 'pulse'
+        ? 'animate-pulse'
+        : 'thinking-scan'
+
+  return (
+    <div className="flex items-start gap-4">
+      <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md border border-primary/70 bg-primary/10 text-primary">
+        <Icon name="bot" className={`h-4 w-4 ${motionClass}`} />
+      </div>
+      <div className="desktop-glass-panel max-w-3xl flex-1 overflow-hidden rounded-lg px-5 py-4">
+        <div className="mb-3 font-mono text-[10px] uppercase tracking-[0.22em] text-primary/80">
+          {label}
+        </div>
+        <div className="flex gap-2">
+          {[0, 1, 2].map((index) => (
+            <span
+              key={index}
+              className="h-2 flex-1 rounded-full bg-primary/20"
+            >
+              <span
+                className={`block h-full rounded-full bg-primary/70 ${motionClass}`}
+                style={{ animationDelay: `${index * 120}ms` }}
+              />
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}

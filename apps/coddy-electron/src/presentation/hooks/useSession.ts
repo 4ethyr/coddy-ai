@@ -8,6 +8,7 @@ import type {
   ModelProviderListRequest,
   ModelProviderListResult,
   ModelRole,
+  PermissionReply,
   ReplCommandResult,
   ReplMode,
   ReplSession,
@@ -29,6 +30,7 @@ import {
   cancelVoiceCapture,
   captureAndExplain,
   dismissConfirmation,
+  replyPermission,
   listProviderModels,
 } from '@/application'
 import { useReplClient } from './useReplClient'
@@ -77,6 +79,9 @@ export interface UseSessionReturn {
 
   /** Dismiss a pending policy confirmation without sending prompt text */
   dismissConfirmation: () => Promise<void>
+
+  /** Reply to a pending tool permission request */
+  replyPermission: (requestId: string, reply: PermissionReply) => Promise<void>
 
   /** Manually retry connection to the daemon */
   reconnect: () => void
@@ -238,6 +243,17 @@ export function useSession(): UseSessionReturn {
     }
   }, [client])
 
+  const handleReplyPermission = useCallback(
+    async (requestId: string, reply: PermissionReply) => {
+      try {
+        await replyPermission(client, requestId, reply)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      }
+    },
+    [client],
+  )
+
   return {
     session: state.session,
     lastSequence: state.lastSequence,
@@ -255,6 +271,7 @@ export function useSession(): UseSessionReturn {
     cancelVoiceCapture: handleCancelVoiceCapture,
     captureAndExplain: handleCaptureAndExplain,
     dismissConfirmation: handleDismissConfirmation,
+    replyPermission: handleReplyPermission,
     reconnect: init,
   }
 }

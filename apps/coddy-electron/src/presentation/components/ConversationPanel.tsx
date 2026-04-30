@@ -5,14 +5,27 @@ import type { ReplSession } from '@/domain'
 import { MessageBubble } from '@/presentation/components/MessageBubble'
 import { InputBar } from '@/presentation/components/InputBar'
 import { StreamingText } from '@/presentation/components/StreamingText'
+import { ToolApprovalPanel } from '@/presentation/components/ToolApprovalPanel'
+import {
+  ThinkingIndicator,
+  type ThinkingAnimation,
+} from '@/presentation/components/ThinkingIndicator'
 import { Icon } from '@/presentation/components/Icon'
+import type { PermissionReply } from '@/domain'
 
 interface Props {
   session: ReplSession
   onSend: (text: string) => void
+  onPermissionReply: (requestId: string, reply: PermissionReply) => void
+  thinkingAnimation?: ThinkingAnimation
 }
 
-export function ConversationPanel({ session, onSend }: Props) {
+export function ConversationPanel({
+  session,
+  onSend,
+  onPermissionReply,
+  thinkingAnimation = 'scan',
+}: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -37,6 +50,10 @@ export function ConversationPanel({ session, onSend }: Props) {
             <MessageBubble key={msg.id} message={msg} />
           ))}
 
+          {session.status === 'Thinking' && !session.streaming_text && (
+            <ThinkingIndicator animation={thinkingAnimation} />
+          )}
+
           {session.streaming_text && (
             <div className="flex items-start gap-4">
               <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md border border-primary bg-primary/10 text-primary">
@@ -54,6 +71,13 @@ export function ConversationPanel({ session, onSend }: Props) {
             </div>
           )}
 
+          {session.pending_permission && (
+            <ToolApprovalPanel
+              request={session.pending_permission}
+              onReply={onPermissionReply}
+            />
+          )}
+
           <div ref={messagesEndRef} />
         </div>
       </div>
@@ -63,11 +87,15 @@ export function ConversationPanel({ session, onSend }: Props) {
           <InputBar
             onSend={onSend}
             disabled={
-              session.status === 'Streaming' || session.status === 'Thinking'
+              session.status === 'Streaming'
+              || session.status === 'Thinking'
+              || session.status === 'AwaitingToolApproval'
             }
             placeholder={
               session.status === 'Thinking'
                 ? 'Thinking...'
+                : session.status === 'AwaitingToolApproval'
+                  ? 'Tool approval required'
                 : 'Instruct Coddy agent...'
             }
           />

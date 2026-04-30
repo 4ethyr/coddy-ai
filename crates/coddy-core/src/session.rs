@@ -65,6 +65,7 @@ pub struct ReplSession {
     pub workspace_context: Vec<ContextItem>,
     pub messages: Vec<ReplMessage>,
     pub active_run: Option<Uuid>,
+    pub pending_permission: Option<crate::PermissionRequest>,
 }
 
 impl ReplSession {
@@ -80,6 +81,7 @@ impl ReplSession {
             workspace_context: Vec::new(),
             messages: Vec::new(),
             active_run: None,
+            pending_permission: None,
         }
     }
 
@@ -166,10 +168,18 @@ impl ReplSession {
             crate::ReplEvent::ToolCompleted { .. } => {
                 self.status = SessionStatus::Thinking;
             }
-            crate::ReplEvent::PermissionRequested { .. } => {
+            crate::ReplEvent::PermissionRequested { request } => {
+                self.pending_permission = Some(request.clone());
                 self.status = SessionStatus::AwaitingToolApproval;
             }
-            crate::ReplEvent::PermissionReplied { .. } => {
+            crate::ReplEvent::PermissionReplied { request_id, .. } => {
+                if self
+                    .pending_permission
+                    .as_ref()
+                    .is_some_and(|request| request.id == *request_id)
+                {
+                    self.pending_permission = None;
+                }
                 if self.status == SessionStatus::AwaitingToolApproval {
                     self.status = if self.active_run.is_some() {
                         SessionStatus::Thinking
@@ -195,7 +205,9 @@ impl ReplSession {
                 if self.active_run == Some(*run_id) {
                     self.active_run = None;
                 }
-                self.status = if self.voice.speaking {
+                self.status = if self.pending_permission.is_some() {
+                    SessionStatus::AwaitingToolApproval
+                } else if self.voice.speaking {
                     SessionStatus::Speaking
                 } else {
                     SessionStatus::Idle

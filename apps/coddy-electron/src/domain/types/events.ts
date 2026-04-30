@@ -114,6 +114,7 @@ export interface ReplSessionSnapshotSession {
   workspace_context: ContextItem[]
   messages: ReplMessage[]
   active_run: string | null
+  pending_permission?: PermissionRequest | null
   tool_activity?: unknown[]
   streaming_text?: string
 }

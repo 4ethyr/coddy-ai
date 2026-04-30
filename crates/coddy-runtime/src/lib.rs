@@ -1,13 +1,13 @@
 use coddy_agent::{
     AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError, ChatRequest, ChatResponse,
     ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, LIST_FILES_TOOL,
-    READ_FILE_TOOL, SEARCH_FILES_TOOL,
+    PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL,
 };
 use coddy_core::{
-    ApprovalPolicy, ContextItem, ContextPolicy, ModelCredential, ModelRef, ReplCommand, ReplEvent,
-    ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode, ReplSession,
-    ReplSessionSnapshot, ToolCall, ToolDefinition, ToolName, ToolOutput, ToolResultStatus,
-    ToolRiskLevel,
+    ApprovalPolicy, ContextItem, ContextPolicy, ModelCredential, ModelRef, PermissionReply,
+    ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode,
+    ReplSession, ReplSessionSnapshot, ToolCall, ToolDefinition, ToolName, ToolOutput,
+    ToolResultStatus, ToolRiskLevel,
 };
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
@@ -204,6 +204,10 @@ impl CoddyRuntime {
                     spoken: speak,
                 }
             }
+            ReplCommand::ReplyPermission {
+                request_id: permission_request_id,
+                reply,
+            } => self.handle_permission_reply(request_id, permission_request_id, reply, speak),
             ReplCommand::DismissConfirmation => {
                 self.publish_event_now(ReplEvent::ConfirmationDismissed);
                 CoddyResult::ActionStatus {
@@ -240,6 +244,90 @@ impl CoddyRuntime {
                 request_id,
                 code: "unsupported_command".to_string(),
                 message: "Coddy runtime does not handle screen capture commands yet".to_string(),
+            },
+        }
+    }
+
+    fn handle_permission_reply(
+        &self,
+        request_id: Uuid,
+        permission_request_id: Uuid,
+        reply: PermissionReply,
+        speak: bool,
+    ) -> CoddyResult {
+        let snapshot = self.snapshot();
+        let Some(permission_request) = snapshot.session.pending_permission.clone() else {
+            return CoddyResult::Error {
+                request_id,
+                code: "permission_not_pending".to_string(),
+                message: "No tool permission request is pending.".to_string(),
+            };
+        };
+
+        if permission_request.id != permission_request_id {
+            return CoddyResult::Error {
+                request_id,
+                code: "permission_request_mismatch".to_string(),
+                message: format!("Pending permission request is {}.", permission_request.id),
+            };
+        }
+
+        let Some(agent_runtime) = &self.agent_runtime else {
+            return CoddyResult::Error {
+                request_id,
+                code: "agent_runtime_unavailable".to_string(),
+                message: "Coddy cannot reply to tool permissions without a workspace runtime."
+                    .to_string(),
+            };
+        };
+
+        let run_id = permission_request.run_id;
+        let mut state = agent_runtime.start_run(
+            permission_request.session_id,
+            format!("Reply to permission request {permission_request_id}"),
+        );
+        state.run_id = run_id;
+        let outcome = agent_runtime.reply_permission(&mut state, permission_request_id, reply);
+
+        for event in outcome.events {
+            self.publish_event_with_run_now(event, run_id);
+        }
+        self.publish_event_with_run_now(ReplEvent::RunCompleted { run_id }, run_id);
+
+        match outcome.result {
+            Some(result) => match result.status {
+                ToolResultStatus::Succeeded => CoddyResult::ActionStatus {
+                    request_id,
+                    message: format!(
+                        "Permission {reply:?} accepted for {}.",
+                        permission_request.tool_name
+                    ),
+                    spoken: speak,
+                },
+                ToolResultStatus::Denied => CoddyResult::ActionStatus {
+                    request_id,
+                    message: format!(
+                        "Permission {reply:?} denied for {}.",
+                        permission_request.tool_name
+                    ),
+                    spoken: speak,
+                },
+                ToolResultStatus::Failed | ToolResultStatus::Cancelled => {
+                    let message = result
+                        .error
+                        .map(|error| error.message)
+                        .unwrap_or_else(|| "permission reply failed".to_string());
+                    CoddyResult::Error {
+                        request_id,
+                        code: "permission_reply_failed".to_string(),
+                        message,
+                    }
+                }
+            },
+            None => CoddyResult::Error {
+                request_id,
+                code: "permission_reply_incomplete".to_string(),
+                message: "Permission reply did not produce a tool result.".to_string(),
             },
         }
     }
@@ -547,11 +635,9 @@ impl CoddyRuntime {
                 continue;
             };
 
-            if definition.approval_policy != ApprovalPolicy::AutoApprove
-                || definition.risk_level > ToolRiskLevel::Low
-            {
+            if !model_tool_call_may_run(&tool_name, definition) {
                 observations.push(format!(
-                    "- `{tool_name}` was not executed because model-initiated tools must be auto-approved and low risk."
+                    "- `{tool_name}` was not executed because model-initiated tools must be auto-approved and low risk, except edit previews that only prepare an approval request."
                 ));
                 continue;
             }
@@ -952,6 +1038,12 @@ fn build_tool_followup_system_prompt(base_prompt: &str) -> String {
     format!("{base_prompt}\n\n{followup}")
 }
 
+fn model_tool_call_may_run(tool_name: &ToolName, definition: &ToolDefinition) -> bool {
+    (definition.approval_policy == ApprovalPolicy::AutoApprove
+        && definition.risk_level <= ToolRiskLevel::Low)
+        || tool_name.as_str() == PREVIEW_EDIT_TOOL
+}
+
 fn context_item_from_tool_output(tool_name: &ToolName, output: &ToolOutput) -> Option<ContextItem> {
     let path = output.metadata.get("path").and_then(|value| value.as_str());
     let item = match tool_name.as_str() {
@@ -1284,10 +1376,11 @@ fn default_workspace_root() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use coddy_agent::READ_FILE_TOOL;
+    use coddy_agent::{PREVIEW_EDIT_TOOL, READ_FILE_TOOL};
     use coddy_client::CoddyClient;
     use coddy_core::{
-        ApprovalPolicy, ModelRef, ModelRole, ReplEvent, ToolCategory, ToolPermission, ToolRiskLevel,
+        ApprovalPolicy, ModelRef, ModelRole, PermissionReply, ReplEvent, ToolCategory,
+        ToolPermission, ToolRiskLevel,
     };
     use coddy_ipc::{
         ReplCommandJob, ReplEventStreamJob, ReplEventsJob, ReplSessionSnapshotJob, ReplToolsJob,
@@ -2219,6 +2312,184 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn ask_command_allows_model_preview_edit_to_request_approval_after_read() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("src/lib.rs", "pub fn answer() -> i32 {\n    1\n}\n");
+        let (chat_client, requests) = QueuedChatClient::new(vec![
+            ChatResponse {
+                text: "I will read the target file first.".to_string(),
+                deltas: vec!["I will read the target file first.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-read".to_string()),
+                    name: READ_FILE_TOOL.to_string(),
+                    arguments: json!({ "path": "src/lib.rs", "max_bytes": 400 }),
+                }],
+            },
+            ChatResponse {
+                text: "I can prepare the requested change for approval.".to_string(),
+                deltas: vec!["I can prepare the requested change for approval.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-preview".to_string()),
+                    name: PREVIEW_EDIT_TOOL.to_string(),
+                    arguments: json!({
+                        "path": "src/lib.rs",
+                        "old_string": "    1",
+                        "new_string": "    2"
+                    }),
+                }],
+            },
+            ChatResponse::from_text("I prepared a diff and it is waiting for approval."),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "change answer to 2".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let events = runtime.events_after(2).0;
+        let snapshot = runtime.snapshot();
+        let file_text = fs::read_to_string(workspace.path.join("src/lib.rs")).expect("read file");
+
+        assert_eq!(text, "I prepared a diff and it is waiting for approval.");
+        assert_eq!(captured_requests.len(), 3);
+        assert!(captured_requests[2].messages.iter().any(|message| {
+            message.role == coddy_agent::ChatMessageRole::Tool
+                && message.content.contains(PREVIEW_EDIT_TOOL)
+                && message.content.contains("-    1")
+                && message.content.contains("+    2")
+        }));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::PermissionRequested { request }
+                if request.tool_name.as_str() == "filesystem.apply_edit"
+                    && request.patterns == vec!["src/lib.rs"]
+        )));
+        assert_eq!(
+            snapshot.session.status,
+            coddy_core::SessionStatus::AwaitingToolApproval
+        );
+        assert!(snapshot.session.pending_permission.is_some());
+        assert_eq!(file_text, "pub fn answer() -> i32 {\n    1\n}\n");
+    }
+
+    #[test]
+    fn reply_permission_command_applies_pending_model_edit_and_clears_approval() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("src/lib.rs", "pub fn answer() -> i32 {\n    1\n}\n");
+        let (chat_client, _requests) = QueuedChatClient::new(vec![
+            ChatResponse {
+                text: "Reading before edit.".to_string(),
+                deltas: vec!["Reading before edit.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-read".to_string()),
+                    name: READ_FILE_TOOL.to_string(),
+                    arguments: json!({ "path": "src/lib.rs", "max_bytes": 400 }),
+                }],
+            },
+            ChatResponse {
+                text: "Preparing edit for approval.".to_string(),
+                deltas: vec!["Preparing edit for approval.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-preview".to_string()),
+                    name: PREVIEW_EDIT_TOOL.to_string(),
+                    arguments: json!({
+                        "path": "src/lib.rs",
+                        "old_string": "    1",
+                        "new_string": "    2"
+                    }),
+                }],
+            },
+            ChatResponse::from_text("Approval is ready."),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "change answer to 2".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+        let pending_request_id = runtime
+            .snapshot()
+            .session
+            .pending_permission
+            .as_ref()
+            .map(|request| request.id)
+            .expect("pending permission");
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id: Uuid::new_v4(),
+            command: ReplCommand::ReplyPermission {
+                request_id: pending_request_id,
+                reply: PermissionReply::Once,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::ActionStatus { message, .. } = result else {
+            panic!("expected action status");
+        };
+        let snapshot = runtime.snapshot();
+        let file_text = fs::read_to_string(workspace.path.join("src/lib.rs")).expect("read file");
+
+        assert!(message.contains("Permission Once accepted"));
+        assert_eq!(file_text, "pub fn answer() -> i32 {\n    2\n}\n");
+        assert_eq!(snapshot.session.status, coddy_core::SessionStatus::Idle);
+        assert!(snapshot.session.pending_permission.is_none());
     }
 
     #[test]

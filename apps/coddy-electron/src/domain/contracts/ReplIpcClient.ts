@@ -6,6 +6,7 @@ import type {
   ModelProviderListRequest,
   ModelProviderListResult,
   ModelRole,
+  PermissionReply,
   ReplEventEnvelope,
   ReplMode,
   ReplSessionSnapshot,
@@ -82,6 +83,12 @@ export interface ReplIpcClient {
 
   /** Dismiss a pending policy confirmation without sending prompt text */
   dismissConfirmation(): Promise<ReplCommandResult>
+
+  /** Reply to a pending backend tool permission request */
+  replyPermission(
+    requestId: string,
+    reply: PermissionReply,
+  ): Promise<ReplCommandResult>
 
   /**
    * Capture voice via the system mic (spawns `coddy voice --overlay`).

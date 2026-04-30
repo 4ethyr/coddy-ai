@@ -34,6 +34,9 @@ export async function initializeSession(
   if (!session.tool_activity) {
     session.tool_activity = []
   }
+  if (session.pending_permission === undefined) {
+    session.pending_permission = null
+  }
 
   return {
     session,

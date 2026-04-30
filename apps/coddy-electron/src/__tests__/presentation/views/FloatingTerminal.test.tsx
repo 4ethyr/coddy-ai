@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ReplSession } from '@/domain'
 import { FloatingTerminal } from '@/presentation/views/FloatingTerminal/FloatingTerminal'
 
 const sessionContext = {
@@ -15,8 +16,10 @@ const sessionContext = {
     workspace_context: [],
     messages: [],
     active_run: null,
+    pending_permission: null,
+    tool_activity: [],
     streaming_text: '',
-  },
+  } as ReplSession,
   connecting: false,
   reconnecting: false,
   error: null,
@@ -29,6 +32,7 @@ const sessionContext = {
   cancelVoiceCapture: vi.fn(),
   captureAndExplain: vi.fn(),
   dismissConfirmation: vi.fn(),
+  replyPermission: vi.fn(),
 }
 
 vi.mock('@/presentation/hooks', () => ({
@@ -38,6 +42,12 @@ vi.mock('@/presentation/hooks', () => ({
 describe('FloatingTerminal', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    sessionContext.session = {
+      ...sessionContext.session,
+      status: 'Idle',
+      pending_permission: null,
+      streaming_text: '',
+    }
     Object.defineProperty(window, 'replApi', {
       configurable: true,
       value: {
@@ -72,5 +82,32 @@ describe('FloatingTerminal', () => {
     expect(screen.getByTestId('floating-terminal-canvas')).toHaveClass(
       'terminal-canvas',
     )
+  })
+
+  it('renders pending tool approval actions above the input', async () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      status: 'AwaitingToolApproval',
+      pending_permission: {
+        id: 'perm-1',
+        session_id: 'test-session',
+        run_id: 'run-1',
+        tool_call_id: 'call-1',
+        tool_name: 'filesystem.apply_edit',
+        permission: 'WriteWorkspace',
+        patterns: ['src/App.tsx'],
+        risk_level: 'High',
+        metadata: { path: 'src/App.tsx' },
+        requested_at_unix_ms: 1775000000000,
+      },
+    }
+
+    render(<FloatingTerminal />)
+
+    expect(screen.getByText('filesystem.apply_edit')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Once' }))
+
+    expect(sessionContext.replyPermission).toHaveBeenCalledWith('perm-1', 'Once')
+    expect(screen.getByPlaceholderText('Tool approval required')).toBeDisabled()
   })
 })

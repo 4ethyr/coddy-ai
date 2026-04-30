@@ -69,6 +69,7 @@ function createSimDaemon(): SimDaemon {
       workspace_context: [],
       messages: [],
       active_run: null,
+      pending_permission: null,
     } satisfies ReplSessionSnapshotSession,
   }
 }
@@ -263,6 +264,20 @@ function createSimBridge(daemon: SimDaemon) {
           return Promise.resolve({
             text: 'Confirmação dispensada.',
           })
+
+        case 'repl:permission-reply': {
+          const requestId = args[0] as string
+          const reply = args[1] as 'Once' | 'Always' | 'Reject'
+          daemon.commands.push(`permission-reply:${requestId}:${reply}`)
+          daemon.snapshotSession.pending_permission = null
+          daemon.snapshotSession.status = 'Idle'
+          pushEvent(daemon, watchListeners, {
+            PermissionReplied: { request_id: requestId, reply },
+          })
+          return Promise.resolve({
+            message: `Permissão ${reply} registrada.`,
+          })
+        }
 
         default:
           return Promise.reject(new Error(`Unknown channel: ${channel}`))
@@ -468,6 +483,14 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
     async dismissConfirmation() {
       return (await sim.invoke(
         'repl:dismiss-confirmation',
+      )) as ReplCommandResult
+    },
+
+    async replyPermission(requestId: string, reply: 'Once' | 'Always' | 'Reject') {
+      return (await sim.invoke(
+        'repl:permission-reply',
+        requestId,
+        reply,
       )) as ReplCommandResult
     },
 

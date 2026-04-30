@@ -6,6 +6,7 @@ import type {
   ModelProviderListRequest,
   ModelProviderListResult,
   ModelRole,
+  PermissionReply,
   AssessmentPolicy,
   ReplIpcClient,
   ReplCommandResult,
@@ -128,6 +129,18 @@ export async function dismissConfirmation(
   client: ReplIpcClient,
 ): Promise<ReplCommandResult> {
   return assertCommandSucceeded(await client.dismissConfirmation())
+}
+
+/**
+ * Replies to a pending tool permission request. The backend owns the pending
+ * edit/shell state and validates that the request id is still current.
+ */
+export async function replyPermission(
+  client: ReplIpcClient,
+  requestId: string,
+  reply: PermissionReply,
+): Promise<ReplCommandResult> {
+  return assertCommandSucceeded(await client.replyPermission(requestId, reply))
 }
 
 function assertCommandSucceeded(

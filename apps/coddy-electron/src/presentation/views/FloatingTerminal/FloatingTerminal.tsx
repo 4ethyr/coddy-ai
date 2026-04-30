@@ -14,6 +14,8 @@ import { InputBar } from '@/presentation/components/InputBar'
 import { ModelSelector } from '@/presentation/components/ModelSelector'
 import { VoiceButton } from '@/presentation/components/VoiceButton'
 import { StreamingText } from '@/presentation/components/StreamingText'
+import { ThinkingIndicator } from '@/presentation/components/ThinkingIndicator'
+import { ToolApprovalPanel } from '@/presentation/components/ToolApprovalPanel'
 import { AssessmentConfirmModal } from '@/presentation/components/AssessmentConfirmModal'
 import { FloatingSettingsModal } from '@/presentation/components/FloatingSettingsModal'
 import { Icon } from '@/presentation/components/Icon'
@@ -33,6 +35,7 @@ export function FloatingTerminal() {
     cancelVoiceCapture,
     captureAndExplain,
     dismissConfirmation,
+    replyPermission,
   } =
     useSessionContext()
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -43,6 +46,9 @@ export function FloatingTerminal() {
   const [expanded, setExpanded] = useState(false)
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
     () => loadSettings().floatingAppearance,
+  )
+  const [thinkingAnimation] = useState(
+    () => loadSettings().modelThinking.animation,
   )
   const toolActivity = session.tool_activity ?? []
 
@@ -258,6 +264,13 @@ export function FloatingTerminal() {
             <MessageBubble key={msg.id} message={msg} />
           ))}
 
+          {session.status === 'Thinking' && !session.streaming_text && (
+            <ThinkingIndicator
+              animation={thinkingAnimation}
+              label="thinking_response"
+            />
+          )}
+
           {session.streaming_text && (
             <div className="flex w-full items-start gap-4">
               <div className="mt-1 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md border border-primary bg-primary/10 text-primary shadow-[0_0_22px_rgba(0,219,233,0.2)]">
@@ -275,6 +288,15 @@ export function FloatingTerminal() {
             </div>
           )}
 
+          {session.pending_permission && (
+            <ToolApprovalPanel
+              request={session.pending_permission}
+              onReply={(requestId, reply) => {
+                void replyPermission(requestId, reply)
+              }}
+            />
+          )}
+
           <div ref={messagesEndRef} />
         </div>
       </div>
@@ -283,8 +305,17 @@ export function FloatingTerminal() {
         <div className="flex-1">
           <InputBar
             onSend={ask}
-            disabled={connecting || session.status === 'Streaming' || session.status === 'Thinking'}
-            placeholder="Enter command or prompt..."
+            disabled={
+              connecting
+              || session.status === 'Streaming'
+              || session.status === 'Thinking'
+              || session.status === 'AwaitingToolApproval'
+            }
+            placeholder={
+              session.status === 'AwaitingToolApproval'
+                ? 'Tool approval required'
+                : 'Enter command or prompt...'
+            }
           />
         </div>
         <VoiceButton

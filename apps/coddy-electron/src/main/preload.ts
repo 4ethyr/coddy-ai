@@ -19,6 +19,7 @@ const replApi = {
       'repl:open-ui',
       'repl:capture-and-explain',
       'repl:dismiss-confirmation',
+      'repl:permission-reply',
       'repl:watch-start',
       'repl:watch-close',
       'window:close',

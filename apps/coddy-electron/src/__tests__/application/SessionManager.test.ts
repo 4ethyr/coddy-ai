@@ -16,6 +16,7 @@ function snapshot(): ReplSessionSnapshot {
       workspace_context: [],
       messages: [],
       active_run: null,
+      pending_permission: null,
     },
   }
 }
@@ -46,6 +47,7 @@ describe('SessionManager', () => {
       openUi: vi.fn(),
       captureAndExplain: vi.fn(),
       dismissConfirmation: vi.fn(),
+      replyPermission: vi.fn(),
       captureVoice: vi.fn(),
       cancelVoiceCapture: vi.fn(),
     }

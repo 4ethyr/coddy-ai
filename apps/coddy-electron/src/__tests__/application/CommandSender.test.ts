@@ -6,6 +6,7 @@ import {
   openUi,
   selectModel,
   sendAsk,
+  replyPermission,
 } from '@/application'
 
 function clientWith(
@@ -25,6 +26,7 @@ function clientWith(
     openUi: vi.fn(),
     captureAndExplain: vi.fn(),
     dismissConfirmation: vi.fn(),
+    replyPermission: vi.fn(),
     captureVoice: vi.fn(),
     cancelVoiceCapture: vi.fn(),
     ...overrides,
@@ -80,5 +82,16 @@ describe('CommandSender', () => {
       code: 'assessment_policy_blocked',
       message: 'restricted assessments are blocked',
     })
+  })
+
+  it('sends permission replies through the client port', async () => {
+    const client = clientWith({
+      replyPermission: vi.fn().mockResolvedValue({ message: 'approved' }),
+    })
+
+    await expect(replyPermission(client, 'perm-1', 'Once')).resolves.toEqual({
+      message: 'approved',
+    })
+    expect(client.replyPermission).toHaveBeenCalledWith('perm-1', 'Once')
   })
 })

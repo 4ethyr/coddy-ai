@@ -114,13 +114,33 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
       return { ...session, status: 'Thinking', tool_activity }
     }
 
-    case 'PermissionRequested':
-      return { ...session, status: 'AwaitingToolApproval' }
+    case 'PermissionRequested': {
+      const { request } = (event as {
+        PermissionRequested: { request: ReplSession['pending_permission'] }
+      }).PermissionRequested
+      return {
+        ...session,
+        status: 'AwaitingToolApproval',
+        pending_permission: request,
+      }
+    }
 
-    case 'PermissionReplied':
+    case 'PermissionReplied': {
+      const { request_id } = (event as { PermissionReplied: { request_id: string } })
+        .PermissionReplied
+      const pending_permission =
+        session.pending_permission?.id === request_id
+          ? null
+          : session.pending_permission
+
       return session.status === 'AwaitingToolApproval'
-        ? { ...session, status: session.active_run ? 'Thinking' : 'Idle' }
-        : session
+        ? {
+            ...session,
+            pending_permission,
+            status: session.active_run ? 'Thinking' : 'Idle',
+          }
+        : { ...session, pending_permission }
+    }
 
     case 'TtsStarted':
       return {
@@ -136,7 +156,11 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
     }
 
     case 'RunCompleted': {
-      const newStatus = session.voice.speaking ? 'Speaking' : 'Idle'
+      const newStatus = session.pending_permission
+        ? 'AwaitingToolApproval'
+        : session.voice.speaking
+          ? 'Speaking'
+          : 'Idle'
       return { ...session, active_run: null, status: newStatus, streaming_text: '' }
     }
 

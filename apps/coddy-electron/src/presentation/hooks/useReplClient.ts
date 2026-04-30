@@ -33,6 +33,7 @@ function createClient(): ReplIpcClient {
     openUi: () => Promise.resolve({}),
     captureAndExplain: () => Promise.resolve({}),
     dismissConfirmation: () => Promise.resolve({}),
+    replyPermission: () => Promise.resolve({}),
     captureVoice: () => Promise.resolve({}),
     cancelVoiceCapture: () => Promise.resolve(),
   }

@@ -54,6 +54,7 @@ describe('EventStreamer', () => {
       openUi: vi.fn(),
       captureAndExplain: vi.fn(),
       dismissConfirmation: vi.fn(),
+      replyPermission: vi.fn(),
       captureVoice: vi.fn(),
       cancelVoiceCapture: vi.fn(),
     }
@@ -108,6 +109,7 @@ describe('EventStreamer', () => {
       openUi: vi.fn(),
       captureAndExplain: vi.fn(),
       dismissConfirmation: vi.fn(),
+      replyPermission: vi.fn(),
       captureVoice: vi.fn(),
       cancelVoiceCapture: vi.fn(),
     }

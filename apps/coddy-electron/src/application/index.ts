@@ -18,13 +18,22 @@ export {
   cancelVoiceCapture,
   captureAndExplain,
   dismissConfirmation,
+  replyPermission,
   ReplCommandError,
 } from './CommandSender'
 
 export {
   DEFAULT_FLOATING_APPEARANCE,
+  DEFAULT_MODEL_THINKING,
   loadSettings,
   normalizeFloatingAppearance,
+  normalizeModelThinking,
   saveSettings,
 } from './SettingsStore'
-export type { FloatingAppearanceSettings, UserSettings } from './SettingsStore'
+export type {
+  FloatingAppearanceSettings,
+  ModelThinkingEffort,
+  ModelThinkingSettings,
+  ThinkingAnimation,
+  UserSettings,
+} from './SettingsStore'

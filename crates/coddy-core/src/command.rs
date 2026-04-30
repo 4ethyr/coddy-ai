@@ -76,6 +76,10 @@ pub enum ReplCommand {
         model: ModelRef,
         role: ModelRole,
     },
+    ReplyPermission {
+        request_id: uuid::Uuid,
+        reply: crate::PermissionReply,
+    },
     DismissConfirmation,
     StopActiveRun,
     StopSpeaking,

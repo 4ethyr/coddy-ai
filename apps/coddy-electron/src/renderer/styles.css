@@ -221,6 +221,27 @@ body.window-resizing * {
   }
 }
 
+/* ── Thinking state motion ── */
+.thinking-scan {
+  animation: thinking-scan 1.2s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@keyframes thinking-scan {
+  0% {
+    opacity: 0.25;
+    transform: scaleX(0.18);
+  }
+  50% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+  100% {
+    opacity: 0.25;
+    transform: scaleX(0.18);
+  }
+}
+
 /* ── Custom scrollbar ── */
 ::-webkit-scrollbar {
   width: 3px;

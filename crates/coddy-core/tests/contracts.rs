@@ -70,6 +70,21 @@ fn model_credential_accepts_legacy_json_without_metadata() {
 }
 
 #[test]
+fn reply_permission_command_roundtrips_through_json() {
+    let request_id = Uuid::new_v4();
+    let command = ReplCommand::ReplyPermission {
+        request_id,
+        reply: PermissionReply::Once,
+    };
+
+    let encoded = serde_json::to_string(&command).expect("serialize command");
+    let decoded: ReplCommand = serde_json::from_str(&encoded).expect("deserialize command");
+
+    assert_eq!(decoded, command);
+    assert!(encoded.contains("ReplyPermission"));
+}
+
+#[test]
 fn restricted_assessment_blocks_final_multiple_choice_answer() {
     let decision = evaluate_assistance(
         AssessmentPolicy::RestrictedAssessment,
@@ -242,6 +257,13 @@ fn permission_events_roundtrip_and_update_session_status() {
         session.status,
         coddy_core::SessionStatus::AwaitingToolApproval
     );
+    assert_eq!(
+        session
+            .pending_permission
+            .as_ref()
+            .map(|request| request.id),
+        Some(request.id)
+    );
 
     session.apply_event(&ReplEvent::PermissionReplied {
         request_id: request.id,
@@ -249,6 +271,56 @@ fn permission_events_roundtrip_and_update_session_status() {
     });
 
     assert_eq!(session.status, coddy_core::SessionStatus::Thinking);
+    assert!(session.pending_permission.is_none());
+}
+
+#[test]
+fn pending_permission_survives_run_completion_until_reply() {
+    let selected_model = ModelRef {
+        provider: "ollama".to_string(),
+        name: "gemma4-e2b".to_string(),
+    };
+    let mut session = ReplSession::new(ReplMode::FloatingTerminal, selected_model);
+    let run_id = Uuid::new_v4();
+    let request = PermissionRequest::new(
+        session.id,
+        run_id,
+        None,
+        ToolName::new("filesystem.apply_edit").expect("valid tool name"),
+        ToolPermission::WriteWorkspace,
+        vec!["src/lib.rs".to_string()],
+        ToolRiskLevel::High,
+        serde_json::json!({ "path": "src/lib.rs" }),
+        1_775_000_000_000,
+    )
+    .expect("valid permission request");
+
+    session.apply_event(&ReplEvent::RunStarted { run_id });
+    session.apply_event(&ReplEvent::PermissionRequested {
+        request: request.clone(),
+    });
+    session.apply_event(&ReplEvent::RunCompleted { run_id });
+
+    assert_eq!(
+        session.status,
+        coddy_core::SessionStatus::AwaitingToolApproval
+    );
+    assert_eq!(session.active_run, None);
+    assert_eq!(
+        session
+            .pending_permission
+            .as_ref()
+            .map(|request| request.id),
+        Some(request.id)
+    );
+
+    session.apply_event(&ReplEvent::PermissionReplied {
+        request_id: request.id,
+        reply: PermissionReply::Reject,
+    });
+
+    assert_eq!(session.status, coddy_core::SessionStatus::Idle);
+    assert!(session.pending_permission.is_none());
 }
 
 #[test]

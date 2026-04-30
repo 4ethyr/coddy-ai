@@ -40,6 +40,7 @@ type AssessmentPolicy =
   | 'SyntaxOnly'
   | 'RestrictedAssessment'
   | 'UnknownAssessment'
+type PermissionReply = 'Once' | 'Always' | 'Reject'
 type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
 
 type ResizeStartPayload = {
@@ -364,6 +365,20 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('repl:dismiss-confirmation', async () => {
     return runCoddyCommand(['screen', 'dismiss-confirmation'])
   })
+
+  ipcMain.handle(
+    'repl:permission-reply',
+    async (_event, requestId: string, reply: string) => {
+      return runCoddyCommand([
+        'permission',
+        'reply',
+        '--request-id',
+        requestId,
+        '--reply',
+        toCliPermissionReply(reply),
+      ])
+    },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -709,5 +724,19 @@ function toCliAssessmentPolicy(policy: AssessmentPolicy): string {
       return 'restricted-assessment'
     case 'UnknownAssessment':
       return 'unknown-assessment'
+  }
+}
+
+function toCliPermissionReply(reply: string): string {
+  const normalized = reply as PermissionReply
+  switch (normalized) {
+    case 'Once':
+      return 'once'
+    case 'Always':
+      return 'always'
+    case 'Reject':
+      return 'reject'
+    default:
+      return 'reject'
   }
 }
