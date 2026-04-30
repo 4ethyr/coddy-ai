@@ -38,6 +38,33 @@ describe('runtimeCredentialBridge', () => {
     })
   })
 
+  it('forwards Azure endpoint-scoped credentials without gcloud metadata', async () => {
+    const store = {
+      get: vi.fn().mockResolvedValue({
+        apiKey: 'azure-key',
+        endpoint: 'https://coddy-resource.openai.azure.com',
+      }),
+    }
+    const gcloudTokenProvider = vi.fn().mockResolvedValue('unused-token')
+    const gcloudProjectProvider = vi.fn().mockResolvedValue('coddy-dev')
+
+    const env = await buildRuntimeCredentialEnvironment(
+      { provider: 'azure', name: 'gpt-4.1-coddy' },
+      store,
+      gcloudTokenProvider,
+      gcloudProjectProvider,
+    )
+
+    expect(store.get).toHaveBeenCalledWith('azure')
+    expect(gcloudTokenProvider).not.toHaveBeenCalled()
+    expect(gcloudProjectProvider).not.toHaveBeenCalled()
+    expect(JSON.parse(env[CODDY_EPHEMERAL_MODEL_CREDENTIAL_ENV] ?? '{}')).toEqual({
+      provider: 'azure',
+      token: 'azure-key',
+      endpoint: 'https://coddy-resource.openai.azure.com',
+    })
+  })
+
   it('falls back to a short-lived gcloud token for Vertex without storing it', async () => {
     const store = { get: vi.fn().mockResolvedValue(null) }
     const gcloudTokenProvider = vi.fn().mockResolvedValue('ya29.gcloud-token')
