@@ -31,6 +31,17 @@ function createClient(): ReplIpcClient {
         suite: { score: 0, passed: 0, failed: 0, reports: [] },
         baselineWritten: null,
       }),
+    runPromptBatteryEval: () =>
+      Promise.resolve({
+        promptCount: 0,
+        stackCount: 0,
+        knowledgeAreaCount: 0,
+        passed: 0,
+        failed: 0,
+        score: 0,
+        memberCoverage: {},
+        failures: [],
+      }),
     voiceTurn: () => new Promise(() => {}),
     stopActiveRun: () => Promise.resolve(),
     stopSpeaking: () => Promise.resolve(),

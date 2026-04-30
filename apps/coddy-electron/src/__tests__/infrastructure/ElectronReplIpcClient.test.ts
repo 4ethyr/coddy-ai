@@ -110,6 +110,7 @@ describe('ElectronReplIpcClient', () => {
       baseline: 'evals/baselines/main.json',
       writeBaseline: 'evals/reports/latest.json',
     })
+    await client.runPromptBatteryEval()
     await client.listProviderModels({
       provider: 'openai',
       apiKey: 'sk-test',
@@ -130,6 +131,7 @@ describe('ElectronReplIpcClient', () => {
       baseline: 'evals/baselines/main.json',
       writeBaseline: 'evals/reports/latest.json',
     })
+    expect(invoke).toHaveBeenCalledWith('repl:eval-prompt-battery')
     expect(invoke).toHaveBeenCalledWith('models:list', {
       provider: 'openai',
       apiKey: 'sk-test',

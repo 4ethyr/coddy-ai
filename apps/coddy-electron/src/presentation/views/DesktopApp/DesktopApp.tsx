@@ -4,10 +4,11 @@
 
 import { useCallback, useState, type ComponentProps } from 'react'
 import type {
+  EvalHarnessSettings,
   FloatingAppearanceSettings,
   ModelThinkingSettings,
 } from '@/application'
-import { loadSettings, saveSettings } from '@/application'
+import { loadSettings, normalizeEvalHarness, saveSettings } from '@/application'
 import { getRuntimeChatCapability } from '@/domain'
 import { useSessionContext } from '@/presentation/hooks'
 import { Sidebar, type DesktopTab } from '@/presentation/components/Sidebar'
@@ -25,12 +26,16 @@ export function DesktopApp() {
     multiagentEval,
     multiagentEvalStatus,
     multiagentEvalError,
+    promptBattery,
+    promptBatteryStatus,
+    promptBatteryError,
     connecting,
     error,
     ask,
     selectModel,
     listProviderModels,
     runMultiagentEval,
+    runPromptBatteryEval,
     openUi,
     replyPermission,
   } = useSessionContext()
@@ -41,6 +46,9 @@ export function DesktopApp() {
   )
   const [modelThinking, setModelThinking] = useState<ModelThinkingSettings>(
     () => loadSettings().modelThinking,
+  )
+  const [evalHarness, setEvalHarness] = useState<EvalHarnessSettings>(
+    () => loadSettings().evalHarness,
   )
 
   const handleClose = useCallback(() => {
@@ -76,6 +84,12 @@ export function DesktopApp() {
     },
     [],
   )
+
+  const handleEvalHarnessChange = useCallback((next: EvalHarnessSettings) => {
+    const normalized = normalizeEvalHarness(next)
+    setEvalHarness(normalized)
+    saveSettings({ evalHarness: normalized })
+  }, [])
 
   return (
     <div className="desktop-shell relative flex h-screen overflow-hidden bg-background text-on-surface">
@@ -179,8 +193,16 @@ export function DesktopApp() {
               multiagentEval={multiagentEval}
               multiagentEvalStatus={multiagentEvalStatus}
               multiagentEvalError={multiagentEvalError}
+              promptBattery={promptBattery}
+              promptBatteryStatus={promptBatteryStatus}
+              promptBatteryError={promptBatteryError}
+              evalHarnessSettings={evalHarness}
+              onEvalHarnessSettingsChange={handleEvalHarnessChange}
               onRunMultiagentEval={(request) => {
                 void runMultiagentEval(request)
+              }}
+              onRunPromptBattery={() => {
+                void runPromptBatteryEval()
               }}
             />
           )}

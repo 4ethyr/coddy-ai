@@ -8,6 +8,7 @@ import type {
   ModelRole,
   MultiagentEvalRequest,
   MultiagentEvalResult,
+  PromptBatteryResult,
   PermissionReply,
   ReplEventEnvelope,
   ReplMode,
@@ -55,6 +56,9 @@ export interface ReplIpcClient {
   runMultiagentEval(
     request?: MultiagentEvalRequest,
   ): Promise<MultiagentEvalResult>
+
+  /** Run the deterministic 300-prompt routing battery without model API spend */
+  runPromptBatteryEval(): Promise<PromptBatteryResult>
 
   /** List available models for a provider using a session-scoped credential */
   listProviderModels(

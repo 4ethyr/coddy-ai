@@ -5,6 +5,7 @@ import {
   captureAndExplain,
   openUi,
   runMultiagentEval,
+  runPromptBatteryEval,
   selectModel,
   sendAsk,
   replyPermission,
@@ -18,6 +19,7 @@ function clientWith(
     getEventsAfter: vi.fn(),
     getToolCatalog: vi.fn(),
     runMultiagentEval: vi.fn(),
+    runPromptBatteryEval: vi.fn(),
     listProviderModels: vi.fn(),
     watchEvents: vi.fn(),
     ask: vi.fn(),
@@ -112,5 +114,24 @@ describe('CommandSender', () => {
     expect(client.runMultiagentEval).toHaveBeenCalledWith({
       baseline: '/tmp/coddy-baseline.json',
     })
+  })
+
+  it('runs the prompt battery eval harness through the client port', async () => {
+    const result = {
+      promptCount: 300,
+      stackCount: 30,
+      knowledgeAreaCount: 10,
+      passed: 300,
+      failed: 0,
+      score: 100,
+      memberCoverage: { explorer: 300 },
+      failures: [],
+    }
+    const client = clientWith({
+      runPromptBatteryEval: vi.fn().mockResolvedValue(result),
+    })
+
+    await expect(runPromptBatteryEval(client)).resolves.toEqual(result)
+    expect(client.runPromptBatteryEval).toHaveBeenCalledWith()
   })
 })

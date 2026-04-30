@@ -125,6 +125,23 @@ function createSimBridge(daemon: SimDaemon) {
             baselineWritten: null,
           })
 
+        case 'repl:eval-prompt-battery':
+          daemon.commands.push('eval-prompt-battery')
+          return Promise.resolve({
+            promptCount: 300,
+            stackCount: 30,
+            knowledgeAreaCount: 10,
+            passed: 300,
+            failed: 0,
+            score: 100,
+            memberCoverage: {
+              explorer: 300,
+              reviewer: 300,
+              'security-reviewer': 300,
+            },
+            failures: [],
+          })
+
         // ---- Watch start ----
         case 'repl:watch-start': {
           // Push existing events after sequence
@@ -427,6 +444,12 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
       >
     },
 
+    async runPromptBatteryEval() {
+      return (await sim.invoke('repl:eval-prompt-battery')) as Awaited<
+        ReturnType<ReplIpcClient['runPromptBatteryEval']>
+      >
+    },
+
     async listProviderModels(request) {
       return {
         provider: request.provider,
@@ -668,6 +691,21 @@ describe('IPC integration', () => {
       })
       expect(result.suite.reports).toHaveLength(2)
       expect(daemon.commands).toEqual(['eval-multiagent'])
+    })
+
+    it('runs the deterministic prompt battery through the frontend client port', async () => {
+      const result = await client.runPromptBatteryEval()
+
+      expect(result).toMatchObject({
+        promptCount: 300,
+        stackCount: 30,
+        knowledgeAreaCount: 10,
+        score: 100,
+        passed: 300,
+        failed: 0,
+      })
+      expect(result.memberCoverage.explorer).toBe(300)
+      expect(daemon.commands).toEqual(['eval-prompt-battery'])
     })
   })
 

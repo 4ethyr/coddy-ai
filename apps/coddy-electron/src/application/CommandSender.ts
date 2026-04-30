@@ -8,6 +8,7 @@ import type {
   ModelRole,
   MultiagentEvalRequest,
   MultiagentEvalResult,
+  PromptBatteryResult,
   PermissionReply,
   AssessmentPolicy,
   ReplIpcClient,
@@ -90,6 +91,15 @@ export async function runMultiagentEval(
   request: MultiagentEvalRequest = {},
 ): Promise<MultiagentEvalResult> {
   return client.runMultiagentEval(request)
+}
+
+/**
+ * Runs the deterministic 300-prompt routing battery exposed by the backend.
+ */
+export async function runPromptBatteryEval(
+  client: ReplIpcClient,
+): Promise<PromptBatteryResult> {
+  return client.runPromptBatteryEval()
 }
 
 /**

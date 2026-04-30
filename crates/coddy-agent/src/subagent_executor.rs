@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use coddy_core::{SubagentHandoffPrepared, SubagentLifecycleStatus, SubagentLifecycleUpdate};
 use serde_json::Value;
 
@@ -47,6 +49,226 @@ pub struct SubagentExecutionCompletionPlan {
     pub unexpected_fields: Vec<String>,
     pub reason: Option<String>,
     pub lifecycle_update: SubagentLifecycleUpdate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentExecutionOutcomeStatus {
+    Completed,
+    Failed,
+    Blocked,
+    AwaitingApproval,
+}
+
+impl SubagentExecutionOutcomeStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Blocked => "blocked",
+            Self::AwaitingApproval => "awaiting-approval",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentExecutionOutputStatus {
+    Accepted,
+    Rejected,
+    Missing,
+    NotRequested,
+}
+
+impl SubagentExecutionOutputStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+            Self::Missing => "missing",
+            Self::NotRequested => "not-requested",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentExecutionRecord {
+    pub name: String,
+    pub mode: String,
+    pub start_status: SubagentExecutionStartStatus,
+    pub outcome_status: SubagentExecutionOutcomeStatus,
+    pub output_status: SubagentExecutionOutputStatus,
+    pub accepted: bool,
+    pub missing_fields: Vec<String>,
+    pub unexpected_fields: Vec<String>,
+    pub reason: Option<String>,
+    pub lifecycle_updates: Vec<SubagentLifecycleUpdate>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct SubagentExecutionSummary {
+    pub total: usize,
+    pub completed: usize,
+    pub failed: usize,
+    pub blocked: usize,
+    pub awaiting_approval: usize,
+    pub accepted_outputs: usize,
+    pub rejected_outputs: usize,
+    pub missing_outputs: usize,
+    pub unexpected_outputs: Vec<String>,
+    pub accepted_output_values: BTreeMap<String, Value>,
+    pub lifecycle_updates: Vec<SubagentLifecycleUpdate>,
+    pub records: Vec<SubagentExecutionRecord>,
+}
+
+impl SubagentExecutionSummary {
+    fn push_record(&mut self, record: SubagentExecutionRecord) {
+        self.total += 1;
+        match record.outcome_status {
+            SubagentExecutionOutcomeStatus::Completed => self.completed += 1,
+            SubagentExecutionOutcomeStatus::Failed => self.failed += 1,
+            SubagentExecutionOutcomeStatus::Blocked => self.blocked += 1,
+            SubagentExecutionOutcomeStatus::AwaitingApproval => self.awaiting_approval += 1,
+        }
+
+        match record.output_status {
+            SubagentExecutionOutputStatus::Accepted => self.accepted_outputs += 1,
+            SubagentExecutionOutputStatus::Rejected => self.rejected_outputs += 1,
+            SubagentExecutionOutputStatus::Missing => self.missing_outputs += 1,
+            SubagentExecutionOutputStatus::NotRequested => {}
+        }
+
+        self.lifecycle_updates
+            .extend(record.lifecycle_updates.iter().cloned());
+        self.records.push(record);
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct SubagentExecutionCoordinator {
+    gate: SubagentExecutionGate,
+}
+
+impl SubagentExecutionCoordinator {
+    pub fn new(gate: SubagentExecutionGate) -> Self {
+        Self { gate }
+    }
+
+    pub fn reduce_handoffs(
+        &self,
+        handoffs: &[SubagentHandoffPlan],
+        outputs: &BTreeMap<String, Value>,
+        approved_subagents: &BTreeSet<String>,
+    ) -> SubagentExecutionSummary {
+        let expected_names = handoffs
+            .iter()
+            .map(|handoff| handoff.name.clone())
+            .collect::<BTreeSet<_>>();
+        let mut summary = SubagentExecutionSummary {
+            unexpected_outputs: outputs
+                .keys()
+                .filter(|name| !expected_names.contains(*name))
+                .cloned()
+                .collect(),
+            ..SubagentExecutionSummary::default()
+        };
+
+        for handoff in handoffs {
+            let execution_handoff = SubagentExecutionHandoff::from(handoff);
+            let start_plan = self.gate.plan_start_for(
+                &execution_handoff,
+                approved_subagents.contains(&handoff.name),
+            );
+            let mut lifecycle_updates = start_plan.lifecycle_updates.clone();
+
+            match start_plan.status {
+                SubagentExecutionStartStatus::Blocked => {
+                    summary.push_record(SubagentExecutionRecord {
+                        name: handoff.name.clone(),
+                        mode: handoff.mode.as_str().to_string(),
+                        start_status: start_plan.status,
+                        outcome_status: SubagentExecutionOutcomeStatus::Blocked,
+                        output_status: SubagentExecutionOutputStatus::NotRequested,
+                        accepted: false,
+                        missing_fields: Vec::new(),
+                        unexpected_fields: Vec::new(),
+                        reason: start_plan.reason,
+                        lifecycle_updates,
+                    });
+                }
+                SubagentExecutionStartStatus::AwaitingApproval => {
+                    summary.push_record(SubagentExecutionRecord {
+                        name: handoff.name.clone(),
+                        mode: handoff.mode.as_str().to_string(),
+                        start_status: start_plan.status,
+                        outcome_status: SubagentExecutionOutcomeStatus::AwaitingApproval,
+                        output_status: SubagentExecutionOutputStatus::NotRequested,
+                        accepted: false,
+                        missing_fields: Vec::new(),
+                        unexpected_fields: Vec::new(),
+                        reason: start_plan.reason,
+                        lifecycle_updates,
+                    });
+                }
+                SubagentExecutionStartStatus::ReadyToStart => {
+                    let Some(output) = outputs.get(&handoff.name) else {
+                        let reason = "missing subagent output".to_string();
+                        lifecycle_updates.push(SubagentLifecycleUpdate {
+                            name: handoff.name.clone(),
+                            mode: handoff.mode.as_str().to_string(),
+                            status: SubagentLifecycleStatus::Failed,
+                            readiness_score: handoff.readiness_score,
+                            reason: Some(reason.clone()),
+                        });
+                        summary.push_record(SubagentExecutionRecord {
+                            name: handoff.name.clone(),
+                            mode: handoff.mode.as_str().to_string(),
+                            start_status: start_plan.status,
+                            outcome_status: SubagentExecutionOutcomeStatus::Failed,
+                            output_status: SubagentExecutionOutputStatus::Missing,
+                            accepted: false,
+                            missing_fields: Vec::new(),
+                            unexpected_fields: Vec::new(),
+                            reason: Some(reason),
+                            lifecycle_updates,
+                        });
+                        continue;
+                    };
+
+                    let contract = SubagentOutputContract::from(handoff);
+                    let completion_plan = self.gate.plan_completion(&contract, output);
+                    lifecycle_updates.push(completion_plan.lifecycle_update.clone());
+
+                    let output_status = if completion_plan.accepted {
+                        SubagentExecutionOutputStatus::Accepted
+                    } else {
+                        SubagentExecutionOutputStatus::Rejected
+                    };
+                    let outcome_status = if completion_plan.accepted {
+                        summary
+                            .accepted_output_values
+                            .insert(handoff.name.clone(), output.clone());
+                        SubagentExecutionOutcomeStatus::Completed
+                    } else {
+                        SubagentExecutionOutcomeStatus::Failed
+                    };
+
+                    summary.push_record(SubagentExecutionRecord {
+                        name: handoff.name.clone(),
+                        mode: handoff.mode.as_str().to_string(),
+                        start_status: start_plan.status,
+                        outcome_status,
+                        output_status,
+                        accepted: completion_plan.accepted,
+                        missing_fields: completion_plan.missing_fields,
+                        unexpected_fields: completion_plan.unexpected_fields,
+                        reason: completion_plan.reason,
+                        lifecycle_updates,
+                    });
+                }
+            }
+        }
+
+        summary
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -353,6 +575,7 @@ mod tests {
     use super::*;
     use crate::{SubagentMode, SubagentRegistry, READ_FILE_TOOL};
     use serde_json::json;
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn blocks_unready_handoffs_before_execution_start() {
@@ -641,6 +864,174 @@ mod tests {
         assert_eq!(
             plan.lifecycle_update.status,
             SubagentLifecycleStatus::Failed
+        );
+    }
+
+    #[test]
+    fn coordinator_reduces_ready_handoffs_into_consolidated_summary() {
+        let registry = SubagentRegistry::default();
+        let explorer = registry
+            .prepare_handoff("explorer", "map repository context")
+            .expect("explorer handoff");
+        let security_reviewer = registry
+            .prepare_handoff("security-reviewer", "review secret handling")
+            .expect("security handoff");
+        let mut outputs = BTreeMap::new();
+        outputs.insert(
+            "explorer".to_string(),
+            json!({
+                "summary": "Mapped repository entrypoints.",
+                "importantFiles": ["crates/coddy-agent/src/subagent_executor.rs"],
+                "entrypoints": ["coddy"],
+                "testFiles": ["subagent_executor.rs"],
+                "commands": ["cargo test -p coddy-agent subagent_executor"],
+                "risks": [],
+                "recommendations": []
+            }),
+        );
+        outputs.insert(
+            "security-reviewer".to_string(),
+            json!({
+                "riskLevel": "low",
+                "findings": [],
+                "requiredFixes": [],
+                "recommendations": []
+            }),
+        );
+        outputs.insert("orphan".to_string(), json!({"summary": "ignored"}));
+
+        let summary = SubagentExecutionCoordinator::default().reduce_handoffs(
+            &[explorer, security_reviewer],
+            &outputs,
+            &BTreeSet::new(),
+        );
+
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.completed, 2);
+        assert_eq!(summary.failed, 0);
+        assert_eq!(summary.blocked, 0);
+        assert_eq!(summary.awaiting_approval, 0);
+        assert_eq!(summary.accepted_outputs, 2);
+        assert_eq!(summary.rejected_outputs, 0);
+        assert_eq!(summary.missing_outputs, 0);
+        assert_eq!(summary.unexpected_outputs, vec!["orphan".to_string()]);
+        assert_eq!(
+            summary
+                .accepted_output_values
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["explorer".to_string(), "security-reviewer".to_string()]
+        );
+        assert_eq!(summary.lifecycle_updates.len(), 8);
+        assert!(summary.records.iter().all(|record| {
+            record.start_status == SubagentExecutionStartStatus::ReadyToStart
+                && record.outcome_status == SubagentExecutionOutcomeStatus::Completed
+                && record.output_status == SubagentExecutionOutputStatus::Accepted
+                && record.accepted
+        }));
+    }
+
+    #[test]
+    fn coordinator_reports_rejected_and_missing_outputs() {
+        let registry = SubagentRegistry::default();
+        let reviewer = registry
+            .prepare_handoff("reviewer", "review the current diff")
+            .expect("reviewer handoff");
+        let coder = registry
+            .prepare_handoff("coder", "implement a parser fix")
+            .expect("coder handoff");
+        let mut outputs = BTreeMap::new();
+        outputs.insert(
+            "reviewer".to_string(),
+            json!({
+                "approved": false,
+                "issues": [],
+                "suggestions": [],
+                "extraNarrative": "not part of the contract"
+            }),
+        );
+        let approvals = BTreeSet::from(["coder".to_string()]);
+
+        let summary = SubagentExecutionCoordinator::default().reduce_handoffs(
+            &[reviewer, coder],
+            &outputs,
+            &approvals,
+        );
+
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.completed, 0);
+        assert_eq!(summary.failed, 2);
+        assert_eq!(summary.rejected_outputs, 1);
+        assert_eq!(summary.missing_outputs, 1);
+        assert_eq!(summary.accepted_outputs, 0);
+        assert!(summary.accepted_output_values.is_empty());
+        assert_eq!(
+            summary
+                .records
+                .iter()
+                .map(|record| (record.name.as_str(), record.output_status))
+                .collect::<Vec<_>>(),
+            vec![
+                ("reviewer", SubagentExecutionOutputStatus::Rejected),
+                ("coder", SubagentExecutionOutputStatus::Missing),
+            ]
+        );
+        assert_eq!(
+            summary.records[0].reason.as_deref(),
+            Some(
+                "missing required output fields: blockingProblems, nonBlockingProblems; unexpected output fields: extraNarrative"
+            )
+        );
+        assert_eq!(
+            summary.records[1].reason.as_deref(),
+            Some("missing subagent output")
+        );
+    }
+
+    #[test]
+    fn coordinator_does_not_accept_outputs_before_required_approval() {
+        let coder = SubagentRegistry::default()
+            .prepare_handoff("coder", "implement a guarded change")
+            .expect("coder handoff");
+        let mut outputs = BTreeMap::new();
+        outputs.insert(
+            "coder".to_string(),
+            json!({
+                "changedFiles": ["src/lib.rs"],
+                "summary": "Implemented a change.",
+                "testsAdded": [],
+                "risks": [],
+                "nextSteps": []
+            }),
+        );
+
+        let summary = SubagentExecutionCoordinator::default().reduce_handoffs(
+            &[coder],
+            &outputs,
+            &BTreeSet::new(),
+        );
+
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.completed, 0);
+        assert_eq!(summary.awaiting_approval, 1);
+        assert_eq!(summary.accepted_outputs, 0);
+        assert!(summary.accepted_output_values.is_empty());
+        assert_eq!(
+            summary.records[0].start_status,
+            SubagentExecutionStartStatus::AwaitingApproval
+        );
+        assert_eq!(
+            summary.records[0].outcome_status,
+            SubagentExecutionOutcomeStatus::AwaitingApproval
+        );
+        assert_eq!(
+            summary.records[0].output_status,
+            SubagentExecutionOutputStatus::NotRequested
+        );
+        assert_eq!(
+            summary.records[0].reason.as_deref(),
+            Some("approval required before running subagent")
         );
     }
 }

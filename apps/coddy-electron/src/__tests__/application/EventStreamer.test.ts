@@ -34,6 +34,7 @@ describe('EventStreamer', () => {
       getEventsAfter: vi.fn(),
       getToolCatalog: vi.fn(),
       runMultiagentEval: vi.fn(),
+      runPromptBatteryEval: vi.fn(),
       listProviderModels: vi.fn(),
       watchEvents(afterSequence: number): AsyncIterable<ReplEventEnvelope> {
         watchedAfter.push(afterSequence)
@@ -88,6 +89,7 @@ describe('EventStreamer', () => {
       getEventsAfter: vi.fn(),
       getToolCatalog: vi.fn(),
       runMultiagentEval: vi.fn(),
+      runPromptBatteryEval: vi.fn(),
       listProviderModels: vi.fn(),
       watchEvents(): AsyncIterable<ReplEventEnvelope> {
         watchStarted = true

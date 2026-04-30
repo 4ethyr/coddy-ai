@@ -10,7 +10,8 @@ use uuid::Uuid;
 
 use crate::{
     AgentError, DeterministicPlanExecutor, DeterministicPlanItem, DeterministicPlanReport,
-    DeterministicPlanStatus, SubagentRegistry, SubagentTeamPlan,
+    DeterministicPlanStatus, SubagentExecutionCoordinator, SubagentExecutionSummary,
+    SubagentHandoffPlan, SubagentRegistry, SubagentTeamPlan,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +146,7 @@ pub struct MultiagentEvalCase {
     pub min_hardness_score: u8,
     pub max_blocked: usize,
     pub max_awaiting_approval: usize,
+    pub validate_execution_reducer: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,6 +156,7 @@ pub struct MultiagentEvalReport {
     pub score: u8,
     pub failures: Vec<String>,
     pub team_plan: SubagentTeamPlan,
+    pub execution_metrics: Option<MultiagentExecutionMetrics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,6 +165,19 @@ pub struct MultiagentEvalSuiteReport {
     pub passed: usize,
     pub failed: usize,
     pub score: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiagentExecutionMetrics {
+    pub total: usize,
+    pub completed: usize,
+    pub failed: usize,
+    pub blocked: usize,
+    pub awaiting_approval: usize,
+    pub accepted_outputs: usize,
+    pub rejected_outputs: usize,
+    pub missing_outputs: usize,
+    pub unexpected_outputs: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -430,6 +446,8 @@ const PROMPT_BATTERY_SCENARIOS: &[PromptBatteryScenario] = &[
     },
 ];
 
+const MULTIAGENT_EXECUTION_REDUCER_CHECKS: usize = 6;
+
 impl EvalSuiteReport {
     fn new(reports: Vec<EvalReport>) -> Self {
         let passed = reports
@@ -468,6 +486,7 @@ impl MultiagentEvalCase {
             min_hardness_score: 100,
             max_blocked: 0,
             max_awaiting_approval: usize::MAX,
+            validate_execution_reducer: false,
         }
     }
 
@@ -488,6 +507,11 @@ impl MultiagentEvalCase {
 
     pub fn max_awaiting_approval(mut self, count: usize) -> Self {
         self.max_awaiting_approval = count;
+        self
+    }
+
+    pub fn validate_execution_reducer(mut self) -> Self {
+        self.validate_execution_reducer = true;
         self
     }
 }
@@ -518,7 +542,22 @@ impl MultiagentEvalRunner {
                     .expect("fallback team plan")
             });
         let failures = evaluate_multiagent_case(case, &team_plan);
-        let score = multiagent_case_score(&failures, 3 + case.expected_members.len());
+        let (execution_metrics, execution_failures) = if case.validate_execution_reducer {
+            let (summary, failures) = self.reduce_execution_for_team(&team_plan, &case.goal);
+            (Some(MultiagentExecutionMetrics::from(&summary)), failures)
+        } else {
+            (None, Vec::new())
+        };
+        let mut failures = failures;
+        failures.extend(execution_failures);
+        let total_checks = 3
+            + case.expected_members.len()
+            + if case.validate_execution_reducer {
+                MULTIAGENT_EXECUTION_REDUCER_CHECKS
+            } else {
+                0
+            };
+        let score = multiagent_case_score(&failures, total_checks);
 
         MultiagentEvalReport {
             case_name: case.name.clone(),
@@ -530,23 +569,103 @@ impl MultiagentEvalRunner {
             score,
             failures,
             team_plan,
+            execution_metrics,
         }
     }
 
     pub fn run_suite(&self, cases: &[MultiagentEvalCase]) -> MultiagentEvalSuiteReport {
         MultiagentEvalSuiteReport::new(cases.iter().map(|case| self.run_case(case)).collect())
     }
+
+    fn reduce_execution_for_team(
+        &self,
+        team_plan: &SubagentTeamPlan,
+        goal: &str,
+    ) -> (SubagentExecutionSummary, Vec<String>) {
+        let mut failures = Vec::new();
+        let mut handoffs = Vec::<SubagentHandoffPlan>::new();
+
+        for member in &team_plan.members {
+            match self.registry.prepare_handoff(&member.name, goal) {
+                Some(handoff) => handoffs.push(handoff),
+                None => failures.push(format!(
+                    "missing handoff definition for subagent member: {}",
+                    member.name
+                )),
+            }
+        }
+
+        let outputs = handoffs
+            .iter()
+            .map(|handoff| {
+                (
+                    handoff.name.clone(),
+                    synthetic_valid_subagent_output(handoff),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let approvals = handoffs
+            .iter()
+            .filter(|handoff| handoff.approval_required)
+            .map(|handoff| handoff.name.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let summary = SubagentExecutionCoordinator::default()
+            .reduce_handoffs(&handoffs, &outputs, &approvals);
+
+        failures.extend(evaluate_execution_summary(
+            &summary,
+            team_plan.members.len(),
+        ));
+        (summary, failures)
+    }
 }
 
 impl MultiagentEvalReport {
     pub fn public_metadata(&self) -> serde_json::Value {
+        let execution_metrics = self
+            .execution_metrics
+            .as_ref()
+            .map(MultiagentExecutionMetrics::public_metadata);
         serde_json::json!({
             "caseName": self.case_name,
             "status": eval_status_name(&self.status),
             "score": self.score,
             "failures": self.failures,
             "teamPlan": self.team_plan.public_metadata(),
+            "executionMetrics": execution_metrics,
         })
+    }
+}
+
+impl MultiagentExecutionMetrics {
+    pub fn public_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "total": self.total,
+            "completed": self.completed,
+            "failed": self.failed,
+            "blocked": self.blocked,
+            "awaitingApproval": self.awaiting_approval,
+            "acceptedOutputs": self.accepted_outputs,
+            "rejectedOutputs": self.rejected_outputs,
+            "missingOutputs": self.missing_outputs,
+            "unexpectedOutputs": self.unexpected_outputs,
+        })
+    }
+}
+
+impl From<&SubagentExecutionSummary> for MultiagentExecutionMetrics {
+    fn from(summary: &SubagentExecutionSummary) -> Self {
+        Self {
+            total: summary.total,
+            completed: summary.completed,
+            failed: summary.failed,
+            blocked: summary.blocked,
+            awaiting_approval: summary.awaiting_approval,
+            accepted_outputs: summary.accepted_outputs,
+            rejected_outputs: summary.rejected_outputs,
+            missing_outputs: summary.missing_outputs,
+            unexpected_outputs: summary.unexpected_outputs.clone(),
+        }
     }
 }
 
@@ -666,6 +785,7 @@ impl PromptBatteryCase {
             min_hardness_score: 100,
             max_blocked: 0,
             max_awaiting_approval: usize::MAX,
+            validate_execution_reducer: false,
         }
     }
 
@@ -1010,6 +1130,74 @@ fn evaluate_multiagent_case(
     }
 
     failures
+}
+
+fn evaluate_execution_summary(
+    summary: &SubagentExecutionSummary,
+    expected_total: usize,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+
+    if summary.total != expected_total {
+        failures.push(format!(
+            "execution reducer total {} does not match expected {}",
+            summary.total, expected_total
+        ));
+    }
+    if summary.completed != expected_total {
+        failures.push(format!(
+            "execution reducer completed {} does not match expected {}",
+            summary.completed, expected_total
+        ));
+    }
+    if summary.failed > 0 {
+        failures.push(format!(
+            "execution reducer reported {} failed subagent outputs",
+            summary.failed
+        ));
+    }
+    if summary.blocked > 0 || summary.awaiting_approval > 0 {
+        failures.push(format!(
+            "execution reducer left {} blocked and {} awaiting approval handoffs",
+            summary.blocked, summary.awaiting_approval
+        ));
+    }
+    if summary.rejected_outputs > 0 || summary.missing_outputs > 0 {
+        failures.push(format!(
+            "execution reducer rejected {} outputs and missed {} outputs",
+            summary.rejected_outputs, summary.missing_outputs
+        ));
+    }
+    if summary.accepted_outputs != expected_total || !summary.unexpected_outputs.is_empty() {
+        failures.push(format!(
+            "execution reducer accepted {} outputs for expected {} with unexpected outputs: {}",
+            summary.accepted_outputs,
+            expected_total,
+            summary.unexpected_outputs.join(", ")
+        ));
+    }
+
+    failures
+}
+
+fn synthetic_valid_subagent_output(handoff: &SubagentHandoffPlan) -> serde_json::Value {
+    let fields = handoff
+        .output_schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str);
+    let mut object = serde_json::Map::new();
+
+    for field in fields {
+        object.insert(
+            field.to_string(),
+            serde_json::Value::String("ok".to_string()),
+        );
+    }
+
+    serde_json::Value::Object(object)
 }
 
 fn multiagent_case_score(failures: &[String], total_checks: usize) -> u8 {
@@ -1540,6 +1728,48 @@ mod tests {
         assert_eq!(
             report.public_metadata()["teamPlan"]["metrics"]["hardnessScore"],
             json!(100)
+        );
+    }
+
+    #[test]
+    fn multiagent_eval_runner_validates_execution_reducer_contracts() {
+        let runner = MultiagentEvalRunner::default();
+        let case = MultiagentEvalCase::new(
+            "execution-reducer-contracts",
+            "revise, aprimore e teste multiagents, harness, prompts e metricas",
+        )
+        .expected_members(&[
+            "explorer",
+            "coder",
+            "test-writer",
+            "eval-runner",
+            "reviewer",
+        ])
+        .min_hardness_score(100)
+        .max_blocked(0)
+        .validate_execution_reducer();
+
+        let report = runner.run_case(&case);
+        let execution_metrics = report
+            .execution_metrics
+            .as_ref()
+            .expect("execution metrics");
+
+        assert_eq!(report.status, EvalStatus::Passed);
+        assert_eq!(report.score, 100);
+        assert_eq!(execution_metrics.total, report.team_plan.members.len());
+        assert_eq!(execution_metrics.completed, report.team_plan.members.len());
+        assert_eq!(
+            execution_metrics.accepted_outputs,
+            report.team_plan.members.len()
+        );
+        assert_eq!(execution_metrics.failed, 0);
+        assert_eq!(execution_metrics.rejected_outputs, 0);
+        assert_eq!(execution_metrics.missing_outputs, 0);
+        assert!(execution_metrics.unexpected_outputs.is_empty());
+        assert_eq!(
+            report.public_metadata()["executionMetrics"]["acceptedOutputs"],
+            json!(report.team_plan.members.len())
         );
     }
 

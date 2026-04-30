@@ -22,6 +22,11 @@ export interface ModelThinkingSettings {
   animation: ThinkingAnimation
 }
 
+export interface EvalHarnessSettings {
+  baselinePath: string
+  writeBaselinePath: string
+}
+
 export interface UserSettings {
   selectedModel: ModelRef
   mode: ReplMode
@@ -29,6 +34,7 @@ export interface UserSettings {
   voiceMuted: boolean
   floatingAppearance: FloatingAppearanceSettings
   modelThinking: ModelThinkingSettings
+  evalHarness: EvalHarnessSettings
 }
 
 const STORAGE_KEY = 'coddy:settings'
@@ -48,6 +54,11 @@ export const DEFAULT_MODEL_THINKING: ModelThinkingSettings = {
   animation: 'scan',
 }
 
+export const DEFAULT_EVAL_HARNESS: EvalHarnessSettings = {
+  baselinePath: '',
+  writeBaselinePath: '',
+}
+
 const DEFAULT_SETTINGS: UserSettings = {
   selectedModel: { provider: 'ollama', name: 'gemma4:e2b' },
   mode: 'FloatingTerminal',
@@ -55,6 +66,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   voiceMuted: false,
   floatingAppearance: { ...DEFAULT_FLOATING_APPEARANCE },
   modelThinking: { ...DEFAULT_MODEL_THINKING },
+  evalHarness: { ...DEFAULT_EVAL_HARNESS },
 }
 
 function isBrowser(): boolean {
@@ -76,9 +88,25 @@ export function loadSettings(): UserSettings {
       voiceMuted: parsed.voiceMuted ?? DEFAULT_SETTINGS.voiceMuted,
       floatingAppearance: normalizeFloatingAppearance(parsed.floatingAppearance),
       modelThinking: normalizeModelThinking(parsed.modelThinking),
+      evalHarness: normalizeEvalHarness(parsed.evalHarness),
     }
   } catch {
     return { ...DEFAULT_SETTINGS }
+  }
+}
+
+export function normalizeEvalHarness(
+  value: Partial<EvalHarnessSettings> | undefined,
+): EvalHarnessSettings {
+  return {
+    baselinePath: normalizePathDraft(
+      value?.baselinePath,
+      DEFAULT_EVAL_HARNESS.baselinePath,
+    ),
+    writeBaselinePath: normalizePathDraft(
+      value?.writeBaselinePath,
+      DEFAULT_EVAL_HARNESS.writeBaselinePath,
+    ),
   }
 }
 
@@ -148,6 +176,11 @@ function clampNumber(
 function validHexColor(value: string | undefined, fallback: string): string {
   if (!value) return fallback
   return /^#[0-9a-f]{6}$/i.test(value) ? value : fallback
+}
+
+function normalizePathDraft(value: string | undefined, fallback: string): string {
+  if (typeof value !== 'string') return fallback
+  return value.trim().slice(0, 512)
 }
 
 function validThinkingEffort(

@@ -11,6 +11,7 @@ import type {
   MultiagentEvalRequest,
   MultiagentEvalResult,
   PermissionReply,
+  PromptBatteryResult,
   ReplCommandResult,
   ReplMode,
   ReplSession,
@@ -35,18 +36,23 @@ import {
   replyPermission,
   listProviderModels,
   runMultiagentEval,
+  runPromptBatteryEval,
 } from '@/application'
 import { useReplClient } from './useReplClient'
 
-export type MultiagentEvalStatus = 'idle' | 'running' | 'succeeded' | 'failed'
+export type EvalRunStatus = 'idle' | 'running' | 'succeeded' | 'failed'
+export type MultiagentEvalStatus = EvalRunStatus
 
 export interface UseSessionReturn {
   session: ReplSession
   lastSequence: number
   toolCatalog: ReplToolCatalogItem[]
   multiagentEval: MultiagentEvalResult | null
-  multiagentEvalStatus: MultiagentEvalStatus
+  multiagentEvalStatus: EvalRunStatus
   multiagentEvalError: string | null
+  promptBattery: PromptBatteryResult | null
+  promptBatteryStatus: EvalRunStatus
+  promptBatteryError: string | null
   /** True while still connecting / loading the first snapshot */
   connecting: boolean
   /** True when the daemon stream disconnected and we're retrying */
@@ -74,6 +80,9 @@ export interface UseSessionReturn {
   runMultiagentEval: (
     request?: MultiagentEvalRequest,
   ) => Promise<MultiagentEvalResult>
+
+  /** Run the deterministic 300-prompt routing battery exposed by the backend */
+  runPromptBatteryEval: () => Promise<PromptBatteryResult>
 
   /** Switch the REPL UI mode through the daemon */
   openUi: (mode: ReplMode) => Promise<void>
@@ -109,8 +118,14 @@ export function useSession(): UseSessionReturn {
   const [multiagentEval, setMultiagentEval] =
     useState<MultiagentEvalResult | null>(null)
   const [multiagentEvalStatus, setMultiagentEvalStatus] =
-    useState<MultiagentEvalStatus>('idle')
+    useState<EvalRunStatus>('idle')
   const [multiagentEvalError, setMultiagentEvalError] =
+    useState<string | null>(null)
+  const [promptBattery, setPromptBattery] =
+    useState<PromptBatteryResult | null>(null)
+  const [promptBatteryStatus, setPromptBatteryStatus] =
+    useState<EvalRunStatus>('idle')
+  const [promptBatteryError, setPromptBatteryError] =
     useState<string | null>(null)
   const abortRef = useRef<(() => void) | null>(null)
   const initCountRef = useRef(0)
@@ -236,6 +251,24 @@ export function useSession(): UseSessionReturn {
     [client],
   )
 
+  const handleRunPromptBatteryEval = useCallback(async () => {
+    setPromptBatteryStatus('running')
+    setPromptBatteryError(null)
+
+    try {
+      const result = await runPromptBatteryEval(client)
+      setPromptBattery(result)
+      setPromptBatteryStatus(result.failed > 0 ? 'failed' : 'succeeded')
+      return result
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setPromptBatteryError(message)
+      setPromptBatteryStatus('failed')
+      setError(message)
+      throw err
+    }
+  }, [client])
+
   const handleOpenUi = useCallback(
     async (mode: ReplMode) => {
       try {
@@ -305,6 +338,9 @@ export function useSession(): UseSessionReturn {
     multiagentEval,
     multiagentEvalStatus,
     multiagentEvalError,
+    promptBattery,
+    promptBatteryStatus,
+    promptBatteryError,
     connecting,
     reconnecting,
     error,
@@ -314,6 +350,7 @@ export function useSession(): UseSessionReturn {
     selectModel: handleSelectModel,
     listProviderModels: handleListProviderModels,
     runMultiagentEval: handleRunMultiagentEval,
+    runPromptBatteryEval: handleRunPromptBatteryEval,
     openUi: handleOpenUi,
     captureVoice: handleCaptureVoice,
     cancelVoiceCapture: handleCancelVoiceCapture,
