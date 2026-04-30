@@ -3,9 +3,9 @@ use coddy_agent::{
     ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, LIST_FILES_TOOL,
 };
 use coddy_core::{
-    ApprovalPolicy, ModelCredential, ModelRef, ReplCommand, ReplEvent, ReplEventBroker,
-    ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode, ReplSession, ReplSessionSnapshot,
-    ToolCall, ToolName, ToolResultStatus, ToolRiskLevel,
+    ApprovalPolicy, ContextPolicy, ModelCredential, ModelRef, ReplCommand, ReplEvent,
+    ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode, ReplSession,
+    ReplSessionSnapshot, ToolCall, ToolDefinition, ToolName, ToolResultStatus, ToolRiskLevel,
 };
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
@@ -33,6 +33,16 @@ pub struct CoddyRuntime {
 struct RuntimeState {
     session: ReplSession,
     broker: ReplEventBroker,
+}
+
+struct ModelBackedTurn<'a> {
+    session_id: Uuid,
+    run_id: Uuid,
+    selected_model: &'a ModelRef,
+    context_policy: ContextPolicy,
+    session_context: &'a ReplSession,
+    model_credential: Option<ModelCredential>,
+    user_text: String,
 }
 
 impl CoddyRuntime {
@@ -134,9 +144,9 @@ impl CoddyRuntime {
         match command {
             ReplCommand::Ask {
                 text,
+                context_policy,
                 model_credential,
-                ..
-            } => self.handle_ask(request_id, text, model_credential, speak),
+            } => self.handle_ask(request_id, text, context_policy, model_credential, speak),
             ReplCommand::VoiceTurn {
                 transcript_override,
             } => match normalize_text(transcript_override.unwrap_or_default()) {
@@ -144,7 +154,13 @@ impl CoddyRuntime {
                     self.publish_event_now(ReplEvent::VoiceTranscriptFinal {
                         text: transcript.clone(),
                     });
-                    self.handle_ask(request_id, transcript, None, speak)
+                    self.handle_ask(
+                        request_id,
+                        transcript,
+                        ContextPolicy::WorkspaceOnly,
+                        None,
+                        speak,
+                    )
                 }
                 None => invalid_command(request_id, "voice transcript is required"),
             },
@@ -214,6 +230,7 @@ impl CoddyRuntime {
         &self,
         request_id: Uuid,
         text: String,
+        context_policy: ContextPolicy,
         model_credential: Option<ModelCredential>,
         speak: bool,
     ) -> CoddyResult {
@@ -222,7 +239,8 @@ impl CoddyRuntime {
         };
 
         let session_id = self.session_id();
-        let selected_model = self.snapshot().session.selected_model;
+        let session_context = self.snapshot().session;
+        let selected_model = session_context.selected_model.clone();
         let action = plan_ask_action(&text);
         let run_id = Uuid::new_v4();
         let (intent, confidence) = classify_ask_intent(&text, &action);
@@ -240,13 +258,15 @@ impl CoddyRuntime {
             AskAction::ListWorkspace { path } => {
                 self.execute_workspace_listing(session_id, run_id, &text, &path, selected_model)
             }
-            AskAction::ModelBackedResponse => self.execute_model_backed_response(
+            AskAction::ModelBackedResponse => self.execute_model_backed_response(ModelBackedTurn {
                 session_id,
                 run_id,
-                &selected_model,
+                selected_model: &selected_model,
+                context_policy,
+                session_context: &session_context,
                 model_credential,
-                text.clone(),
-            ),
+                user_text: text.clone(),
+            }),
         };
 
         for delta in assistant_response.deltas() {
@@ -350,20 +370,25 @@ impl CoddyRuntime {
         AssistantResponse::from_text(text)
     }
 
-    fn execute_model_backed_response(
-        &self,
-        session_id: Uuid,
-        run_id: Uuid,
-        selected_model: &ModelRef,
-        model_credential: Option<ModelCredential>,
-        user_text: String,
-    ) -> AssistantResponse {
+    fn execute_model_backed_response(&self, turn: ModelBackedTurn<'_>) -> AssistantResponse {
+        let ModelBackedTurn {
+            session_id,
+            run_id,
+            selected_model,
+            context_policy,
+            session_context,
+            model_credential,
+            user_text,
+        } = turn;
+
         let request = match ChatRequest::new(
             selected_model.clone(),
             vec![
-                ChatMessage::system(
-                    "You are Coddy, a secure coding agent. Use tools only through the runtime.",
-                ),
+                ChatMessage::system(build_model_system_prompt(
+                    context_policy,
+                    session_context,
+                    self.tool_registry.definitions(),
+                )),
                 ChatMessage::user(user_text.clone()),
             ],
         ) {
@@ -832,6 +857,158 @@ fn summarize_chat_tool_calls(tool_calls: &[ChatToolCall]) -> String {
         .map(|call| call.name.as_str())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn build_model_system_prompt(
+    context_policy: ContextPolicy,
+    session: &ReplSession,
+    tool_definitions: &[ToolDefinition],
+) -> String {
+    let mut sections = vec![
+        "You are Coddy, a secure AI coding agent.".to_string(),
+        [
+            "Agent loop:",
+            "- Understand the user's goal and restate constraints only when useful.",
+            "- Inspect relevant context with runtime tools before making code claims.",
+            "- Act with least privilege; never invent tool results.",
+            "- Validate changes with focused tests or explain why validation was not run.",
+            "- Reply with the result, important evidence, and next concrete step.",
+        ]
+        .join("\n"),
+        [
+            "Security rules:",
+            "- Use tools only through the Coddy runtime.",
+            "- Model-initiated tools may execute automatically only when low-risk and auto-approved.",
+            "- Higher-risk filesystem writes and shell commands require explicit user approval.",
+            "- Do not expose secrets, tokens, credentials, or hidden configuration values.",
+        ]
+        .join("\n"),
+        format!("Context policy: {context_policy:?}"),
+    ];
+
+    sections.push(format!(
+        "Selected chat model: {}/{}",
+        session.selected_model.provider, session.selected_model.name
+    ));
+    sections.push(format_workspace_context(&session.workspace_context));
+    sections.push(format_recent_session_messages(&session.messages));
+    sections.push(format_tool_context(tool_definitions));
+    sections.join("\n\n")
+}
+
+fn format_workspace_context(items: &[coddy_core::ContextItem]) -> String {
+    if items.is_empty() {
+        return "Workspace context: none loaded yet.".to_string();
+    }
+
+    let mut lines = vec!["Workspace context:".to_string()];
+    for item in items.iter().take(8) {
+        let label = if item.sensitive {
+            "[sensitive context item redacted]".to_string()
+        } else {
+            truncate_context_text(&redact_context_text(&item.label), 160)
+        };
+        lines.push(format!("- {label}"));
+    }
+    if items.len() > 8 {
+        lines.push(format!(
+            "- {} additional context items omitted.",
+            items.len() - 8
+        ));
+    }
+    lines.join("\n")
+}
+
+fn format_recent_session_messages(messages: &[ReplMessage]) -> String {
+    if messages.is_empty() {
+        return "Recent session messages: none before this turn.".to_string();
+    }
+
+    let mut recent = messages.iter().rev().take(4).collect::<Vec<_>>();
+    recent.reverse();
+    let mut lines = vec!["Recent session messages before this turn:".to_string()];
+    for message in recent {
+        let text = truncate_context_text(&redact_context_text(&message.text), 240);
+        lines.push(format!("- {}: {text}", message.role));
+    }
+    lines.join("\n")
+}
+
+fn format_tool_context(tool_definitions: &[ToolDefinition]) -> String {
+    if tool_definitions.is_empty() {
+        return "Available runtime tools: none registered.".to_string();
+    }
+
+    let mut definitions = tool_definitions.iter().collect::<Vec<_>>();
+    definitions.sort_by(|left, right| left.name.as_str().cmp(right.name.as_str()));
+    let mut lines = vec![format!(
+        "Available runtime tools ({}):",
+        tool_definitions.len()
+    )];
+    for definition in definitions.iter().take(8) {
+        lines.push(format!(
+            "- {} [{:?}, {:?}]: {}",
+            definition.name.as_str(),
+            definition.risk_level,
+            definition.approval_policy,
+            truncate_context_text(&definition.description, 180)
+        ));
+    }
+    if definitions.len() > 8 {
+        lines.push(format!(
+            "- {} additional tools omitted.",
+            definitions.len() - 8
+        ));
+    }
+    lines.join("\n")
+}
+
+fn redact_context_text(text: &str) -> String {
+    let markers = ["Bearer ", "sk-or-", "ya29.", "sk-"];
+    let mut output = String::with_capacity(text.len());
+    let mut index = 0;
+
+    while index < text.len() {
+        if let Some(marker) = markers
+            .iter()
+            .find(|candidate| text[index..].starts_with(**candidate))
+        {
+            output.push_str(marker);
+            output.push_str("[REDACTED]");
+            let token_start = index + marker.len();
+            index = text[token_start..]
+                .char_indices()
+                .find_map(|(offset, character)| {
+                    (!is_secret_token_character(character)).then_some(token_start + offset)
+                })
+                .unwrap_or(text.len());
+            continue;
+        }
+
+        let character = text[index..]
+            .chars()
+            .next()
+            .expect("index remains on a UTF-8 boundary");
+        output.push(character);
+        index += character.len_utf8();
+    }
+
+    output
+}
+
+fn is_secret_token_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
+}
+
+fn truncate_context_text(text: &str, max_chars: usize) -> String {
+    let mut result = String::new();
+    for character in text.chars().take(max_chars) {
+        result.push(character);
+    }
+    if text.chars().count() > max_chars {
+        result.push_str("...");
+    }
+    result
 }
 
 fn plan_ask_action(text: &str) -> AskAction {
@@ -1406,6 +1583,82 @@ mod tests {
             ReplEvent::MessageAppended { message }
                 if message.role == "assistant" && message.text == "hello world"
         )));
+    }
+
+    #[test]
+    fn ask_command_builds_contextual_agent_prompt_for_model() {
+        let request_id = Uuid::new_v4();
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("context accepted"));
+        let runtime =
+            CoddyRuntime::with_chat_client(AgentToolRegistry::default(), Arc::new(chat_client));
+        let model = ModelRef {
+            provider: "openai".to_string(),
+            name: "gpt-test".to_string(),
+        };
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: model.clone(),
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+        runtime.publish_event(
+            ReplEvent::MessageAppended {
+                message: ReplMessage {
+                    id: Uuid::new_v4(),
+                    role: "user".to_string(),
+                    text: "Use this prior note but hide sk-secret-token".to_string(),
+                },
+            },
+            None,
+            1_775_000_000_110,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "continue the implementation".to_string(),
+                context_policy: coddy_core::ContextPolicy::ScreenAndWorkspace,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let system_prompt = &captured_requests[0].messages[0].content;
+
+        assert!(system_prompt.contains("Agent loop:"));
+        assert!(system_prompt.contains("Security rules:"));
+        assert!(system_prompt.contains("Context policy: ScreenAndWorkspace"));
+        assert!(system_prompt.contains("Recent session messages before this turn:"));
+        assert!(system_prompt.contains("sk-[REDACTED]"));
+        assert!(!system_prompt.contains("sk-secret-token"));
+        assert!(system_prompt.contains("Available runtime tools"));
+        assert!(system_prompt.contains(LIST_FILES_TOOL));
+        assert!(system_prompt.contains("filesystem.preview_edit"));
+        assert_eq!(
+            captured_requests[0].messages[1].content,
+            "continue the implementation"
+        );
+    }
+
+    #[test]
+    fn context_prompt_redaction_preserves_secret_markers_without_values() {
+        let redacted = redact_context_text(
+            "openai sk-secret-token openrouter sk-or-router-token oauth ya29.google-token auth Bearer abc.DEF_123",
+        );
+
+        assert!(redacted.contains("sk-[REDACTED]"));
+        assert!(redacted.contains("sk-or-[REDACTED]"));
+        assert!(redacted.contains("ya29.[REDACTED]"));
+        assert!(redacted.contains("Bearer [REDACTED]"));
+        assert!(!redacted.contains("secret-token"));
+        assert!(!redacted.contains("router-token"));
+        assert!(!redacted.contains("google-token"));
+        assert!(!redacted.contains("abc.DEF_123"));
     }
 
     #[test]
