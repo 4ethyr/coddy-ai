@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ReplIpcClient, ReplSessionSnapshot } from '@/domain'
-import { createLocalSession, initializeSession } from '@/application'
+import { applyEvents, createLocalSession, initializeSession } from '@/application'
 
 function snapshot(): ReplSessionSnapshot {
   return {
@@ -66,5 +66,41 @@ describe('SessionManager', () => {
 
   it('starts local sessions with an empty tool catalog', () => {
     expect(createLocalSession().toolCatalog).toEqual([])
+  })
+
+  it('applies backend context item events into the UI session state', () => {
+    const state = createLocalSession()
+
+    const result = applyEvents(
+      state,
+      [
+        {
+          sequence: 1,
+          session_id: 'session-1',
+          run_id: 'run-1',
+          captured_at_unix_ms: 1_775_000_000_000,
+          event: {
+            ContextItemAdded: {
+              item: {
+                id: 'tool:filesystem.read_file:.env',
+                label: 'filesystem.read_file: .env',
+                sensitive: true,
+              },
+            },
+          },
+        },
+      ],
+      1,
+    )
+
+    expect(result.lastSequence).toBe(1)
+    expect(result.session.workspace_context).toEqual([
+      {
+        id: 'tool:filesystem.read_file:.env',
+        label: 'filesystem.read_file: .env',
+        sensitive: true,
+      },
+    ])
+    expect(result.session.status).toBe('BuildingContext')
   })
 })
