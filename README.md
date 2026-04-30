@@ -16,10 +16,11 @@ glassmorphism.
 
 Coddy is under active development. The current implementation includes the CLI,
 runtime IPC, Electron UI, model discovery, secure credential storage, local
-Ollama chat completion, session events, tool metadata, permission primitives and
-early runtime streaming. Some advanced capabilities, such as complete
-multi-provider LLM execution, subagents and MCP, are planned or partially
-scaffolded and should be evolved incrementally with tests.
+Ollama chat completion, session events, tool metadata, permission primitives,
+declarative subagent metadata and early runtime streaming. Some advanced
+capabilities, such as complete multi-provider LLM execution, executable
+subagents and MCP, are planned or partially scaffolded and should be evolved
+incrementally with tests.
 
 ## Main Features
 
@@ -43,6 +44,9 @@ scaffolded and should be evolved incrementally with tests.
 - Secure token handling through Electron `safeStorage` when available.
 - Agent tool registry, tool metadata, risk levels, permissions and approval
   primitives.
+- Declarative subagent registry with explorer, planner, coder, reviewer,
+  security-reviewer, test-writer, eval-runner and docs-writer roles exposed
+  through the read-only `subagent.list` tool.
 - Command guard and shell planning primitives for controlled command execution.
 - Local context, read tracking, preview edit flow and approved edit application
   in the Rust agent crate.
@@ -90,15 +94,17 @@ For Vertex AI publisher models, Coddy can use local Google credentials without
 asking you to paste a token. Leave the Vertex credential field empty and click
 `Load`.
 
-The Electron main process resolves credentials in this order:
+The Electron main process resolves credentials in this order when the Vertex
+credential field is left empty:
 
-1. `GOOGLE_APPLICATION_CREDENTIALS` or the default ADC file.
-2. `gcloud auth print-access-token`.
+1. `gcloud auth print-access-token`.
+2. `GOOGLE_APPLICATION_CREDENTIALS` or the default ADC file.
 3. `gcloud config get-value project` for request-scoped Vertex runtime
    metadata.
 
 The `gcloud` token is short-lived, kept only in memory for the Vertex model list
-request and never persisted by Coddy. Run these before opening the UI:
+request and never persisted by Coddy. For development, run these before opening
+the UI:
 
 ```bash
 gcloud auth application-default login

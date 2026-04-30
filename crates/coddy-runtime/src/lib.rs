@@ -1510,6 +1510,7 @@ mod tests {
                 "filesystem.read_file",
                 "filesystem.search_files",
                 "shell.run",
+                "subagent.list",
             ]
         );
 
@@ -1529,6 +1530,18 @@ mod tests {
         assert_eq!(apply_edit.risk_level, ToolRiskLevel::High);
         assert_eq!(apply_edit.permissions, vec![ToolPermission::WriteWorkspace]);
         assert_eq!(apply_edit.approval_policy, ApprovalPolicy::AlwaysAsk);
+
+        let subagent_list = tools
+            .iter()
+            .find(|tool| tool.name == "subagent.list")
+            .expect("subagent list tool");
+        assert_eq!(subagent_list.category, ToolCategory::Subagent);
+        assert_eq!(subagent_list.risk_level, ToolRiskLevel::Low);
+        assert_eq!(
+            subagent_list.permissions,
+            vec![ToolPermission::DelegateSubagent]
+        );
+        assert_eq!(subagent_list.approval_policy, ApprovalPolicy::AutoApprove);
     }
 
     #[test]

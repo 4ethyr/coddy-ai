@@ -7,6 +7,7 @@ pub mod router;
 pub mod runtime;
 pub mod shell_executor;
 pub mod shell_plan;
+pub mod subagent;
 
 use std::{
     collections::HashMap,
@@ -42,6 +43,7 @@ pub use shell_plan::{
     ShellApprovalState, ShellPlan, ShellPlanRequest, ShellPlanner, DEFAULT_SHELL_TIMEOUT_MS,
     MAX_SHELL_TIMEOUT_MS,
 };
+pub use subagent::{SubagentDefinition, SubagentMode, SubagentRegistry, SUBAGENT_LIST_TOOL};
 
 use coddy_core::{
     ApprovalPolicy, PermissionReply, PermissionRequest, ReplEvent, ToolCall, ToolCategory,
@@ -393,6 +395,50 @@ impl Default for AgentToolRegistry {
                 permissions: vec![ToolPermission::ExecuteCommand],
                 timeout_ms: DEFAULT_SHELL_TIMEOUT_MS,
                 approval_policy: ApprovalPolicy::AskOnUse,
+            }),
+            local_tool_definition(LocalToolDefinitionSpec {
+                name: SUBAGENT_LIST_TOOL,
+                description: "List declarative subagent roles, modes, allowed tools and response contracts",
+                category: ToolCategory::Subagent,
+                input_schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["read-only", "workspace-write", "evaluation"]
+                        }
+                    }
+                }),
+                output_schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "mode": { "type": ["string", "null"] },
+                        "subagents": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": { "type": "string" },
+                                    "description": { "type": "string" },
+                                    "mode": { "type": "string" },
+                                    "allowedTools": {
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    },
+                                    "timeoutMs": { "type": "integer" },
+                                    "maxContextTokens": { "type": "integer" },
+                                    "outputSchema": { "type": "object" }
+                                }
+                            }
+                        }
+                    }
+                }),
+                risk_level: ToolRiskLevel::Low,
+                permissions: vec![ToolPermission::DelegateSubagent],
+                timeout_ms: 2_000,
+                approval_policy: ApprovalPolicy::AutoApprove,
             }),
         ]);
 
@@ -1156,7 +1202,7 @@ mod tests {
     fn agent_registry_defines_local_contracts_without_execution() {
         let registry = AgentToolRegistry::default();
 
-        assert_eq!(registry.definitions().len(), 6);
+        assert_eq!(registry.definitions().len(), 7);
         assert!(registry
             .get(&ToolName::new(LIST_FILES_TOOL).expect("tool name"))
             .is_some());
@@ -1174,6 +1220,52 @@ mod tests {
         assert_eq!(shell.permissions, vec![ToolPermission::ExecuteCommand]);
         assert_eq!(shell.timeout_ms, DEFAULT_SHELL_TIMEOUT_MS);
         assert_eq!(shell.approval_policy, ApprovalPolicy::AskOnUse);
+
+        let subagent_list = registry
+            .get(&ToolName::new(SUBAGENT_LIST_TOOL).expect("tool name"))
+            .expect("subagent list definition");
+        assert_eq!(subagent_list.category, ToolCategory::Subagent);
+        assert_eq!(subagent_list.risk_level, ToolRiskLevel::Low);
+        assert_eq!(subagent_list.approval_policy, ApprovalPolicy::AutoApprove);
+        assert_eq!(
+            subagent_list.permissions,
+            vec![ToolPermission::DelegateSubagent]
+        );
+    }
+
+    #[test]
+    fn default_subagent_registry_defines_required_roles_safely() {
+        let registry = SubagentRegistry::default();
+
+        let names = registry
+            .definitions()
+            .iter()
+            .map(|definition| definition.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "explorer",
+                "planner",
+                "coder",
+                "reviewer",
+                "security-reviewer",
+                "test-writer",
+                "eval-runner",
+                "docs-writer",
+            ]
+        );
+
+        let explorer = registry.get("explorer").expect("explorer definition");
+        assert_eq!(explorer.mode, SubagentMode::ReadOnly);
+        assert!(explorer.allowed_tools.contains(&READ_FILE_TOOL.to_string()));
+        assert!(explorer
+            .allowed_tools
+            .contains(&LIST_FILES_TOOL.to_string()));
+        assert!(!explorer
+            .allowed_tools
+            .contains(&PREVIEW_EDIT_TOOL.to_string()));
+        assert!(!explorer.allowed_tools.contains(&SHELL_RUN_TOOL.to_string()));
     }
 
     #[test]

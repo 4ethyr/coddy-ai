@@ -14,9 +14,9 @@ use uuid::Uuid;
 
 use crate::{
     AgentError, AgentToolRegistry, EditPreview, ReadOnlyToolExecutor, ShellApprovalState,
-    ShellExecutionConfig, ShellExecutor, ShellPlan, ShellPlanRequest, ShellPlanner, ToolExecution,
-    APPLY_EDIT_TOOL, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL,
-    SHELL_RUN_TOOL,
+    ShellExecutionConfig, ShellExecutor, ShellPlan, ShellPlanRequest, ShellPlanner, SubagentMode,
+    SubagentRegistry, ToolExecution, APPLY_EDIT_TOOL, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL,
+    READ_FILE_TOOL, SEARCH_FILES_TOOL, SHELL_RUN_TOOL, SUBAGENT_LIST_TOOL,
 };
 
 #[derive(Debug, Clone)]
@@ -32,6 +32,7 @@ pub struct LocalToolRouter {
     filesystem: ReadOnlyToolExecutor,
     shell_planner: ShellPlanner,
     shell_executor: ShellExecutor,
+    subagents: SubagentRegistry,
     pending_edits: Arc<Mutex<HashMap<Uuid, EditPreview>>>,
     pending_shells: Arc<Mutex<HashMap<Uuid, ShellPlan>>>,
 }
@@ -51,6 +52,7 @@ impl LocalToolRouter {
             filesystem: ReadOnlyToolExecutor::new(workspace_root)?,
             shell_planner: ShellPlanner::new(workspace_root)?,
             shell_executor: ShellExecutor::with_config(workspace_root, shell_config)?,
+            subagents: SubagentRegistry::default(),
             pending_edits: Arc::new(Mutex::new(HashMap::new())),
             pending_shells: Arc::new(Mutex::new(HashMap::new())),
         })
@@ -82,6 +84,7 @@ impl LocalToolRouter {
             PREVIEW_EDIT_TOOL => self.preview_edit(call),
             APPLY_EDIT_TOOL => self.apply_permission_reply_tool(call),
             SHELL_RUN_TOOL => self.plan_or_execute_shell(call),
+            SUBAGENT_LIST_TOOL => self.list_subagents(call),
             other => failed_outcome(
                 call.id,
                 call.tool_name.to_string(),
@@ -252,6 +255,52 @@ impl LocalToolRouter {
             }
         }
     }
+
+    fn list_subagents(&self, call: &ToolCall) -> LocalToolRouteOutcome {
+        let started_at = unix_ms_now();
+        let mode = match optional_subagent_mode(&call.input) {
+            Ok(mode) => mode,
+            Err(error) => {
+                return failed_outcome(
+                    call.id,
+                    SUBAGENT_LIST_TOOL.to_string(),
+                    error.into_tool_error(),
+                );
+            }
+        };
+        let subagents = self.subagents.public_definitions(mode);
+        let names = subagents
+            .iter()
+            .filter_map(|metadata| metadata["name"].as_str())
+            .collect::<Vec<_>>();
+        let text = if names.is_empty() {
+            "No subagents match the requested filter.".to_string()
+        } else {
+            names.join("\n")
+        };
+        let output = ToolOutput {
+            text,
+            metadata: json!({
+                "mode": mode.map(SubagentMode::as_str),
+                "subagents": subagents,
+            }),
+            truncated: false,
+        };
+        let result = ToolResult::succeeded(call.id, output, started_at, unix_ms_now());
+
+        LocalToolRouteOutcome::from_execution(ToolExecution {
+            result,
+            events: vec![
+                ReplEvent::ToolStarted {
+                    name: SUBAGENT_LIST_TOOL.to_string(),
+                },
+                ReplEvent::ToolCompleted {
+                    name: SUBAGENT_LIST_TOOL.to_string(),
+                    status: ToolStatus::Succeeded,
+                },
+            ],
+        })
+    }
 }
 
 impl LocalToolRouteOutcome {
@@ -336,6 +385,16 @@ fn shell_input(input: &Value) -> Result<ShellInput<'_>, AgentError> {
         cwd: string_field(input, "cwd")?,
         timeout_ms: u64_field(input, "timeout_ms")?,
     })
+}
+
+fn optional_subagent_mode(input: &Value) -> Result<Option<SubagentMode>, AgentError> {
+    let Some(mode) = string_field(input, "mode")? else {
+        return Ok(None);
+    };
+
+    SubagentMode::parse(mode)
+        .map(Some)
+        .ok_or_else(|| AgentError::InvalidInput(format!("unsupported subagent mode: {mode}")))
 }
 
 fn failed_outcome(call_id: Uuid, tool_name: String, error: ToolError) -> LocalToolRouteOutcome {
@@ -462,6 +521,34 @@ mod tests {
         assert_eq!(
             outcome.result.expect("result").output.expect("output").text,
             "# Coddy\n"
+        );
+    }
+
+    #[test]
+    fn routes_subagent_list_as_read_only_metadata_tool() {
+        let workspace = TempWorkspace::new();
+        let router = LocalToolRouter::new(&workspace.path).expect("router");
+
+        let outcome = router.route(&call(
+            Uuid::new_v4(),
+            SUBAGENT_LIST_TOOL,
+            json!({ "mode": "read-only" }),
+        ));
+
+        assert_eq!(outcome.status(), Some(ToolResultStatus::Succeeded));
+        let output = outcome.result.expect("result").output.expect("output");
+        assert!(output.text.contains("explorer"));
+        assert!(output.text.contains("security-reviewer"));
+        assert!(!output.text.contains("coder"));
+        assert_eq!(output.metadata["mode"], json!("read-only"));
+        assert_eq!(output.metadata["subagents"][0]["name"], json!("explorer"));
+        assert_eq!(
+            output.metadata["subagents"][0]["allowedTools"],
+            json!([
+                "filesystem.list_files",
+                "filesystem.read_file",
+                "filesystem.search_files"
+            ])
         );
     }
 

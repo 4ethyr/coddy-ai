@@ -124,6 +124,12 @@ para a UI. A resposta usa `ReplToolCatalogItem`, com nome, descrição,
 categoria, risco, permissões, timeout e approval policy. O Electron consome
 esse contrato pelo canal `repl:tools`.
 
+O catálogo atual inclui tools locais de filesystem, shell protegido e a fundação
+de subagents. A tool `subagent.list` é read-only/auto-approved e retorna os
+subagents declarativos disponíveis com modo, tools permitidas, timeout,
+orçamento de contexto e schema de resposta. Ela prepara a futura execução real
+de subagents sem acoplar a UI a um runtime paralelo prematuro.
+
 ### Stream de eventos
 
 ```bash
