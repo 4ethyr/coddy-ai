@@ -892,6 +892,8 @@ mod tests {
         assert_eq!(handoff["name"], json!("security-reviewer"));
         assert_eq!(handoff["mode"], json!("read-only"));
         assert_eq!(handoff["approvalRequired"], json!(false));
+        assert_eq!(handoff["readinessScore"], json!(100));
+        assert_eq!(handoff["readinessIssues"], json!([]));
         assert!(handoff["allowedTools"]
             .as_array()
             .expect("allowed tools")

@@ -7,8 +7,9 @@ use coddy_agent::{
 use coddy_core::{
     ApprovalPolicy, ContextItem, ContextPolicy, ModelCredential, ModelRef, PermissionReply,
     ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode,
-    ReplSession, ReplSessionSnapshot, SubagentRouteRecommendation, ToolCall, ToolDefinition,
-    ToolName, ToolOutput, ToolResultStatus, ToolRiskLevel,
+    ReplSession, ReplSessionSnapshot, SubagentHandoffPrepared, SubagentLifecycleStatus,
+    SubagentLifecycleUpdate, SubagentRouteRecommendation, ToolCall, ToolDefinition, ToolName,
+    ToolOutput, ToolResultStatus, ToolRiskLevel,
 };
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
@@ -704,7 +705,13 @@ impl CoddyRuntime {
         if result.status != ToolResultStatus::Succeeded {
             return None;
         }
-        result.output.as_ref().map(format_subagent_handoff_context)
+        let output = result.output.as_ref()?;
+        if let Some(handoff) = subagent_handoff_prepared_from_output(output) {
+            let update = subagent_lifecycle_update_from_handoff(&handoff);
+            self.publish_event_with_run_now(ReplEvent::SubagentHandoffPrepared { handoff }, run_id);
+            self.publish_event_with_run_now(ReplEvent::SubagentLifecycleUpdated { update }, run_id);
+        }
+        Some(format_subagent_handoff_context(output))
     }
 
     fn execute_model_tool_round(
@@ -1356,12 +1363,18 @@ fn format_subagent_handoff_context(output: &ToolOutput) -> String {
         .unwrap_or_default();
     let checklist = array_string_preview(handoff.get("validationChecklist"), 3);
     let safety_notes = array_string_preview(handoff.get("safetyNotes"), 2);
+    let readiness_score = handoff
+        .get("readinessScore")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let readiness_issues = array_string_preview(handoff.get("readinessIssues"), 3);
 
     [
         "Subagent handoff preview:".to_string(),
         "- Use this handoff as planning guidance only; do not claim the subagent executed."
             .to_string(),
         format!("- Prepared `{name}` in {mode} mode; approval required: {approval_required}."),
+        format!("- Readiness score: {readiness_score}; issues: {readiness_issues}."),
         format!(
             "- Handoff prompt: {}",
             truncate_context_text(&redact_context_text(handoff_prompt), 700)
@@ -1370,6 +1383,79 @@ fn format_subagent_handoff_context(output: &ToolOutput) -> String {
         format!("- Safety notes: {safety_notes}"),
     ]
     .join("\n")
+}
+
+fn subagent_handoff_prepared_from_output(output: &ToolOutput) -> Option<SubagentHandoffPrepared> {
+    let handoff = output.metadata.get("handoff")?.as_object()?;
+    let name = handoff.get("name")?.as_str()?.to_string();
+    let mode = handoff
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let approval_required = handoff
+        .get("approvalRequired")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+    let allowed_tools = array_string_values(handoff.get("allowedTools"), 16);
+    let timeout_ms = handoff
+        .get("timeoutMs")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default();
+    let max_context_tokens = handoff
+        .get("maxContextTokens")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default()
+        .min(u32::MAX as u64) as u32;
+    let validation_checklist = array_string_values(handoff.get("validationChecklist"), 12);
+    let safety_notes = array_string_values(handoff.get("safetyNotes"), 12);
+    let readiness_score = handoff
+        .get("readinessScore")
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default()
+        .min(100) as u8;
+    let readiness_issues = array_string_values(handoff.get("readinessIssues"), 12);
+
+    Some(SubagentHandoffPrepared {
+        name,
+        mode,
+        approval_required,
+        allowed_tools,
+        timeout_ms,
+        max_context_tokens,
+        validation_checklist,
+        safety_notes,
+        readiness_score,
+        readiness_issues,
+    })
+}
+
+fn subagent_lifecycle_update_from_handoff(
+    handoff: &SubagentHandoffPrepared,
+) -> SubagentLifecycleUpdate {
+    let ready = handoff.readiness_score == 100 && handoff.readiness_issues.is_empty();
+    let reason = if ready {
+        None
+    } else if handoff.readiness_issues.is_empty() {
+        Some(format!(
+            "readiness score {} is below execution threshold",
+            handoff.readiness_score
+        ))
+    } else {
+        Some(handoff.readiness_issues.join("; "))
+    };
+
+    SubagentLifecycleUpdate {
+        name: handoff.name.clone(),
+        mode: handoff.mode.clone(),
+        status: if ready {
+            SubagentLifecycleStatus::Prepared
+        } else {
+            SubagentLifecycleStatus::Blocked
+        },
+        readiness_score: handoff.readiness_score,
+        reason,
+    }
 }
 
 fn subagent_recommendations_from_output(output: &ToolOutput) -> Vec<SubagentRouteRecommendation> {
@@ -1437,6 +1523,20 @@ fn array_string_preview(value: Option<&serde_json::Value>, limit: usize) -> Stri
     } else {
         values.join(" | ")
     }
+}
+
+fn array_string_values(value: Option<&serde_json::Value>, limit: usize) -> Vec<String> {
+    value
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .take(limit)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
 }
 
 fn redact_context_text(text: &str) -> String {
@@ -2212,6 +2312,7 @@ mod tests {
         assert!(system_prompt.contains("do not claim a subagent executed"));
         assert!(system_prompt.contains("Subagent handoff preview:"));
         assert!(system_prompt.contains("Prepared `eval-runner` in evaluation mode"));
+        assert!(system_prompt.contains("Readiness score: 100"));
         assert!(system_prompt.contains("Validation checklist:"));
         assert!(events.iter().any(|event| matches!(
             &event.event,
@@ -2236,6 +2337,92 @@ mod tests {
                     .first()
                     .is_some_and(|recommendation| recommendation.name == "eval-runner")
         )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::SubagentHandoffPrepared { handoff }
+                if handoff.name == "eval-runner"
+                    && handoff.mode == "evaluation"
+                    && handoff.readiness_score == 100
+                    && handoff.readiness_issues.is_empty()
+                    && handoff.allowed_tools.iter().any(|tool| tool == "shell.run")
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::SubagentLifecycleUpdated { update }
+                if update.name == "eval-runner"
+                    && update.mode == "evaluation"
+                    && update.status == SubagentLifecycleStatus::Prepared
+                    && update.readiness_score == 100
+                    && update.reason.is_none()
+        )));
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.session.subagent_activity.len(), 1);
+        assert_eq!(snapshot.session.subagent_activity[0].name, "eval-runner");
+        assert_eq!(
+            snapshot.session.subagent_activity[0].status,
+            SubagentLifecycleStatus::Prepared
+        );
+        assert_eq!(snapshot.session.subagent_activity[0].readiness_score, 100);
+    }
+
+    #[test]
+    fn subagent_handoff_event_preserves_full_values_while_prompt_preview_is_truncated() {
+        let long_issue = "x".repeat(220);
+        let output = ToolOutput {
+            text: "prepared".to_string(),
+            metadata: serde_json::json!({
+                "handoff": {
+                    "name": "eval-runner",
+                    "mode": "evaluation",
+                    "approvalRequired": true,
+                    "allowedTools": ["shell.run"],
+                    "timeoutMs": 60000,
+                    "maxContextTokens": 8000,
+                    "validationChecklist": [long_issue],
+                    "safetyNotes": ["Do not expose secrets."],
+                    "readinessScore": 80,
+                    "readinessIssues": [long_issue],
+                    "outputSchema": {}
+                }
+            }),
+            truncated: false,
+        };
+
+        let handoff = subagent_handoff_prepared_from_output(&output).expect("handoff event");
+        assert_eq!(handoff.validation_checklist[0].len(), 220);
+        assert_eq!(handoff.readiness_issues[0].len(), 220);
+
+        let preview = format_subagent_handoff_context(&output);
+        assert!(preview.contains("Readiness score: 80"));
+        assert!(!preview.contains(&"x".repeat(220)));
+    }
+
+    #[test]
+    fn subagent_lifecycle_blocks_handoffs_below_readiness_threshold() {
+        let handoff = SubagentHandoffPrepared {
+            name: "coder".to_string(),
+            mode: "workspace-write".to_string(),
+            approval_required: true,
+            allowed_tools: vec!["filesystem.apply_edit".to_string()],
+            timeout_ms: 60_000,
+            max_context_tokens: 8_000,
+            validation_checklist: vec!["Preview edits before applying.".to_string()],
+            safety_notes: vec!["Do not expose secrets.".to_string()],
+            readiness_score: 80,
+            readiness_issues: vec![
+                "workspace-write handoff must include preview edit capability".to_string(),
+            ],
+        };
+
+        let update = subagent_lifecycle_update_from_handoff(&handoff);
+
+        assert_eq!(update.name, "coder");
+        assert_eq!(update.status, SubagentLifecycleStatus::Blocked);
+        assert_eq!(update.readiness_score, 80);
+        assert_eq!(
+            update.reason.as_deref(),
+            Some("workspace-write handoff must include preview edit capability")
+        );
     }
 
     #[test]

@@ -53,6 +53,18 @@ pub struct ReplMessage {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SubagentActivity {
+    pub id: String,
+    pub name: String,
+    pub mode: String,
+    pub status: crate::SubagentLifecycleStatus,
+    pub readiness_score: u8,
+    pub reason: Option<String>,
+}
+
+const SUBAGENT_READY_SCORE: u8 = 100;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReplSession {
     pub id: Uuid,
@@ -66,6 +78,7 @@ pub struct ReplSession {
     pub messages: Vec<ReplMessage>,
     pub active_run: Option<Uuid>,
     pub pending_permission: Option<crate::PermissionRequest>,
+    pub subagent_activity: Vec<SubagentActivity>,
 }
 
 impl ReplSession {
@@ -82,6 +95,7 @@ impl ReplSession {
             messages: Vec::new(),
             active_run: None,
             pending_permission: None,
+            subagent_activity: Vec::new(),
         }
     }
 
@@ -97,6 +111,7 @@ impl ReplSession {
             }
             crate::ReplEvent::RunStarted { run_id } => {
                 self.active_run = Some(*run_id);
+                self.subagent_activity.clear();
                 self.status = SessionStatus::Thinking;
             }
             crate::ReplEvent::ShortcutTriggered { .. } => {}
@@ -171,6 +186,23 @@ impl ReplSession {
             crate::ReplEvent::SubagentRouted { .. } => {
                 self.status = SessionStatus::Thinking;
             }
+            crate::ReplEvent::SubagentHandoffPrepared { .. } => {
+                self.status = SessionStatus::Thinking;
+            }
+            crate::ReplEvent::SubagentLifecycleUpdated { update } => {
+                let existing_index = self
+                    .subagent_activity
+                    .iter()
+                    .position(|existing| existing.id == SubagentActivity::id_for(update));
+                let previous = existing_index.and_then(|index| self.subagent_activity.get(index));
+                let activity = SubagentActivity::from_lifecycle_update(previous, update);
+                if let Some(index) = existing_index {
+                    self.subagent_activity[index] = activity;
+                } else {
+                    self.subagent_activity.push(activity);
+                }
+                self.status = SessionStatus::Thinking;
+            }
             crate::ReplEvent::PermissionRequested { request } => {
                 self.pending_permission = Some(request.clone());
                 self.status = SessionStatus::AwaitingToolApproval;
@@ -223,6 +255,105 @@ impl ReplSession {
     }
 }
 
+impl SubagentActivity {
+    fn from_lifecycle_update(
+        previous: Option<&Self>,
+        update: &crate::SubagentLifecycleUpdate,
+    ) -> Self {
+        let (status, reason) = normalize_subagent_lifecycle_transition(
+            previous.map(|activity| activity.status),
+            update,
+        );
+
+        Self {
+            id: Self::id_for(update),
+            name: update.name.clone(),
+            mode: update.mode.clone(),
+            status,
+            readiness_score: update.readiness_score,
+            reason,
+        }
+    }
+
+    fn id_for(update: &crate::SubagentLifecycleUpdate) -> String {
+        format!("{}:{}", update.name, update.mode)
+    }
+}
+
+fn normalize_subagent_lifecycle_transition(
+    previous: Option<crate::SubagentLifecycleStatus>,
+    update: &crate::SubagentLifecycleUpdate,
+) -> (crate::SubagentLifecycleStatus, Option<String>) {
+    if let Some(reason) = readiness_block_reason(update) {
+        return (crate::SubagentLifecycleStatus::Blocked, Some(reason));
+    }
+
+    if !is_allowed_subagent_transition(previous, update.status) {
+        let previous_label = previous
+            .map(|status| format!("{status:?}"))
+            .unwrap_or_else(|| "None".to_string());
+        return (
+            crate::SubagentLifecycleStatus::Blocked,
+            Some(format!(
+                "invalid subagent lifecycle transition: {previous_label} -> {:?}",
+                update.status
+            )),
+        );
+    }
+
+    (update.status, update.reason.clone())
+}
+
+fn readiness_block_reason(update: &crate::SubagentLifecycleUpdate) -> Option<String> {
+    if !requires_ready_handoff(update.status) {
+        return None;
+    }
+
+    let mut reasons = Vec::new();
+    if update.readiness_score < SUBAGENT_READY_SCORE {
+        reasons.push(format!(
+            "readiness score {} is below execution threshold",
+            update.readiness_score
+        ));
+    }
+    if let Some(reason) = update.reason.as_deref().filter(|reason| !reason.is_empty()) {
+        reasons.push(reason.to_string());
+    }
+
+    if reasons.is_empty() {
+        None
+    } else {
+        Some(reasons.join("; "))
+    }
+}
+
+fn requires_ready_handoff(status: crate::SubagentLifecycleStatus) -> bool {
+    matches!(
+        status,
+        crate::SubagentLifecycleStatus::Prepared
+            | crate::SubagentLifecycleStatus::Approved
+            | crate::SubagentLifecycleStatus::Running
+            | crate::SubagentLifecycleStatus::Completed
+    )
+}
+
+fn is_allowed_subagent_transition(
+    previous: Option<crate::SubagentLifecycleStatus>,
+    next: crate::SubagentLifecycleStatus,
+) -> bool {
+    use crate::SubagentLifecycleStatus::{Approved, Blocked, Completed, Failed, Prepared, Running};
+
+    match (previous, next) {
+        (None, Prepared | Blocked) => true,
+        (Some(current), next) if current == next => true,
+        (Some(Prepared), Approved | Blocked) => true,
+        (Some(Approved), Running | Blocked) => true,
+        (Some(Running), Completed | Failed | Blocked) => true,
+        (Some(Completed | Failed | Blocked), _) => false,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +384,170 @@ mod tests {
         assert_eq!(session.workspace_context.len(), 1);
         assert!(session.workspace_context[0].sensitive);
         assert_eq!(session.status, SessionStatus::BuildingContext);
+    }
+
+    #[test]
+    fn subagent_lifecycle_update_upserts_activity() {
+        let mut session = ReplSession::new(
+            ReplMode::DesktopApp,
+            crate::ModelRef {
+                provider: "openai".to_string(),
+                name: "gpt-test".to_string(),
+            },
+        );
+
+        session.apply_event(&crate::ReplEvent::SubagentLifecycleUpdated {
+            update: crate::SubagentLifecycleUpdate {
+                name: "coder".to_string(),
+                mode: "workspace-write".to_string(),
+                status: crate::SubagentLifecycleStatus::Prepared,
+                readiness_score: 100,
+                reason: None,
+            },
+        });
+        session.apply_event(&crate::ReplEvent::SubagentLifecycleUpdated {
+            update: crate::SubagentLifecycleUpdate {
+                name: "coder".to_string(),
+                mode: "workspace-write".to_string(),
+                status: crate::SubagentLifecycleStatus::Blocked,
+                readiness_score: 80,
+                reason: Some(
+                    "workspace-write handoff must include preview edit capability".to_string(),
+                ),
+            },
+        });
+
+        assert_eq!(session.subagent_activity.len(), 1);
+        assert_eq!(session.subagent_activity[0].id, "coder:workspace-write");
+        assert_eq!(
+            session.subagent_activity[0].status,
+            crate::SubagentLifecycleStatus::Blocked
+        );
+        assert_eq!(session.subagent_activity[0].readiness_score, 80);
+        assert_eq!(session.status, SessionStatus::Thinking);
+    }
+
+    #[test]
+    fn run_started_clears_subagent_activity_for_next_run() {
+        let mut session = ReplSession::new(
+            ReplMode::DesktopApp,
+            crate::ModelRef {
+                provider: "openai".to_string(),
+                name: "gpt-test".to_string(),
+            },
+        );
+        let run_id = Uuid::new_v4();
+
+        session.apply_event(&crate::ReplEvent::SubagentLifecycleUpdated {
+            update: crate::SubagentLifecycleUpdate {
+                name: "eval-runner".to_string(),
+                mode: "evaluation".to_string(),
+                status: crate::SubagentLifecycleStatus::Prepared,
+                readiness_score: 100,
+                reason: None,
+            },
+        });
+        session.apply_event(&crate::ReplEvent::RunStarted { run_id });
+
+        assert!(session.subagent_activity.is_empty());
+        assert_eq!(session.active_run, Some(run_id));
+    }
+
+    #[test]
+    fn subagent_lifecycle_blocks_running_without_approval() {
+        let mut session = ReplSession::new(
+            ReplMode::DesktopApp,
+            crate::ModelRef {
+                provider: "openai".to_string(),
+                name: "gpt-test".to_string(),
+            },
+        );
+
+        session.apply_event(&crate::ReplEvent::SubagentLifecycleUpdated {
+            update: crate::SubagentLifecycleUpdate {
+                name: "coder".to_string(),
+                mode: "workspace-write".to_string(),
+                status: crate::SubagentLifecycleStatus::Running,
+                readiness_score: 100,
+                reason: None,
+            },
+        });
+
+        assert_eq!(session.subagent_activity.len(), 1);
+        assert_eq!(
+            session.subagent_activity[0].status,
+            crate::SubagentLifecycleStatus::Blocked
+        );
+        assert_eq!(
+            session.subagent_activity[0].reason.as_deref(),
+            Some("invalid subagent lifecycle transition: None -> Running")
+        );
+    }
+
+    #[test]
+    fn subagent_lifecycle_blocks_unready_executable_status() {
+        let mut session = ReplSession::new(
+            ReplMode::DesktopApp,
+            crate::ModelRef {
+                provider: "openai".to_string(),
+                name: "gpt-test".to_string(),
+            },
+        );
+
+        session.apply_event(&crate::ReplEvent::SubagentLifecycleUpdated {
+            update: crate::SubagentLifecycleUpdate {
+                name: "coder".to_string(),
+                mode: "workspace-write".to_string(),
+                status: crate::SubagentLifecycleStatus::Prepared,
+                readiness_score: 80,
+                reason: Some("missing preview edit capability".to_string()),
+            },
+        });
+
+        assert_eq!(
+            session.subagent_activity[0].status,
+            crate::SubagentLifecycleStatus::Blocked
+        );
+        assert_eq!(
+            session.subagent_activity[0].reason.as_deref(),
+            Some(
+                "readiness score 80 is below execution threshold; missing preview edit capability"
+            )
+        );
+    }
+
+    #[test]
+    fn subagent_lifecycle_allows_approved_running_completion_sequence() {
+        let mut session = ReplSession::new(
+            ReplMode::DesktopApp,
+            crate::ModelRef {
+                provider: "openai".to_string(),
+                name: "gpt-test".to_string(),
+            },
+        );
+
+        for status in [
+            crate::SubagentLifecycleStatus::Prepared,
+            crate::SubagentLifecycleStatus::Approved,
+            crate::SubagentLifecycleStatus::Running,
+            crate::SubagentLifecycleStatus::Completed,
+        ] {
+            session.apply_event(&crate::ReplEvent::SubagentLifecycleUpdated {
+                update: crate::SubagentLifecycleUpdate {
+                    name: "eval-runner".to_string(),
+                    mode: "evaluation".to_string(),
+                    status,
+                    readiness_score: 100,
+                    reason: None,
+                },
+            });
+        }
+
+        assert_eq!(session.subagent_activity.len(), 1);
+        assert_eq!(
+            session.subagent_activity[0].status,
+            crate::SubagentLifecycleStatus::Completed
+        );
+        assert!(session.subagent_activity[0].reason.is_none());
     }
 }

@@ -8,6 +8,7 @@ pub mod runtime;
 pub mod shell_executor;
 pub mod shell_plan;
 pub mod subagent;
+pub mod subagent_executor;
 
 use std::{
     collections::HashMap,
@@ -49,6 +50,9 @@ pub use shell_plan::{
 pub use subagent::{
     SubagentDefinition, SubagentHandoffPlan, SubagentMode, SubagentRecommendation,
     SubagentRegistry, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
+};
+pub use subagent_executor::{
+    SubagentExecutionGate, SubagentExecutionStartPlan, SubagentExecutionStartStatus,
 };
 
 use coddy_core::{
@@ -487,6 +491,11 @@ impl Default for AgentToolRegistry {
                                     "items": { "type": "string" }
                                 },
                                 "safetyNotes": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                },
+                                "readinessScore": { "type": "integer" },
+                                "readinessIssues": {
                                     "type": "array",
                                     "items": { "type": "string" }
                                 },

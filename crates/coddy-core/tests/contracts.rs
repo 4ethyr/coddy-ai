@@ -3,8 +3,8 @@ use coddy_core::{
     ExtractionSource, ModelCredential, ModelRef, ModelRole, PermissionReply, PermissionRequest,
     ReplCommand, ReplEvent, ReplEventEnvelope, ReplEventLog, ReplMessage, ReplMode, ReplSession,
     RequestedHelp, ScreenRegion, ScreenRegionKind, SearchProvider, SearchResultContext,
-    ShortcutConflictPolicy, ShortcutDecision, ShortcutSource, SourceQuality, ToolName,
-    ToolPermission, ToolRiskLevel,
+    ShortcutConflictPolicy, ShortcutDecision, ShortcutSource, SourceQuality,
+    SubagentLifecycleStatus, SubagentLifecycleUpdate, ToolName, ToolPermission, ToolRiskLevel,
 };
 use uuid::Uuid;
 
@@ -351,6 +351,46 @@ fn session_snapshot_replays_message_events_for_frontend_state() {
     assert_eq!(snapshot.last_sequence, 1);
     assert_eq!(snapshot.session.messages, vec![message]);
     assert!(encoded.contains("Explique este erro"));
+}
+
+#[test]
+fn session_snapshot_replays_subagent_lifecycle_for_frontend_state() {
+    let selected_model = ModelRef {
+        provider: "ollama".to_string(),
+        name: "gemma4-e2b".to_string(),
+    };
+    let session = ReplSession::new(ReplMode::FloatingTerminal, selected_model);
+    let mut log = ReplEventLog::new(session.id);
+
+    log.append(
+        ReplEvent::SubagentLifecycleUpdated {
+            update: SubagentLifecycleUpdate {
+                name: "security-reviewer".to_string(),
+                mode: "read-only".to_string(),
+                status: SubagentLifecycleStatus::Blocked,
+                readiness_score: 80,
+                reason: Some("validation checklist is underspecified".to_string()),
+            },
+        },
+        None,
+        1_775_000_000_000,
+    );
+
+    let snapshot = log.snapshot(session);
+    let encoded = serde_json::to_string(&snapshot).expect("serialize snapshot");
+
+    assert_eq!(snapshot.last_sequence, 1);
+    assert_eq!(snapshot.session.subagent_activity.len(), 1);
+    assert_eq!(
+        snapshot.session.subagent_activity[0].id,
+        "security-reviewer:read-only"
+    );
+    assert_eq!(
+        snapshot.session.subagent_activity[0].status,
+        SubagentLifecycleStatus::Blocked
+    );
+    assert!(encoded.contains("subagent_activity"));
+    assert!(encoded.contains("validation checklist is underspecified"));
 }
 
 #[test]

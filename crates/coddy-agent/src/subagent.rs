@@ -104,6 +104,8 @@ pub struct SubagentHandoffPlan {
     pub handoff_prompt: String,
     pub validation_checklist: Vec<String>,
     pub safety_notes: Vec<String>,
+    pub readiness_score: u8,
+    pub readiness_issues: Vec<String>,
     pub output_schema: Value,
 }
 
@@ -121,6 +123,8 @@ impl SubagentHandoffPlan {
             "handoffPrompt": self.handoff_prompt,
             "validationChecklist": self.validation_checklist,
             "safetyNotes": self.safety_notes,
+            "readinessScore": self.readiness_score,
+            "readinessIssues": self.readiness_issues,
             "outputSchema": self.output_schema,
         })
     }
@@ -461,6 +465,12 @@ fn handoff_plan_from_definition(
     let validation_checklist = validation_checklist(definition);
     let safety_notes = safety_notes(definition);
     let output_fields = required_schema_fields(&definition.output_schema);
+    let readiness = handoff_readiness(
+        definition,
+        &validation_checklist,
+        &safety_notes,
+        &output_fields,
+    );
     let approval_required = definition.mode != SubagentMode::ReadOnly
         || definition
             .allowed_tools
@@ -493,8 +503,61 @@ fn handoff_plan_from_definition(
         handoff_prompt,
         validation_checklist,
         safety_notes,
+        readiness_score: readiness.score,
+        readiness_issues: readiness.issues,
         output_schema: definition.output_schema.clone(),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HandoffReadiness {
+    score: u8,
+    issues: Vec<String>,
+}
+
+fn handoff_readiness(
+    definition: &SubagentDefinition,
+    validation_checklist: &[String],
+    safety_notes: &[String],
+    output_fields: &[String],
+) -> HandoffReadiness {
+    let mut issues = Vec::new();
+
+    if definition.allowed_tools.is_empty() {
+        issues.push("no allowed tools configured".to_string());
+    }
+    if definition.timeout_ms == 0 {
+        issues.push("timeout must be greater than zero".to_string());
+    }
+    if definition.max_context_tokens < 1_000 {
+        issues.push("context budget is below the minimum useful threshold".to_string());
+    }
+    if output_fields.is_empty() {
+        issues.push("output schema has no required fields".to_string());
+    }
+    if validation_checklist.len() < 3 {
+        issues.push("validation checklist is underspecified".to_string());
+    }
+    if safety_notes.is_empty() {
+        issues.push("safety notes are missing".to_string());
+    }
+    if definition.mode == SubagentMode::WorkspaceWrite
+        && !definition
+            .allowed_tools
+            .iter()
+            .any(|tool| tool == PREVIEW_EDIT_TOOL)
+    {
+        issues.push("workspace-write handoff must include preview edit capability".to_string());
+    }
+
+    HandoffReadiness {
+        score: readiness_score(issues.len()),
+        issues,
+    }
+}
+
+fn readiness_score(issue_count: usize) -> u8 {
+    100_u8.saturating_sub((issue_count.min(5) as u8) * 20)
 }
 
 fn validation_checklist(definition: &SubagentDefinition) -> Vec<String> {
@@ -721,6 +784,8 @@ mod tests {
         assert_eq!(handoff.name, "coder");
         assert_eq!(handoff.mode, SubagentMode::WorkspaceWrite);
         assert!(handoff.approval_required);
+        assert_eq!(handoff.readiness_score, 100);
+        assert!(handoff.readiness_issues.is_empty());
         assert!(handoff.allowed_tools.contains(&APPLY_EDIT_TOOL.to_string()));
         assert!(handoff
             .handoff_prompt
@@ -753,5 +818,39 @@ mod tests {
             .prepare_handoff("unknown", "inspect code")
             .is_none());
         assert!(registry.prepare_handoff("explorer", "   ").is_none());
+    }
+
+    #[test]
+    fn scores_incomplete_handoff_contracts_as_not_ready() {
+        let definition = SubagentDefinition {
+            name: "unsafe-coder".to_string(),
+            description: "Incomplete workspace writer".to_string(),
+            mode: SubagentMode::WorkspaceWrite,
+            allowed_tools: vec![APPLY_EDIT_TOOL.to_string()],
+            routing_signals: vec!["unsafe".to_string()],
+            timeout_ms: 0,
+            max_context_tokens: 500,
+            output_schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {}
+            }),
+        };
+
+        let handoff = handoff_plan_from_definition(&definition, "change files");
+
+        assert_eq!(handoff.readiness_score, 20);
+        assert!(handoff
+            .readiness_issues
+            .contains(&"timeout must be greater than zero".to_string()));
+        assert!(handoff
+            .readiness_issues
+            .contains(&"context budget is below the minimum useful threshold".to_string()));
+        assert!(handoff
+            .readiness_issues
+            .contains(&"output schema has no required fields".to_string()));
+        assert!(handoff
+            .readiness_issues
+            .contains(&"workspace-write handoff must include preview edit capability".to_string()));
     }
 }

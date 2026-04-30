@@ -44,6 +44,39 @@ pub struct SubagentRouteRecommendation {
     pub matched_signals: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SubagentHandoffPrepared {
+    pub name: String,
+    pub mode: String,
+    pub approval_required: bool,
+    pub allowed_tools: Vec<String>,
+    pub timeout_ms: u64,
+    pub max_context_tokens: u32,
+    pub validation_checklist: Vec<String>,
+    pub safety_notes: Vec<String>,
+    pub readiness_score: u8,
+    pub readiness_issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum SubagentLifecycleStatus {
+    Prepared,
+    Approved,
+    Running,
+    Completed,
+    Failed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SubagentLifecycleUpdate {
+    pub name: String,
+    pub mode: String,
+    pub status: SubagentLifecycleStatus,
+    pub readiness_score: u8,
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ReplEvent {
     SessionStarted {
@@ -115,6 +148,12 @@ pub enum ReplEvent {
     },
     SubagentRouted {
         recommendations: Vec<SubagentRouteRecommendation>,
+    },
+    SubagentHandoffPrepared {
+        handoff: SubagentHandoffPrepared,
+    },
+    SubagentLifecycleUpdated {
+        update: SubagentLifecycleUpdate,
     },
     PermissionRequested {
         request: crate::PermissionRequest,

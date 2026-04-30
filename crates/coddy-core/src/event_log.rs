@@ -110,7 +110,7 @@ mod tests {
     use super::*;
     use crate::{
         AssessmentPolicy, ModelRef, ReplIntent, ReplMessage, ReplMode, SessionStatus,
-        ShortcutSource, ToolStatus,
+        ShortcutSource, SubagentLifecycleStatus, SubagentLifecycleUpdate, ToolStatus,
     };
 
     #[test]
@@ -243,11 +243,29 @@ mod tests {
             None,
             2,
         );
+        log.append(
+            ReplEvent::SubagentLifecycleUpdated {
+                update: SubagentLifecycleUpdate {
+                    name: "eval-runner".to_string(),
+                    mode: "evaluation".to_string(),
+                    status: SubagentLifecycleStatus::Prepared,
+                    readiness_score: 100,
+                    reason: None,
+                },
+            },
+            None,
+            3,
+        );
 
         let snapshot = log.snapshot(session);
 
-        assert_eq!(snapshot.last_sequence, 2);
+        assert_eq!(snapshot.last_sequence, 3);
         assert_eq!(snapshot.session.policy, AssessmentPolicy::Practice);
         assert_eq!(snapshot.session.status, SessionStatus::Thinking);
+        assert_eq!(snapshot.session.subagent_activity.len(), 1);
+        assert_eq!(
+            snapshot.session.subagent_activity[0].id,
+            "eval-runner:evaluation"
+        );
     }
 }
