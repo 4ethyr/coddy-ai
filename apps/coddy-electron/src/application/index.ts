@@ -15,6 +15,8 @@ export {
   listProviderModels,
   runMultiagentEval,
   runPromptBatteryEval,
+  getActiveWorkspace,
+  selectWorkspaceFolder,
   openUi,
   captureVoice,
   cancelVoiceCapture,

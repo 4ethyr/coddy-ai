@@ -50,6 +50,8 @@ function createClient(overrides: Partial<ReplIpcClient> = {}): ReplIpcClient {
     getSnapshot: vi.fn().mockResolvedValue(snapshot()),
     getEventsAfter: vi.fn(),
     getToolCatalog: vi.fn().mockResolvedValue([]),
+    getActiveWorkspace: vi.fn().mockResolvedValue({ path: null }),
+    selectWorkspaceFolder: vi.fn().mockResolvedValue({ path: null, cancelled: true }),
     listProviderModels: vi.fn(),
     watchEvents: vi.fn().mockReturnValue(watchEventsNever()),
     ask: vi.fn(),

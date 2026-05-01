@@ -107,6 +107,8 @@ describe('ElectronReplIpcClient', () => {
       { localProviderPreference: 'vllm' },
     )
     await client.getToolCatalog()
+    await client.getActiveWorkspace()
+    await client.selectWorkspaceFolder()
     await client.runMultiagentEval({
       baseline: 'evals/baselines/main.json',
       writeBaseline: 'evals/reports/latest.json',
@@ -129,6 +131,8 @@ describe('ElectronReplIpcClient', () => {
       { localProviderPreference: 'vllm' },
     )
     expect(invoke).toHaveBeenCalledWith('repl:tools')
+    expect(invoke).toHaveBeenCalledWith('workspace:get-active')
+    expect(invoke).toHaveBeenCalledWith('workspace:select-folder')
     expect(invoke).toHaveBeenCalledWith('repl:eval-multiagent', {
       baseline: 'evals/baselines/main.json',
       writeBaseline: 'evals/reports/latest.json',

@@ -7,6 +7,7 @@ import {
   runMultiagentEval,
   runPromptBatteryEval,
   selectModel,
+  selectWorkspaceFolder,
   sendAsk,
   replyPermission,
 } from '@/application'
@@ -18,6 +19,8 @@ function clientWith(
     getSnapshot: vi.fn(),
     getEventsAfter: vi.fn(),
     getToolCatalog: vi.fn(),
+    getActiveWorkspace: vi.fn(),
+    selectWorkspaceFolder: vi.fn(),
     runMultiagentEval: vi.fn(),
     runPromptBatteryEval: vi.fn(),
     listProviderModels: vi.fn(),
@@ -118,13 +121,13 @@ describe('CommandSender', () => {
 
   it('runs the prompt battery eval harness through the client port', async () => {
     const result = {
-      promptCount: 300,
+      promptCount: 1200,
       stackCount: 30,
       knowledgeAreaCount: 10,
-      passed: 300,
+      passed: 1200,
       failed: 0,
       score: 100,
-      memberCoverage: { explorer: 300 },
+      memberCoverage: { explorer: 1200 },
       failures: [],
     }
     const client = clientWith({
@@ -133,5 +136,20 @@ describe('CommandSender', () => {
 
     await expect(runPromptBatteryEval(client)).resolves.toEqual(result)
     expect(client.runPromptBatteryEval).toHaveBeenCalledWith()
+  })
+
+  it('selects a local workspace folder through the client port', async () => {
+    const client = clientWith({
+      selectWorkspaceFolder: vi.fn().mockResolvedValue({
+        path: '/home/user/project',
+        message: 'workspace set',
+      }),
+    })
+
+    await expect(selectWorkspaceFolder(client)).resolves.toEqual({
+      path: '/home/user/project',
+      message: 'workspace set',
+    })
+    expect(client.selectWorkspaceFolder).toHaveBeenCalledOnce()
   })
 })

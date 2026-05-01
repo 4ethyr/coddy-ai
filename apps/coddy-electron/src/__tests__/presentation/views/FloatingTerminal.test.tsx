@@ -25,6 +25,9 @@ const sessionContext = {
   connecting: false,
   reconnecting: false,
   error: null,
+  activeWorkspacePath: null,
+  workspaceSelectionStatus: 'idle',
+  workspaceSelectionError: null,
   ask: vi.fn(),
   reconnect: vi.fn(),
   selectModel: vi.fn(),
@@ -35,6 +38,7 @@ const sessionContext = {
   captureAndExplain: vi.fn(),
   dismissConfirmation: vi.fn(),
   replyPermission: vi.fn(),
+  selectWorkspaceFolder: vi.fn(),
 }
 
 vi.mock('@/presentation/hooks', () => ({
@@ -44,6 +48,7 @@ vi.mock('@/presentation/hooks', () => ({
 describe('FloatingTerminal', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    window.localStorage.clear()
     sessionContext.session = {
       ...sessionContext.session,
       status: 'Idle',
@@ -257,5 +262,36 @@ describe('FloatingTerminal', () => {
     expect(container.textContent).not.toContain('###')
     expect(container.textContent).not.toContain('**Deteccao:**')
     expect(container.textContent).not.toContain('*pipeline*')
+  })
+
+  it('opens desktop workspace from the /workspace slash command', async () => {
+    render(<FloatingTerminal />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Enter command or prompt...'),
+      '/workspace',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(window.localStorage.getItem('coddy:desktop-active-tab')).toBe(
+      'workspace',
+    )
+    expect(sessionContext.openUi).toHaveBeenCalledWith('DesktopApp')
+  })
+
+  it('opens settings from the common /settins typo without sending a prompt', async () => {
+    render(<FloatingTerminal />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Enter command or prompt...'),
+      '/settins',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole('dialog', { name: 'Terminal settings' }),
+    ).toBeInTheDocument()
   })
 })

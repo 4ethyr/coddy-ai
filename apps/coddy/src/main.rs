@@ -7,7 +7,8 @@ use crate::config::CoddyRuntimeConfig;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use coddy_agent::{
-    run_default_prompt_battery, MultiagentEvalCase, MultiagentEvalRunner, MultiagentEvalSuiteReport,
+    default_prompt_battery_cases, run_default_prompt_battery, run_live_prompt_battery_cases,
+    DefaultChatModelClient, MultiagentEvalCase, MultiagentEvalRunner, MultiagentEvalSuiteReport,
 };
 use coddy_client::CoddyClient;
 use coddy_core::{
@@ -291,6 +292,18 @@ enum EvalCommand {
     PromptBattery {
         #[arg(long, default_value_t = false)]
         json: bool,
+
+        #[arg(long)]
+        model_provider: Option<String>,
+
+        #[arg(long)]
+        model_name: Option<String>,
+
+        #[arg(long, default_value_t = 1000)]
+        limit: usize,
+
+        #[arg(long, default_value_t = 8)]
+        concurrency: usize,
     },
 }
 
@@ -475,8 +488,15 @@ async fn main() -> Result<()> {
                 },
         }) => run_eval_multiagent(baseline, write_baseline, json),
         Some(Command::Eval {
-            command: EvalCommand::PromptBattery { json },
-        }) => run_eval_prompt_battery(json),
+            command:
+                EvalCommand::PromptBattery {
+                    json,
+                    model_provider,
+                    model_name,
+                    limit,
+                    concurrency,
+                },
+        }) => run_eval_prompt_battery(json, model_provider, model_name, limit, concurrency),
         Some(Command::Doctor {
             command: DoctorCommand::Shortcuts,
         }) => run_shortcuts_doctor(&config).await,
@@ -881,7 +901,17 @@ fn run_eval_multiagent(
     Ok(())
 }
 
-fn run_eval_prompt_battery(json: bool) -> Result<()> {
+fn run_eval_prompt_battery(
+    json: bool,
+    model_provider: Option<String>,
+    model_name: Option<String>,
+    limit: usize,
+    concurrency: usize,
+) -> Result<()> {
+    if model_provider.is_some() || model_name.is_some() {
+        return run_live_prompt_battery(json, model_provider, model_name, limit, concurrency);
+    }
+
     let report = run_default_prompt_battery();
 
     if json {
@@ -915,6 +945,135 @@ fn run_eval_prompt_battery(json: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn run_live_prompt_battery(
+    json: bool,
+    model_provider: Option<String>,
+    model_name: Option<String>,
+    limit: usize,
+    concurrency: usize,
+) -> Result<()> {
+    let provider = model_provider
+        .map(|provider| provider.trim().to_string())
+        .filter(|provider| !provider.is_empty())
+        .context("--model-provider is required for live prompt battery evals")?;
+    let model_name = model_name
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .context("--model-name is required for live prompt battery evals")?;
+    let credential = load_eval_model_credential(&provider)?;
+    let model = ModelRef {
+        provider,
+        name: model_name,
+    };
+    let cases = default_prompt_battery_cases();
+    let cases = cases.iter().take(limit).collect::<Vec<_>>();
+    let client = DefaultChatModelClient::default();
+    let report = run_live_prompt_battery_cases(&client, &model, credential, &cases, concurrency);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report.public_metadata())?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "Live prompt battery: model {}/{} | score {} | member recall {} | raw score {} | raw member recall {} | prompts {} | passed {} | failed {} | concurrency {}",
+        model.provider,
+        model.name,
+        report.score,
+        report.member_recall_score,
+        report.raw_score,
+        report.raw_member_recall_score,
+        report.prompt_count,
+        report.passed,
+        report.failed,
+        report.concurrency
+    );
+    Ok(())
+}
+
+fn load_eval_model_credential(provider: &str) -> Result<ModelCredential> {
+    if let Some(credential) = load_ephemeral_model_credential_from_env()? {
+        if credential.provider == provider {
+            return Ok(credential);
+        }
+    }
+
+    let token = provider_api_key_names(provider)
+        .and_then(secret_from_env_or_dotenv)
+        .with_context(|| {
+            format!(
+                "No API key found for {provider}. Set a provider API key in the environment, .env, or secure Electron credential store."
+            )
+        })?;
+
+    Ok(ModelCredential {
+        provider: provider.to_string(),
+        token,
+        endpoint: None,
+        metadata: Default::default(),
+    })
+}
+
+fn provider_api_key_names(provider: &str) -> Option<&'static [&'static str]> {
+    match provider {
+        "openrouter" => Some(&[
+            "OPENROUTER_API_KEY",
+            "CODDY_OPENROUTER_API_KEY",
+            "OPEN_ROUTER_API_KEY",
+        ]),
+        "openai" => Some(&["OPENAI_API_KEY", "CODDY_OPENAI_API_KEY"]),
+        "azure" => Some(&["AZURE_OPENAI_API_KEY", "CODDY_AZURE_API_KEY"]),
+        _ => None,
+    }
+}
+
+fn secret_from_env_or_dotenv(keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Ok(value) = env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    let env_file = find_dotenv_file(env::current_dir().ok()?)?;
+    secret_from_dotenv_file(&env_file, keys)
+}
+
+fn secret_from_dotenv_file(env_file: &Path, keys: &[&str]) -> Option<String> {
+    let text = fs::read_to_string(env_file).ok()?;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if keys.iter().any(|candidate| *candidate == key.trim()) {
+            let value = value.trim().trim_matches('"').trim_matches('\'');
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn find_dotenv_file(start: PathBuf) -> Option<PathBuf> {
+    for dir in start.ancestors() {
+        let candidate = dir.join(".env");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn default_multiagent_eval_suite() -> MultiagentEvalSuiteReport {
@@ -1301,9 +1460,20 @@ mod tests {
 
         match cli.command {
             Some(Command::Eval {
-                command: EvalCommand::PromptBattery { json },
+                command:
+                    EvalCommand::PromptBattery {
+                        json,
+                        model_provider,
+                        model_name,
+                        limit,
+                        concurrency,
+                    },
             }) => {
                 assert!(json);
+                assert_eq!(model_provider, None);
+                assert_eq!(model_name, None);
+                assert_eq!(limit, 1000);
+                assert_eq!(concurrency, 8);
             }
             _ => panic!("unexpected command"),
         }
@@ -1314,15 +1484,41 @@ mod tests {
         let report = run_default_prompt_battery();
 
         assert!(report.is_success());
-        assert_eq!(report.prompt_count, 300);
+        assert_eq!(report.prompt_count, 1200);
         assert_eq!(report.stack_count, 30);
         assert_eq!(report.knowledge_area_count, 10);
-        assert_eq!(report.passed, 300);
+        assert_eq!(report.passed, 1200);
         assert_eq!(report.failed, 0);
         assert_eq!(report.score, 100);
         assert!(report.member_coverage.contains_key("coder"));
         assert!(report.member_coverage.contains_key("security-reviewer"));
         assert!(report.member_coverage.contains_key("eval-runner"));
+    }
+
+    #[test]
+    fn openrouter_eval_credentials_accept_existing_dotenv_alias() {
+        let keys = provider_api_key_names("openrouter").expect("openrouter keys");
+
+        assert!(keys.contains(&"OPENROUTER_API_KEY"));
+        assert!(keys.contains(&"CODDY_OPENROUTER_API_KEY"));
+        assert!(keys.contains(&"OPEN_ROUTER_API_KEY"));
+    }
+
+    #[test]
+    fn dotenv_secret_loader_reads_requested_key_without_leaking_other_values() {
+        let root = std::env::temp_dir().join(format!("coddy-dotenv-{}", uuid::Uuid::new_v4()));
+        let env_file = root.join(".env");
+        std::fs::create_dir_all(&root).expect("create temp dotenv dir");
+        std::fs::write(
+            &env_file,
+            "GOOGLE_API_KEY=should-not-match\nOPEN_ROUTER_API_KEY='openrouter-secret'\n",
+        )
+        .expect("write temp dotenv");
+
+        let secret = secret_from_dotenv_file(&env_file, &["OPEN_ROUTER_API_KEY"]);
+
+        assert_eq!(secret.as_deref(), Some("openrouter-secret"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

@@ -50,6 +50,44 @@ describe('WorkspacePanel', () => {
     expect(screen.getByText('No tools loaded yet')).toBeInTheDocument()
   })
 
+  it('shows the selected workspace folder and triggers folder selection', async () => {
+    const onSelectWorkspace = vi.fn()
+
+    render(
+      <WorkspacePanel
+        items={[]}
+        tools={[]}
+        workspacePath="/home/user/project"
+        onSelectWorkspace={onSelectWorkspace}
+      />,
+    )
+
+    expect(screen.getByText('Workspace connected')).toBeInTheDocument()
+    expect(screen.getByText('/home/user/project')).toBeInTheDocument()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Change workspace' }),
+    )
+
+    expect(onSelectWorkspace).toHaveBeenCalledOnce()
+  })
+
+  it('locks workspace selection while the dialog is open', () => {
+    render(
+      <WorkspacePanel
+        items={[]}
+        tools={[]}
+        workspaceStatus="running"
+        onSelectWorkspace={vi.fn()}
+      />,
+    )
+
+    expect(
+      screen.getByRole('button', { name: 'Select workspace folder' }),
+    ).toBeDisabled()
+    expect(screen.getByText('Selecting...')).toBeInTheDocument()
+  })
+
   it('renders and triggers the multiagent eval harness summary', async () => {
     const onRun = vi.fn()
 
@@ -203,15 +241,15 @@ describe('WorkspacePanel', () => {
         promptBatteryStatus="succeeded"
         onRunPromptBattery={onRun}
         promptBattery={{
-          promptCount: 300,
+          promptCount: 1200,
           stackCount: 30,
           knowledgeAreaCount: 10,
-          passed: 300,
+          passed: 1200,
           failed: 0,
           score: 100,
           memberCoverage: {
-            explorer: 300,
-            reviewer: 300,
+            explorer: 1200,
+            reviewer: 1200,
             coder: 244,
           },
           failures: [],
@@ -222,7 +260,7 @@ describe('WorkspacePanel', () => {
     expect(screen.getByText('Prompt battery')).toBeInTheDocument()
     expect(screen.getByText('prompts')).toBeInTheDocument()
     expect(screen.getByText('stacks')).toBeInTheDocument()
-    expect(screen.getByText('explorer: 300')).toBeInTheDocument()
+    expect(screen.getByText('explorer: 1200')).toBeInTheDocument()
     expect(screen.getByText('coder: 244')).toBeInTheDocument()
 
     await userEvent.click(

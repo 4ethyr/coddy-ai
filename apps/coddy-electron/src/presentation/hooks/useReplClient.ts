@@ -17,6 +17,8 @@ function createClient(): ReplIpcClient {
     getSnapshot: () => new Promise(() => {}),
     getEventsAfter: () => new Promise(() => {}),
     getToolCatalog: () => Promise.resolve([]),
+    getActiveWorkspace: () => Promise.resolve({ path: null }),
+    selectWorkspaceFolder: () => Promise.resolve({ path: null, cancelled: true }),
     listProviderModels: (request) =>
       Promise.resolve({
         provider: request.provider,

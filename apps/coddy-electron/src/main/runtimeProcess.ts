@@ -69,3 +69,10 @@ export function stopCoddyRuntimeProcess(): void {
   }
   runtimeProcess = null
 }
+
+export function restartCoddyRuntimeProcess(
+  options: CoddyRuntimeProcessOptions,
+): ChildProcess | null {
+  stopCoddyRuntimeProcess()
+  return startCoddyRuntimeProcess(options)
+}

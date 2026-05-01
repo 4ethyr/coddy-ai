@@ -2,12 +2,15 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::Path,
+    thread,
+    time::Duration,
 };
 
-use coddy_core::PermissionReply;
+use coddy_core::{ModelCredential, ModelRef, PermissionReply};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::model::{ChatMessage, ChatModelClient, ChatModelError, ChatModelResult, ChatRequest};
 use crate::{
     AgentError, DeterministicPlanExecutor, DeterministicPlanItem, DeterministicPlanReport,
     DeterministicPlanStatus, SubagentExecutionCoordinator, SubagentExecutionSummary,
@@ -235,6 +238,37 @@ pub struct PromptBatteryReport {
     pub failures: Vec<PromptBatteryFailure>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LivePromptBatteryCaseResult {
+    pub id: String,
+    pub expected_members: Vec<String>,
+    pub raw_predicted_members: Vec<String>,
+    pub guarded_predicted_members: Vec<String>,
+    pub missing_raw_members: Vec<String>,
+    pub missing_guarded_members: Vec<String>,
+    pub model_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LivePromptBatteryReport {
+    pub model: ModelRef,
+    pub prompt_count: usize,
+    pub raw_passed: usize,
+    pub raw_failed: usize,
+    pub raw_score: u8,
+    pub raw_matched_member_count: usize,
+    pub raw_member_recall_score: u8,
+    pub passed: usize,
+    pub failed: usize,
+    pub score: u8,
+    pub expected_member_count: usize,
+    pub matched_member_count: usize,
+    pub member_recall_score: u8,
+    pub concurrency: usize,
+    pub failures: Vec<LivePromptBatteryCaseResult>,
+    pub raw_failures: Vec<LivePromptBatteryCaseResult>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MultiagentEvalRunner {
     registry: SubagentRegistry,
@@ -252,6 +286,12 @@ struct PromptBatteryScenario {
     knowledge_area: &'static str,
     template: &'static str,
     expected_members: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PromptBatteryVariant {
+    key: &'static str,
+    suffix: &'static str,
 }
 
 const PROMPT_BATTERY_STACKS: &[PromptBatteryStack] = &[
@@ -443,6 +483,27 @@ const PROMPT_BATTERY_SCENARIOS: &[PromptBatteryScenario] = &[
         knowledge_area: "product-ux",
         template: "Para {stack}, planejar UX API config, implement feature, teste fluxos e revise maintainability.",
         expected_members: &["planner", "coder", "test-writer", "reviewer"],
+    },
+];
+
+const PROMPT_BATTERY_VARIANTS: &[PromptBatteryVariant] = &[
+    PromptBatteryVariant {
+        key: "baseline",
+        suffix: "Priorize diagnostico claro, plano incremental e validacao objetiva.",
+    },
+    PromptBatteryVariant {
+        key: "failure-recovery",
+        suffix:
+            "Inclua tratamento de erro, rollback seguro, retry controlado e comunicacao amigavel.",
+    },
+    PromptBatteryVariant {
+        key: "security-hardening",
+        suffix: "Enfatize sandbox, approvals, protecao de secrets e bloqueio de acoes destrutivas.",
+    },
+    PromptBatteryVariant {
+        key: "frontend-runtime",
+        suffix:
+            "Considere UX desktop, integracao runtime, eventos observaveis e testes de regressao.",
     },
 ];
 
@@ -822,23 +883,76 @@ impl PromptBatteryFailure {
     }
 }
 
+impl LivePromptBatteryCaseResult {
+    pub fn public_metadata(&self) -> serde_json::Value {
+        let mut metadata = serde_json::json!({
+            "id": self.id,
+            "expectedMembers": self.expected_members,
+            "rawPredictedMembers": self.raw_predicted_members,
+            "guardedPredictedMembers": self.guarded_predicted_members,
+            "missingRawMembers": self.missing_raw_members,
+            "missingGuardedMembers": self.missing_guarded_members,
+        });
+        if let Some(error) = &self.model_error {
+            metadata["modelError"] = serde_json::json!(error);
+        }
+        metadata
+    }
+}
+
+impl LivePromptBatteryReport {
+    pub fn public_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "coddy.livePromptBattery",
+            "model": {
+                "provider": self.model.provider,
+                "name": self.model.name,
+            },
+            "promptCount": self.prompt_count,
+            "rawPassed": self.raw_passed,
+            "rawFailed": self.raw_failed,
+            "rawScore": self.raw_score,
+            "rawMatchedMemberCount": self.raw_matched_member_count,
+            "rawMemberRecallScore": self.raw_member_recall_score,
+            "passed": self.passed,
+            "failed": self.failed,
+            "score": self.score,
+            "expectedMemberCount": self.expected_member_count,
+            "matchedMemberCount": self.matched_member_count,
+            "memberRecallScore": self.member_recall_score,
+            "concurrency": self.concurrency,
+            "failures": self.failures.iter().map(LivePromptBatteryCaseResult::public_metadata).collect::<Vec<_>>(),
+            "rawFailures": self.raw_failures.iter().map(LivePromptBatteryCaseResult::public_metadata).collect::<Vec<_>>(),
+        })
+    }
+}
+
 pub fn default_prompt_battery_cases() -> Vec<PromptBatteryCase> {
-    let mut cases =
-        Vec::with_capacity(PROMPT_BATTERY_STACKS.len() * PROMPT_BATTERY_SCENARIOS.len());
+    let mut cases = Vec::with_capacity(
+        PROMPT_BATTERY_STACKS.len()
+            * PROMPT_BATTERY_SCENARIOS.len()
+            * PROMPT_BATTERY_VARIANTS.len(),
+    );
 
     for stack in PROMPT_BATTERY_STACKS {
         for scenario in PROMPT_BATTERY_SCENARIOS {
-            cases.push(PromptBatteryCase {
-                id: format!("{}:{}", stack.key, scenario.key),
-                stack: stack.key.to_string(),
-                knowledge_area: scenario.knowledge_area.to_string(),
-                prompt: scenario.template.replace("{stack}", stack.label),
-                expected_members: scenario
-                    .expected_members
-                    .iter()
-                    .map(|member| (*member).to_string())
-                    .collect(),
-            });
+            for variant in PROMPT_BATTERY_VARIANTS {
+                cases.push(PromptBatteryCase {
+                    id: format!("{}:{}:{}", stack.key, scenario.key, variant.key),
+                    stack: stack.key.to_string(),
+                    knowledge_area: scenario.knowledge_area.to_string(),
+                    prompt: format!(
+                        "{} {}",
+                        scenario.template.replace("{stack}", stack.label),
+                        variant.suffix
+                    ),
+                    expected_members: scenario
+                        .expected_members
+                        .iter()
+                        .map(|member| (*member).to_string())
+                        .collect(),
+                });
+            }
         }
     }
 
@@ -897,6 +1011,285 @@ pub fn run_prompt_battery(
         score,
         member_coverage,
         failures,
+    }
+}
+
+pub fn run_live_prompt_battery_cases(
+    client: &dyn ChatModelClient,
+    model: &ModelRef,
+    credential: ModelCredential,
+    cases: &[&PromptBatteryCase],
+    concurrency: usize,
+) -> LivePromptBatteryReport {
+    let concurrency = normalize_live_prompt_battery_concurrency(concurrency, cases.len());
+    let case_results =
+        evaluate_live_prompt_battery_cases(client, model, credential, cases, concurrency);
+    build_live_prompt_battery_report(model.clone(), concurrency, case_results)
+}
+
+pub fn prompt_battery_routing_messages(case: &PromptBatteryCase) -> Vec<ChatMessage> {
+    vec![
+        ChatMessage::system(
+            "You are a strict Coddy subagent routing evaluator. Return only compact JSON with this shape: {\"members\":[\"explorer\"]}. Include every member that should participate, not only the first one. Use only these member names: explorer, planner, coder, reviewer, security-reviewer, test-writer, docs-writer, eval-runner. Decision rules: include explorer for repository, workspace, codebase, file, dependency, architecture, bug, implementation or inspection work; include planner for ambiguous, strategic, architecture, roadmap or configuration work; include coder for implementation, fixes, refactors, pipelines or feature changes; include test-writer for TDD, tests, coverage, e2e, regression or fixtures; include security-reviewer for secrets, sandbox, auth, permissions, command safety, network or destructive actions; include reviewer for quality, maintainability, regressions, performance or final review; include docs-writer for README, docs, usage, guides or commands; include eval-runner for evals, benchmark, metrics, baseline, harness, score or regression gates.",
+        ),
+        ChatMessage::user(format!("Route this task to Coddy subagents:\n{}", case.prompt)),
+    ]
+}
+
+pub fn extract_prompt_battery_members(text: &str) -> Vec<String> {
+    let normalized = text.to_ascii_lowercase();
+    let tokens = normalized
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-'))
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    canonical_prompt_battery_members()
+        .iter()
+        .filter(|member| tokens.iter().any(|token| token == *member))
+        .map(|member| (*member).to_string())
+        .collect()
+}
+
+pub fn guard_prompt_battery_members(
+    case: &PromptBatteryCase,
+    raw_members: &[String],
+) -> Vec<String> {
+    let registry = SubagentRegistry::default();
+    let policy_members = registry
+        .plan_team(&case.prompt, registry.definitions().len())
+        .map(|plan| {
+            plan.members
+                .into_iter()
+                .map(|member| member.name)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    canonicalize_prompt_battery_members(
+        raw_members
+            .iter()
+            .cloned()
+            .chain(policy_members)
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn build_live_prompt_battery_report(
+    model: ModelRef,
+    concurrency: usize,
+    case_results: Vec<LivePromptBatteryCaseResult>,
+) -> LivePromptBatteryReport {
+    let prompt_count = case_results.len();
+    let expected_member_count = case_results
+        .iter()
+        .map(|case| case.expected_members.len())
+        .sum::<usize>();
+    let raw_matched_member_count = case_results
+        .iter()
+        .map(|case| case.expected_members.len() - case.missing_raw_members.len())
+        .sum::<usize>();
+    let matched_member_count = case_results
+        .iter()
+        .map(|case| case.expected_members.len() - case.missing_guarded_members.len())
+        .sum::<usize>();
+    let raw_passed = case_results
+        .iter()
+        .filter(|case| case.missing_raw_members.is_empty() && case.model_error.is_none())
+        .count();
+    let passed = case_results
+        .iter()
+        .filter(|case| case.missing_guarded_members.is_empty())
+        .count();
+    let raw_failed = prompt_count.saturating_sub(raw_passed);
+    let failed = prompt_count.saturating_sub(passed);
+    let raw_failures = case_results
+        .iter()
+        .filter(|case| !case.missing_raw_members.is_empty() || case.model_error.is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    let failures = case_results
+        .iter()
+        .filter(|case| !case.missing_guarded_members.is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+
+    LivePromptBatteryReport {
+        model,
+        prompt_count,
+        raw_passed,
+        raw_failed,
+        raw_score: percentage_score(raw_passed, prompt_count),
+        raw_matched_member_count,
+        raw_member_recall_score: percentage_score(raw_matched_member_count, expected_member_count),
+        passed,
+        failed,
+        score: percentage_score(passed, prompt_count),
+        expected_member_count,
+        matched_member_count,
+        member_recall_score: percentage_score(matched_member_count, expected_member_count),
+        concurrency,
+        failures,
+        raw_failures,
+    }
+}
+
+fn evaluate_live_prompt_battery_cases(
+    client: &dyn ChatModelClient,
+    model: &ModelRef,
+    credential: ModelCredential,
+    cases: &[&PromptBatteryCase],
+    concurrency: usize,
+) -> Vec<LivePromptBatteryCaseResult> {
+    if cases.is_empty() {
+        return Vec::new();
+    }
+
+    let chunk_size = cases.len().div_ceil(concurrency);
+    thread::scope(|scope| {
+        let handles = cases
+            .chunks(chunk_size)
+            .map(|chunk| {
+                let credential = credential.clone();
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|case| {
+                            evaluate_prompt_battery_case_with_model(
+                                client,
+                                model,
+                                &credential,
+                                case,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    })
+}
+
+fn evaluate_prompt_battery_case_with_model(
+    client: &dyn ChatModelClient,
+    model: &ModelRef,
+    credential: &ModelCredential,
+    case: &PromptBatteryCase,
+) -> LivePromptBatteryCaseResult {
+    let raw_result = complete_prompt_battery_routing(client, model, credential, case);
+    let (raw_predicted_members, model_error) = match raw_result {
+        Ok(members) => (members, None),
+        Err(error) => (Vec::new(), Some(error.to_string())),
+    };
+    let guarded_predicted_members = guard_prompt_battery_members(case, &raw_predicted_members);
+    let missing_raw_members = missing_expected_members(case, &raw_predicted_members);
+    let missing_guarded_members = missing_expected_members(case, &guarded_predicted_members);
+
+    LivePromptBatteryCaseResult {
+        id: case.id.clone(),
+        expected_members: case.expected_members.clone(),
+        raw_predicted_members,
+        guarded_predicted_members,
+        missing_raw_members,
+        missing_guarded_members,
+        model_error,
+    }
+}
+
+fn complete_prompt_battery_routing(
+    client: &dyn ChatModelClient,
+    model: &ModelRef,
+    credential: &ModelCredential,
+    case: &PromptBatteryCase,
+) -> Result<Vec<String>, ChatModelError> {
+    let mut request = ChatRequest::new(model.clone(), prompt_battery_routing_messages(case))?
+        .with_model_credential(Some(credential.clone()))?;
+    request.temperature = Some(0.0);
+    request.max_output_tokens = Some(160);
+
+    let response = complete_prompt_battery_request_with_retry(client, request)?;
+    Ok(extract_prompt_battery_members(&response.text))
+}
+
+fn complete_prompt_battery_request_with_retry(
+    client: &dyn ChatModelClient,
+    request: ChatRequest,
+) -> ChatModelResult {
+    const MAX_ATTEMPTS: usize = 3;
+
+    let mut last_error = None;
+    for attempt in 0..MAX_ATTEMPTS {
+        match client.complete(request.clone()) {
+            Ok(response) => return Ok(response),
+            Err(error) if attempt + 1 < MAX_ATTEMPTS && should_retry_live_eval_error(&error) => {
+                last_error = Some(error);
+                thread::sleep(Duration::from_millis(250 * (attempt as u64 + 1)));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(
+        last_error.unwrap_or_else(|| ChatModelError::InvalidProviderResponse {
+            provider: request.model.provider,
+            message: "prompt battery retry exhausted without provider response".to_string(),
+        }),
+    )
+}
+
+fn should_retry_live_eval_error(error: &ChatModelError) -> bool {
+    match error {
+        ChatModelError::ProviderError { retryable, .. }
+        | ChatModelError::Transport { retryable, .. } => *retryable,
+        ChatModelError::InvalidProviderResponse { .. } => true,
+        _ => false,
+    }
+}
+
+fn missing_expected_members(case: &PromptBatteryCase, predicted_members: &[String]) -> Vec<String> {
+    case.expected_members
+        .iter()
+        .filter(|member| !predicted_members.contains(member))
+        .cloned()
+        .collect()
+}
+
+fn canonicalize_prompt_battery_members(members: Vec<String>) -> Vec<String> {
+    let requested = members
+        .into_iter()
+        .map(|member| member.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    canonical_prompt_battery_members()
+        .iter()
+        .filter(|member| requested.contains(**member))
+        .map(|member| (*member).to_string())
+        .collect()
+}
+
+fn canonical_prompt_battery_members() -> &'static [&'static str] {
+    &[
+        "explorer",
+        "planner",
+        "coder",
+        "reviewer",
+        "security-reviewer",
+        "test-writer",
+        "docs-writer",
+        "eval-runner",
+    ]
+}
+
+fn normalize_live_prompt_battery_concurrency(requested: usize, prompt_count: usize) -> usize {
+    let requested = requested.clamp(1, 32);
+    requested.min(prompt_count.max(1))
+}
+
+fn percentage_score(numerator: usize, denominator: usize) -> u8 {
+    if denominator == 0 {
+        100
+    } else {
+        (numerator * 100 / denominator) as u8
     }
 }
 
@@ -1909,7 +2302,7 @@ mod tests {
     }
 
     #[test]
-    fn default_prompt_battery_contains_300_diverse_prompts() {
+    fn default_prompt_battery_contains_1200_diverse_prompts() {
         let cases = default_prompt_battery_cases();
         let stack_count = cases
             .iter()
@@ -1922,18 +2315,18 @@ mod tests {
             .collect::<HashSet<_>>()
             .len();
 
-        assert_eq!(cases.len(), 300);
+        assert_eq!(cases.len(), 1200);
         assert_eq!(stack_count, 30);
         assert_eq!(knowledge_area_count, 10);
         assert!(cases
             .iter()
-            .any(|case| case.id == "rust:implementation-tdd"));
+            .any(|case| case.id == "rust:implementation-tdd:baseline"));
         assert!(cases
             .iter()
-            .any(|case| case.id == "gcp:security-threat-model"));
+            .any(|case| case.id == "gcp:security-threat-model:security-hardening"));
         assert!(cases
             .iter()
-            .any(|case| case.id == "embedded:low-level-reliability"));
+            .any(|case| case.id == "embedded:low-level-reliability:failure-recovery"));
     }
 
     #[test]
@@ -1941,10 +2334,10 @@ mod tests {
         let report = run_default_prompt_battery();
 
         assert!(report.is_success());
-        assert_eq!(report.prompt_count, 300);
+        assert_eq!(report.prompt_count, 1200);
         assert_eq!(report.stack_count, 30);
         assert_eq!(report.knowledge_area_count, 10);
-        assert_eq!(report.passed, 300);
+        assert_eq!(report.passed, 1200);
         assert_eq!(report.failed, 0);
         assert_eq!(report.score, 100);
 
@@ -1975,7 +2368,7 @@ mod tests {
         let report = run_default_prompt_battery();
         let metadata = report.public_metadata();
 
-        assert_eq!(metadata["promptCount"], json!(300));
+        assert_eq!(metadata["promptCount"], json!(1200));
         assert_eq!(metadata["stackCount"], json!(30));
         assert_eq!(metadata["knowledgeAreaCount"], json!(10));
         assert_eq!(metadata["failed"], json!(0));
@@ -1986,6 +2379,158 @@ mod tests {
                 .expect("coder coverage")
                 > 0
         );
+    }
+
+    #[test]
+    fn prompt_battery_member_extraction_accepts_json_or_text() {
+        assert_eq!(
+            extract_prompt_battery_members(
+                r#"{"members":["explorer","security-reviewer","test-writer"]}"#
+            ),
+            vec![
+                "explorer".to_string(),
+                "security-reviewer".to_string(),
+                "test-writer".to_string()
+            ]
+        );
+        assert_eq!(
+            extract_prompt_battery_members("Use the planner and reviewer for this task."),
+            vec!["planner".to_string(), "reviewer".to_string()]
+        );
+    }
+
+    #[test]
+    fn prompt_battery_policy_guard_completes_partial_model_routes() {
+        let case = PromptBatteryCase {
+            id: "rust:architecture-map:baseline".to_string(),
+            stack: "rust".to_string(),
+            knowledge_area: "architecture".to_string(),
+            prompt: "Para Rust async services and CLI tooling, explore o repo workspace code, map architecture entrypoint dependency risk e plan strategy incremental.".to_string(),
+            expected_members: vec!["explorer".to_string(), "planner".to_string()],
+        };
+
+        let guarded = guard_prompt_battery_members(&case, &["explorer".to_string()]);
+
+        assert!(guarded.contains(&"explorer".to_string()));
+        assert!(guarded.contains(&"planner".to_string()));
+    }
+
+    #[derive(Debug)]
+    struct StaticRoutingClient {
+        text: String,
+    }
+
+    impl ChatModelClient for StaticRoutingClient {
+        fn complete(&self, _request: ChatRequest) -> ChatModelResult {
+            Ok(crate::model::ChatResponse {
+                text: self.text.clone(),
+                deltas: Vec::new(),
+                finish_reason: crate::model::ChatFinishReason::Stop,
+                tool_calls: Vec::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn live_prompt_battery_reports_raw_and_guarded_scores_separately() {
+        let case = PromptBatteryCase {
+            id: "case-1".to_string(),
+            stack: "rust".to_string(),
+            knowledge_area: "architecture".to_string(),
+            prompt: "map architecture entrypoint dependency risk and plan strategy incremental"
+                .to_string(),
+            expected_members: vec!["explorer".to_string(), "planner".to_string()],
+        };
+        let cases = [&case];
+        let report = run_live_prompt_battery_cases(
+            &StaticRoutingClient {
+                text: r#"{"members":["explorer"]}"#.to_string(),
+            },
+            &ModelRef {
+                provider: "openrouter".to_string(),
+                name: "deepseek/deepseek-v4-flash".to_string(),
+            },
+            ModelCredential {
+                provider: "openrouter".to_string(),
+                token: "test-token".to_string(),
+                endpoint: None,
+                metadata: Default::default(),
+            },
+            &cases,
+            99,
+        );
+
+        assert_eq!(report.prompt_count, 1);
+        assert_eq!(report.raw_passed, 0);
+        assert_eq!(report.raw_score, 0);
+        assert_eq!(report.raw_member_recall_score, 50);
+        assert_eq!(report.passed, 1);
+        assert_eq!(report.score, 100);
+        assert_eq!(report.member_recall_score, 100);
+        assert_eq!(report.raw_failures.len(), 1);
+        assert!(report.failures.is_empty());
+        assert_eq!(report.concurrency, 1);
+    }
+
+    #[derive(Debug)]
+    struct FlakyRoutingClient {
+        attempts: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ChatModelClient for FlakyRoutingClient {
+        fn complete(&self, _request: ChatRequest) -> ChatModelResult {
+            if self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 0
+            {
+                return Err(ChatModelError::InvalidProviderResponse {
+                    provider: "openrouter".to_string(),
+                    message: "response did not include assistant content or tool calls".to_string(),
+                });
+            }
+            Ok(crate::model::ChatResponse {
+                text: r#"{"members":["explorer","planner"]}"#.to_string(),
+                deltas: Vec::new(),
+                finish_reason: crate::model::ChatFinishReason::Stop,
+                tool_calls: Vec::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn live_prompt_battery_retries_empty_provider_responses_once() {
+        let case = PromptBatteryCase {
+            id: "case-1".to_string(),
+            stack: "rust".to_string(),
+            knowledge_area: "architecture".to_string(),
+            prompt: "map architecture entrypoint dependency risk and plan strategy incremental"
+                .to_string(),
+            expected_members: vec!["explorer".to_string(), "planner".to_string()],
+        };
+        let cases = [&case];
+        let client = FlakyRoutingClient {
+            attempts: std::sync::atomic::AtomicUsize::new(0),
+        };
+
+        let report = run_live_prompt_battery_cases(
+            &client,
+            &ModelRef {
+                provider: "openrouter".to_string(),
+                name: "deepseek/deepseek-v4-flash".to_string(),
+            },
+            ModelCredential {
+                provider: "openrouter".to_string(),
+                token: "test-token".to_string(),
+                endpoint: None,
+                metadata: Default::default(),
+            },
+            &cases,
+            1,
+        );
+
+        assert_eq!(report.raw_passed, 1);
+        assert_eq!(client.attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     fn passing_multiagent_suite() -> MultiagentEvalSuiteReport {

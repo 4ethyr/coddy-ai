@@ -128,16 +128,16 @@ function createSimBridge(daemon: SimDaemon) {
         case 'repl:eval-prompt-battery':
           daemon.commands.push('eval-prompt-battery')
           return Promise.resolve({
-            promptCount: 300,
+            promptCount: 1200,
             stackCount: 30,
             knowledgeAreaCount: 10,
-            passed: 300,
+            passed: 1200,
             failed: 0,
             score: 100,
             memberCoverage: {
-              explorer: 300,
-              reviewer: 300,
-              'security-reviewer': 300,
+              explorer: 1200,
+              reviewer: 1200,
+              'security-reviewer': 1200,
             },
             failures: [],
           })
@@ -438,6 +438,14 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
       return (await sim.invoke('repl:tools')) as ReplToolCatalogItem[]
     },
 
+    async getActiveWorkspace() {
+      return { path: null }
+    },
+
+    async selectWorkspaceFolder() {
+      return { path: '/tmp/coddy-workspace' }
+    },
+
     async runMultiagentEval(request = {}) {
       return (await sim.invoke('repl:eval-multiagent', request)) as Awaited<
         ReturnType<ReplIpcClient['runMultiagentEval']>
@@ -697,14 +705,14 @@ describe('IPC integration', () => {
       const result = await client.runPromptBatteryEval()
 
       expect(result).toMatchObject({
-        promptCount: 300,
+        promptCount: 1200,
         stackCount: 30,
         knowledgeAreaCount: 10,
         score: 100,
-        passed: 300,
+        passed: 1200,
         failed: 0,
       })
-      expect(result.memberCoverage.explorer).toBe(300)
+      expect(result.memberCoverage.explorer).toBe(1200)
       expect(daemon.commands).toEqual(['eval-prompt-battery'])
     })
   })
