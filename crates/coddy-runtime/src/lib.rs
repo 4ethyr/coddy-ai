@@ -534,6 +534,7 @@ impl CoddyRuntime {
             context_policy,
             session_context,
             self.tool_registry.definitions(),
+            tool_use_policy,
         );
         if tool_use_policy.max_tool_calls.is_none() {
             if let Some(routing_context) =
@@ -869,7 +870,7 @@ impl CoddyRuntime {
         let mut pending_permission = false;
 
         for tool_call in response.tool_calls.iter().take(3) {
-            let tool_name = match ToolName::new(&tool_call.name) {
+            let mut tool_name = match ToolName::new(&tool_call.name) {
                 Ok(tool_name) => tool_name,
                 Err(error) => {
                     observations.push(format!(
@@ -887,7 +888,28 @@ impl CoddyRuntime {
                 continue;
             }
 
-            let Some(definition) = self.tool_registry.get(&tool_name) else {
+            let mut definition = self.tool_registry.get(&tool_name);
+            if definition.is_none() {
+                if let Some(alias) = decode_model_tool_name_alias(&tool_call.name) {
+                    match ToolName::new(&alias) {
+                        Ok(alias_name) => {
+                            if let Some(alias_definition) = self.tool_registry.get(&alias_name) {
+                                tool_name = alias_name;
+                                definition = Some(alias_definition);
+                            }
+                        }
+                        Err(error) => {
+                            observations.push(format!(
+                                "- `{}` was rejected because the decoded tool alias `{alias}` is invalid: {error}.",
+                                tool_call.name
+                            ));
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            let Some(definition) = definition else {
                 observations.push(format!(
                     "- `{tool_name}` was rejected because it is not registered in the local tool registry."
                 ));
@@ -1425,6 +1447,14 @@ fn summarize_chat_tool_calls(tool_calls: &[ChatToolCall]) -> String {
         .join(", ")
 }
 
+fn decode_model_tool_name_alias(name: &str) -> Option<String> {
+    let alias = name.strip_prefix("coddy_tool__").unwrap_or(name);
+    alias
+        .contains("__dot__")
+        .then(|| alias.replace("__dot__", "."))
+        .filter(|decoded| decoded != name)
+}
+
 fn build_tool_round_limit_response(
     model_text: &str,
     pending_tool_summary: &str,
@@ -1453,6 +1483,7 @@ fn build_model_system_prompt(
     context_policy: ContextPolicy,
     session: &ReplSession,
     tool_definitions: &[ToolDefinition],
+    tool_use_policy: ToolUsePolicy,
 ) -> String {
     let mut sections = vec![
         "You are Coddy, a secure AI coding agent.".to_string(),
@@ -1482,9 +1513,13 @@ fn build_model_system_prompt(
         "Selected chat model: {}/{}",
         session.selected_model.provider, session.selected_model.name
     ));
-    sections.push(format_workspace_context(&session.workspace_context));
-    sections.push(format_recent_session_messages(&session.messages));
-    sections.push(format_tool_context(tool_definitions));
+    if tool_use_policy.max_tool_calls == Some(0) {
+        sections.push(format_no_tools_context_boundary(&session.messages));
+    } else {
+        sections.push(format_workspace_context(&session.workspace_context));
+        sections.push(format_recent_session_messages(&session.messages));
+        sections.push(format_tool_context(tool_definitions));
+    }
     sections.join("\n\n")
 }
 
@@ -1608,6 +1643,50 @@ fn format_recent_session_messages(messages: &[ReplMessage]) -> String {
         lines.push(format!("- {}: {text}", message.role));
     }
     lines.join("\n")
+}
+
+fn format_no_tools_context_boundary(messages: &[ReplMessage]) -> String {
+    let mut sections = vec![
+        [
+            "No-tools mode:",
+            "- The user disabled tool use for this turn.",
+            "- Do not claim that you listed, read, searched, edited, or executed project files unless that evidence is explicitly quoted in the current user message.",
+            "- Treat prior tool observations as unavailable for new codebase claims; if inspection is required, state that tools are disabled and ask to enable them.",
+            "- Answer from the current prompt and clearly label limitations.",
+        ]
+        .join("\n"),
+        "Workspace context: withheld because tools are disabled for this turn.".to_string(),
+        "Available runtime tools: disabled for this turn by user request.".to_string(),
+    ];
+
+    let mut recent = messages
+        .iter()
+        .filter(|message| !looks_like_tool_observation_message(&message.text))
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>();
+    recent.reverse();
+
+    if recent.is_empty() {
+        sections.push(
+            "Recent session messages before this no-tools turn: none, or prior tool-observation messages were withheld.".to_string(),
+        );
+    } else {
+        let mut lines = vec!["Recent session messages before this no-tools turn:".to_string()];
+        for message in recent {
+            let text = truncate_context_text(&redact_context_text(&message.text), 240);
+            lines.push(format!("- {}: {text}", message.role));
+        }
+        sections.push(lines.join("\n"));
+    }
+
+    sections.join("\n\n")
+}
+
+fn looks_like_tool_observation_message(text: &str) -> bool {
+    text.contains("Tool observations:")
+        || text.contains("Tool observation follow-up:")
+        || text.contains("model-requested tool")
 }
 
 fn format_tool_context(tool_definitions: &[ToolDefinition]) -> String {
@@ -3500,6 +3579,74 @@ mod tests {
     }
 
     #[test]
+    fn ask_command_executes_provider_safe_tool_aliases_through_agent_runtime() {
+        for alias in [
+            "coddy_tool__filesystem__dot__list_files",
+            "filesystem__dot__list_files",
+        ] {
+            let request_id = Uuid::new_v4();
+            let workspace = TempWorkspace::new();
+            workspace.write("src/main.rs", "fn main() {}\n");
+            let (chat_client, _requests) = QueuedChatClient::new(vec![
+                ChatResponse {
+                    text: "I will inspect the workspace.".to_string(),
+                    deltas: vec!["I will inspect the workspace.".to_string()],
+                    finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                    tool_calls: vec![ChatToolCall {
+                        id: Some("call-1".to_string()),
+                        name: alias.to_string(),
+                        arguments: json!({ "path": ".", "max_entries": 20 }),
+                    }],
+                },
+                ChatResponse::from_text(format!("Final answer for {alias}.")),
+            ]);
+            let runtime = CoddyRuntime::with_workspace_and_chat_client(
+                AgentToolRegistry::default(),
+                &workspace.path,
+                Arc::new(chat_client),
+            )
+            .expect("runtime");
+            runtime.publish_event(
+                ReplEvent::ModelSelected {
+                    model: ModelRef {
+                        provider: "openai".to_string(),
+                        name: "gpt-test".to_string(),
+                    },
+                    role: ModelRole::Chat,
+                },
+                None,
+                1_775_000_000_100,
+            );
+
+            let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+                request_id,
+                command: ReplCommand::Ask {
+                    text: "inspect the workspace".to_string(),
+                    context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                    model_credential: None,
+                },
+                speak: false,
+            }));
+
+            let CoddyResult::Text { text, .. } = result else {
+                panic!("expected text result");
+            };
+            let events = runtime.events_after(0).0;
+
+            assert_eq!(text, format!("Final answer for {alias}."));
+            assert!(events.iter().any(|event| matches!(
+                &event.event,
+                ReplEvent::ToolStarted { name } if name == LIST_FILES_TOOL
+            )));
+            assert!(!events.iter().any(|event| matches!(
+                &event.event,
+                ReplEvent::MessageAppended { message }
+                    if message.text.contains("not registered in the local tool registry")
+            )));
+        }
+    }
+
+    #[test]
     fn ask_command_respects_user_requested_no_tools_budget() {
         let request_id = Uuid::new_v4();
         let (chat_client, requests) =
@@ -3516,6 +3663,18 @@ mod tests {
             },
             None,
             1_775_000_000_100,
+        );
+        runtime.publish_event(
+            ReplEvent::MessageAppended {
+                message: ReplMessage {
+                    id: Uuid::new_v4(),
+                    role: "assistant".to_string(),
+                    text: "Tool observations:\n- `filesystem.list_files` succeeded:\nsrc/main.rs"
+                        .to_string(),
+                },
+            },
+            None,
+            1_775_000_000_110,
         );
 
         let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
@@ -3536,6 +3695,12 @@ mod tests {
         assert_eq!(text, "Answer without tools.");
         assert_eq!(captured_requests.len(), 1);
         assert!(captured_requests[0].tools.is_empty());
+        assert!(captured_requests[0].messages[0]
+            .content
+            .contains("No-tools mode:"));
+        assert!(!captured_requests[0].messages[0]
+            .content
+            .contains("src/main.rs"));
         assert!(!captured_requests[0].messages[0]
             .content
             .contains("Subagent routing guidance:"));

@@ -1214,9 +1214,12 @@ fn provider_safe_tool_description(tool: &ChatToolSpec) -> String {
 }
 
 fn decode_provider_safe_tool_name(name: &str) -> String {
-    name.strip_prefix("coddy_tool__")
-        .map(|name| name.replace("__dot__", "."))
-        .unwrap_or_else(|| name.to_string())
+    let alias = name.strip_prefix("coddy_tool__").unwrap_or(name);
+    if alias.contains("__dot__") {
+        alias.replace("__dot__", ".")
+    } else {
+        name.to_string()
+    }
 }
 
 fn is_provider_safe_function_name(name: &str) -> bool {
@@ -2937,6 +2940,22 @@ mod tests {
         let temperature = body["temperature"].as_f64().expect("temperature");
         assert!((temperature - 0.2).abs() < 0.000_001);
         assert_eq!(body["max_tokens"], 128);
+    }
+
+    #[test]
+    fn provider_safe_tool_name_decoder_accepts_prefixed_and_legacy_aliases() {
+        assert_eq!(
+            decode_provider_safe_tool_name("coddy_tool__filesystem__dot__read_file"),
+            "filesystem.read_file"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem__dot__read_file"),
+            "filesystem.read_file"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem.read_file"),
+            "filesystem.read_file"
+        );
     }
 
     #[test]
