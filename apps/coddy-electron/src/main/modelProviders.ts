@@ -296,6 +296,9 @@ async function listGeminiApiModels(
       const supportedActions = asArray(object.supportedActions)
         .map((value) => getString(value))
         .filter(Boolean)
+      if (!supportsStandardTextGeneration(id, label, supportedActions)) {
+        return null
+      }
       return modelEntry('vertex', id, label, description, [
         'api',
         ...supportedActions,
@@ -388,6 +391,15 @@ async function listVertexPublisherModelGroup(
           const launchStage = getString(itemObject.launchStage)
           const versionId = getString(itemObject.versionId)
           const label = getString(itemObject.displayName) || id
+          const supportedActions = asArray(itemObject.supportedActions)
+            .map((value) => getString(value))
+            .filter(Boolean)
+          if (
+            publisher.id === 'google'
+            && !supportsStandardTextGeneration(id, label, supportedActions)
+          ) {
+            return null
+          }
           return modelEntry(
             'vertex',
             id,
@@ -395,7 +407,7 @@ async function listVertexPublisherModelGroup(
             versionId
               ? `Vertex ${publisher.id} model version ${versionId}.`
               : `Vertex ${publisher.id} publisher model.`,
-            ['vertex', publisher.id, launchStage],
+            ['vertex', publisher.id, launchStage, ...supportedActions],
           )
         })
         .filter((item): item is ModelCatalogEntryPayload => Boolean(item)),
@@ -428,6 +440,24 @@ function providerErrorMessage(data: unknown): string {
   const object = getObject(data)
   const error = getObject(object.error)
   return getString(error.message) || getString(object.message)
+}
+
+function supportsStandardTextGeneration(
+  modelId: string,
+  label: string,
+  supportedActions: string[],
+): boolean {
+  if (isLiveApiModel(modelId) || isLiveApiModel(label)) return false
+  if (supportedActions.length === 0) return true
+  return supportedActions.some((action) =>
+    ['generateContent', 'streamGenerateContent'].includes(action),
+  )
+}
+
+function isLiveApiModel(value: string): boolean {
+  return value
+    .split(/[-_/\s]+/)
+    .some((segment) => segment.toLowerCase() === 'live')
 }
 
 async function listAzureModels(

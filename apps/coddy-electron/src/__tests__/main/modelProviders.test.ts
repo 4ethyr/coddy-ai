@@ -94,6 +94,36 @@ describe('modelProviders', () => {
     ])
   })
 
+  it('filters Gemini API models that are not compatible with text chat generation', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      jsonResponse({
+        models: [
+          {
+            name: 'models/gemini-3.1-flash-live-preview',
+            baseModelId: 'gemini-3.1-flash-live-preview',
+            displayName: 'Gemini Live Preview',
+            supportedActions: ['bidiGenerateContent'],
+          },
+          {
+            name: 'models/gemini-2.5-flash',
+            baseModelId: 'gemini-2.5-flash',
+            displayName: 'Gemini 2.5 Flash',
+            supportedActions: ['generateContent'],
+          },
+        ],
+      }),
+    )
+
+    const result = await listProviderModels(
+      { provider: 'vertex', apiKey: 'AIza-test' },
+      fetcher,
+    )
+
+    expect(result.models.map((entry) => entry.model.name)).toEqual([
+      'gemini-2.5-flash',
+    ])
+  })
+
   it('treats non-bearer Google credentials as Gemini API keys', async () => {
     const fetcher = vi.fn().mockResolvedValue(
       jsonResponse({

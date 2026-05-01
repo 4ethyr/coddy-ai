@@ -37,10 +37,15 @@ export async function buildRuntimeCredentialEnvironment(
   const storedToken = stored?.apiKey?.trim()
   const storedEndpoint = stored?.endpoint?.trim()
   const storedApiVersion = stored?.apiVersion?.trim()
+  const isVertexRuntime = provider === 'vertex'
   const needsVertexMetadata =
-    provider === 'vertex' && isVertexAnthropicRuntimeModel(model.name)
+    isVertexRuntime
+    && (!storedToken || isGoogleOAuthCredential(storedToken))
   if (storedToken) {
-    if (needsVertexMetadata && !isGoogleOAuthCredential(storedToken)) {
+    if (
+      isVertexAnthropicRuntimeModel(model.name)
+      && !isGoogleOAuthCredential(storedToken)
+    ) {
       return buildGcloudVertexCredentialEnvironment(
         provider,
         storedEndpoint,
@@ -65,7 +70,7 @@ export async function buildRuntimeCredentialEnvironment(
     })
   }
 
-  if (provider !== 'vertex' || !needsVertexMetadata) return {}
+  if (provider !== 'vertex') return {}
 
   return buildGcloudVertexCredentialEnvironment(
     provider,
