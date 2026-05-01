@@ -870,7 +870,9 @@ impl CoddyRuntime {
         let mut pending_permission = false;
 
         for tool_call in response.tool_calls.iter().take(3) {
-            let mut tool_name = match ToolName::new(&tool_call.name) {
+            let decoded_alias = decode_model_tool_name_alias(&tool_call.name);
+            let requested_tool_name = decoded_alias.as_deref().unwrap_or(&tool_call.name);
+            let mut tool_name = match ToolName::new(requested_tool_name) {
                 Ok(tool_name) => tool_name,
                 Err(error) => {
                     observations.push(format!(
@@ -928,11 +930,13 @@ impl CoddyRuntime {
                 format!("Run model-requested tool {tool_name}"),
                 Some(tool_name.clone()),
             );
+            let arguments =
+                normalize_model_initiated_tool_input(&tool_name, tool_call.arguments.clone());
             let call = ToolCall::new(
                 context.session_id,
                 context.run_id,
                 tool_name.clone(),
-                tool_call.arguments.clone(),
+                arguments,
                 unix_ms_now(),
             );
             let outcome = agent_runtime.execute_tool_call(state, &call);
@@ -1449,10 +1453,37 @@ fn summarize_chat_tool_calls(tool_calls: &[ChatToolCall]) -> String {
 
 fn decode_model_tool_name_alias(name: &str) -> Option<String> {
     let alias = name.strip_prefix("coddy_tool__").unwrap_or(name);
-    alias
-        .contains("__dot__")
-        .then(|| alias.replace("__dot__", "."))
-        .filter(|decoded| decoded != name)
+    let decoded = alias.replace("__dot__", ".").replace("::", ".");
+    if decoded != alias {
+        return Some(decoded);
+    }
+
+    for namespace in ["filesystem", "subagent", "shell"] {
+        if let Some(method) = alias.strip_prefix(&format!("{namespace}_")) {
+            if !method.is_empty() {
+                return Some(format!("{namespace}.{method}"));
+            }
+        }
+    }
+
+    None
+}
+
+fn normalize_model_initiated_tool_input(
+    tool_name: &ToolName,
+    mut input: serde_json::Value,
+) -> serde_json::Value {
+    if matches!(
+        tool_name.as_str(),
+        LIST_FILES_TOOL | READ_FILE_TOOL | SEARCH_FILES_TOOL
+    ) {
+        let uses_workspace_root_alias =
+            input.get("path").and_then(serde_json::Value::as_str) == Some("/");
+        if uses_workspace_root_alias {
+            input["path"] = json!(".");
+        }
+    }
+    input
 }
 
 fn build_tool_round_limit_response(
@@ -3583,6 +3614,8 @@ mod tests {
         for alias in [
             "coddy_tool__filesystem__dot__list_files",
             "filesystem__dot__list_files",
+            "filesystem::list_files",
+            "filesystem_list_files",
         ] {
             let request_id = Uuid::new_v4();
             let workspace = TempWorkspace::new();
@@ -3644,6 +3677,46 @@ mod tests {
                     if message.text.contains("not registered in the local tool registry")
             )));
         }
+    }
+
+    #[test]
+    fn model_initiated_filesystem_root_alias_maps_to_workspace_root() {
+        let list_files = ToolName::new(LIST_FILES_TOOL).expect("tool name");
+        let search_files = ToolName::new(SEARCH_FILES_TOOL).expect("tool name");
+        let subagent_route = ToolName::new(SUBAGENT_ROUTE_TOOL).expect("tool name");
+
+        assert_eq!(
+            normalize_model_initiated_tool_input(&list_files, json!({ "path": "/" }))["path"],
+            "."
+        );
+        assert_eq!(
+            normalize_model_initiated_tool_input(&search_files, json!({ "path": "/" }))["path"],
+            "."
+        );
+        assert_eq!(
+            normalize_model_initiated_tool_input(&list_files, json!({ "path": "/tmp" }))["path"],
+            "/tmp"
+        );
+        assert_eq!(
+            normalize_model_initiated_tool_input(&subagent_route, json!({ "path": "/" }))["path"],
+            "/"
+        );
+    }
+
+    #[test]
+    fn model_tool_alias_decoder_accepts_namespace_underscore_aliases() {
+        assert_eq!(
+            decode_model_tool_name_alias("filesystem_search_files").as_deref(),
+            Some(SEARCH_FILES_TOOL)
+        );
+        assert_eq!(
+            decode_model_tool_name_alias("subagent_team_plan").as_deref(),
+            Some(SUBAGENT_TEAM_PLAN_TOOL)
+        );
+        assert_eq!(
+            decode_model_tool_name_alias("unknown_tool").as_deref(),
+            None
+        );
     }
 
     #[test]
