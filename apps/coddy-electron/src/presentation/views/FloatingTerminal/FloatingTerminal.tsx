@@ -113,6 +113,11 @@ export function FloatingTerminal() {
         return
       }
 
+      if (command.kind === 'agent-workflow') {
+        void ask(command.prompt)
+        return
+      }
+
       persistDesktopTab(command.tab)
       void openUi('DesktopApp')
     },

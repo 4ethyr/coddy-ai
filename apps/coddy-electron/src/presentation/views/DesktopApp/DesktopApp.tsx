@@ -138,6 +138,11 @@ export function DesktopApp() {
         return
       }
 
+      if (command.kind === 'agent-workflow') {
+        void ask(command.prompt)
+        return
+      }
+
       setActiveTab(command.tab)
     },
     [ask, setActiveTab],

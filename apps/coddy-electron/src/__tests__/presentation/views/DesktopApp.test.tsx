@@ -205,6 +205,24 @@ describe('DesktopApp', () => {
     expect(screen.getAllByText('runtime ready').length).toBeGreaterThan(0)
   })
 
+  it('routes workflow slash commands through the agent prompt instead of tab navigation', async () => {
+    render(<DesktopApp />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Instruct Coddy agent...'),
+      '/review agent runtime',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.ask).toHaveBeenCalledWith(
+      expect.stringContaining('Code review workflow'),
+    )
+    expect(sessionContext.ask).toHaveBeenCalledWith(
+      expect.stringContaining('Scope: agent runtime'),
+    )
+    expect(sessionContext.openUi).not.toHaveBeenCalled()
+  })
+
   it('opens the workspace tab and triggers folder selection', async () => {
     sessionContext.activeWorkspacePath = '/home/user/project'
     render(<DesktopApp />)

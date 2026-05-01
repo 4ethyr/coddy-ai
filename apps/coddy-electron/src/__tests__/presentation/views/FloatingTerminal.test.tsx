@@ -280,6 +280,24 @@ describe('FloatingTerminal', () => {
     expect(sessionContext.openUi).toHaveBeenCalledWith('DesktopApp')
   })
 
+  it('dispatches coding workflow slash commands as guarded prompts', async () => {
+    render(<FloatingTerminal />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Enter command or prompt...'),
+      '/plan improve tool reliability',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.openUi).not.toHaveBeenCalled()
+    expect(sessionContext.ask).toHaveBeenCalledWith(
+      expect.stringContaining('Plan-only coding workflow'),
+    )
+    expect(sessionContext.ask).toHaveBeenCalledWith(
+      expect.stringContaining('Goal: improve tool reliability'),
+    )
+  })
+
   it('opens settings from the common /settins typo without sending a prompt', async () => {
     render(<FloatingTerminal />)
 
