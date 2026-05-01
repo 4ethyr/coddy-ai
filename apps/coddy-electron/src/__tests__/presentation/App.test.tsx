@@ -89,6 +89,41 @@ describe('App keyboard cancellation', () => {
     expect(window.replApi.invoke).not.toHaveBeenCalledWith('window:close')
   })
 
+  it('uses Escape to cancel an active run even from an editable target', async () => {
+    mocks.sessionContext.session = {
+      ...mocks.sessionContext.session,
+      status: 'Thinking',
+      active_run: 'run-1',
+    }
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+
+    render(<App />)
+
+    fireEvent.keyDown(textarea, { key: 'Escape' })
+
+    await waitFor(() => {
+      expect(mocks.sessionContext.cancelRun).toHaveBeenCalledOnce()
+    })
+    expect(window.replApi.invoke).not.toHaveBeenCalledWith('window:close')
+
+    textarea.remove()
+  })
+
+  it('keeps Escape inside an editable target local while idle', () => {
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+
+    render(<App />)
+
+    fireEvent.keyDown(textarea, { key: 'Escape' })
+
+    expect(mocks.sessionContext.cancelRun).not.toHaveBeenCalled()
+    expect(window.replApi.invoke).not.toHaveBeenCalledWith('window:close')
+
+    textarea.remove()
+  })
+
   it('uses Escape to close the floating terminal only while idle', () => {
     render(<App />)
 

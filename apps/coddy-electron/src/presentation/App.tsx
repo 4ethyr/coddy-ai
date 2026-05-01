@@ -22,7 +22,7 @@ function AppInner() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      if (isEditableEscapeTarget(e.target)) return
+      const editableTarget = isEditableEscapeTarget(e.target)
 
       if (session.voice.speaking) {
         e.preventDefault()
@@ -41,6 +41,8 @@ function AppInner() {
         void cancelRun()
         return
       }
+
+      if (editableTarget) return
 
       if (mode === 'FloatingTerminal') {
         if (typeof window !== 'undefined' && window.replApi) {
