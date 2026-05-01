@@ -34,24 +34,44 @@ export function InputBar({
   const handleChange = useCallback(
     (e: ChangeEvent<HTMLTextAreaElement>) => {
       setValue(e.target.value)
-      // Auto-resize
-      const el = e.target
-      el.style.height = 'auto'
-      const lineHeight = 20 // approx px per line
-      const maxHeight = lineHeight * MAX_ROWS
-      el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`
+      resizeTextarea(e.target)
     },
     [],
   )
 
+  const pasteClipboardText = useCallback(
+    async (textarea: HTMLTextAreaElement) => {
+      const text = await navigator.clipboard?.readText?.()
+      if (!text) return
+
+      const start = textarea.selectionStart ?? value.length
+      const end = textarea.selectionEnd ?? start
+      const next = `${value.slice(0, start)}${text}${value.slice(end)}`
+      const caret = start + text.length
+      setValue(next)
+
+      requestAnimationFrame(() => {
+        textarea.setSelectionRange(caret, caret)
+        resizeTextarea(textarea)
+      })
+    },
+    [value],
+  )
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (isPasteShortcut(e)) {
+        e.preventDefault()
+        void pasteClipboardText(e.currentTarget)
+        return
+      }
+
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         submit()
       }
     },
-    [submit],
+    [pasteClipboardText, submit],
   )
 
   return (
@@ -83,4 +103,19 @@ export function InputBar({
       </button>
     </div>
   )
+}
+
+function isPasteShortcut(event: KeyboardEvent<HTMLTextAreaElement>): boolean {
+  return (
+    (event.ctrlKey || event.metaKey)
+    && event.shiftKey
+    && event.key.toLowerCase() === 'v'
+  )
+}
+
+function resizeTextarea(textarea: HTMLTextAreaElement): void {
+  textarea.style.height = 'auto'
+  const lineHeight = 20
+  const maxHeight = lineHeight * MAX_ROWS
+  textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`
 }

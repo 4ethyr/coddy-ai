@@ -1,6 +1,6 @@
 // __tests__/presentation/components/InputBar.test.tsx
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { InputBar } from '@/presentation/components/InputBar'
 
@@ -67,6 +67,33 @@ describe('InputBar', () => {
     await userEvent.type(textarea, '   {Enter}')
 
     expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('pastes clipboard text with Ctrl+Shift+V at the caret', async () => {
+    const readText = vi.fn().mockResolvedValue(' pasted content ')
+    Object.assign(navigator, {
+      clipboard: { readText },
+    })
+
+    render(<InputBar onSend={() => {}} />)
+
+    const textarea = screen.getByPlaceholderText(
+      'Enter command or prompt...',
+    ) as HTMLTextAreaElement
+    await userEvent.type(textarea, 'hello')
+    textarea.setSelectionRange(5, 5)
+
+    fireEvent.keyDown(textarea, {
+      key: 'v',
+      code: 'KeyV',
+      ctrlKey: true,
+      shiftKey: true,
+    })
+
+    await waitFor(() => {
+      expect(textarea.value).toBe('hello pasted content ')
+    })
+    expect(readText).toHaveBeenCalledOnce()
   })
 })
 

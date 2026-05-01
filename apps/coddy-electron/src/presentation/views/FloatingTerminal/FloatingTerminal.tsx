@@ -18,6 +18,7 @@ import { ThinkingIndicator } from '@/presentation/components/ThinkingIndicator'
 import { ToolApprovalPanel } from '@/presentation/components/ToolApprovalPanel'
 import { AssessmentConfirmModal } from '@/presentation/components/AssessmentConfirmModal'
 import { FloatingSettingsModal } from '@/presentation/components/FloatingSettingsModal'
+import { SelectionCopyRegion } from '@/presentation/components/SelectionCopyRegion'
 import { Icon } from '@/presentation/components/Icon'
 
 export function FloatingTerminal() {
@@ -223,7 +224,7 @@ export function FloatingTerminal() {
         </div>
       </header>
 
-      <div
+      <SelectionCopyRegion
         data-testid="floating-terminal-canvas"
         className="terminal-canvas flex-1 select-text overflow-y-auto px-8 py-7"
       >
@@ -343,6 +344,9 @@ export function FloatingTerminal() {
                   <StreamingText text={session.streaming_text} />
                   <span className="streaming-cursor" />
                 </p>
+                <p className="mt-3 text-[11px] text-on-surface-muted">
+                  Pressione (Esc) para parar.
+                </p>
               </div>
             </div>
           )}
@@ -358,7 +362,7 @@ export function FloatingTerminal() {
 
           <div ref={messagesEndRef} />
         </div>
-      </div>
+      </SelectionCopyRegion>
 
       <div className="floating-terminal-input-row flex flex-shrink-0 items-center gap-3 border-t border-primary/15 bg-surface-dim/70 px-8 py-4 backdrop-blur-md">
         <div className="flex-1">

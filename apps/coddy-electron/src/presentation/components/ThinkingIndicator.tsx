@@ -5,11 +5,13 @@ export type ThinkingAnimation = 'pulse' | 'scan' | 'orbit'
 interface Props {
   animation?: ThinkingAnimation
   label?: string
+  showCancelHint?: boolean
 }
 
 export function ThinkingIndicator({
   animation = 'scan',
   label = 'coddy_thinking',
+  showCancelHint = true,
 }: Props) {
   const motionClass =
     animation === 'orbit'
@@ -36,6 +38,11 @@ export function ThinkingIndicator({
             }`}
           />
         </div>
+        {showCancelHint && (
+          <p className="mt-3 font-mono text-[11px] text-on-surface-variant/70">
+            Pressione (Esc) para parar.
+          </p>
+        )}
       </div>
     </div>
   )
