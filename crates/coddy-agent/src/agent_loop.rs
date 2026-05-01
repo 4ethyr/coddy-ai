@@ -8,8 +8,8 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::{
-    AgentRunStatus, AgentStep, AgentStepKind, AgentStepStatus, ChatFinishReason, ChatMessage,
-    ChatModelClient, ChatModelError, ChatRequest, ChatToolCall, ChatToolSpec, LocalAgentRuntime,
+    AgentRunStatus, AgentStep, AgentStepKind, AgentStepStatus, ChatMessage, ChatModelClient,
+    ChatModelError, ChatRequest, ChatToolCall, ChatToolSpec, LocalAgentRuntime,
     LocalToolRouteOutcome, RunState, APPLY_EDIT_TOOL, PREVIEW_EDIT_TOOL,
 };
 
@@ -198,7 +198,7 @@ impl<'a> AgenticModelLoop<'a> {
                 messages.push(ChatMessage::assistant(response.text.clone()));
             }
 
-            if response.tool_calls.is_empty() || response.finish_reason == ChatFinishReason::Stop {
+            if response.tool_calls.is_empty() {
                 record_response_step(&mut state, &response.text, AgentStepStatus::Succeeded);
                 self.runtime.complete_run(&mut state);
                 return AgenticLoopOutcome {
@@ -440,7 +440,12 @@ fn failed_tool_stop(
     })
 }
 
-fn model_tool_call_may_run(tool_name: &ToolName, definition: &ToolDefinition) -> bool {
+/// Returns whether a chat-model initiated tool call may be advertised and executed directly.
+///
+/// Model-driven turns may inspect workspace state through auto-approved low-risk tools and may
+/// prepare edit previews that still require explicit user approval. Tools that execute commands
+/// or apply approvals must be triggered by explicit runtime/user flows instead of raw model calls.
+pub fn model_tool_call_may_run(tool_name: &ToolName, definition: &ToolDefinition) -> bool {
     if tool_name.as_str() == APPLY_EDIT_TOOL {
         return false;
     }
@@ -449,10 +454,8 @@ fn model_tool_call_may_run(tool_name: &ToolName, definition: &ToolDefinition) ->
         return true;
     }
 
-    matches!(
-        definition.approval_policy,
-        ApprovalPolicy::AutoApprove | ApprovalPolicy::AskOnUse
-    ) && definition.risk_level <= ToolRiskLevel::Medium
+    definition.approval_policy == ApprovalPolicy::AutoApprove
+        && definition.risk_level <= ToolRiskLevel::Low
 }
 
 fn tool_observation_message(
@@ -561,7 +564,9 @@ mod tests {
     use coddy_core::ModelRef;
     use serde_json::{json, Value};
 
-    use crate::{ChatResponse, APPLY_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL};
+    use crate::{
+        ChatFinishReason, ChatResponse, APPLY_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL,
+    };
 
     use super::*;
 
@@ -688,6 +693,40 @@ mod tests {
         assert!(second_turn_tool_observation
             .content
             .contains("\"status\": \"Succeeded\""));
+    }
+
+    #[test]
+    fn executes_tool_calls_even_when_provider_reports_stop_finish_reason() {
+        let workspace = TempWorkspace::new();
+        workspace.write("README.md", "# Coddy\n");
+        let runtime = LocalAgentRuntime::new(&workspace.path).expect("runtime");
+        let model = ScriptedModel::new(vec![
+            ChatResponse {
+                text: "I need to inspect the file first.".to_string(),
+                deltas: vec!["I need to inspect the file first.".to_string()],
+                finish_reason: ChatFinishReason::Stop,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-1".to_string()),
+                    name: READ_FILE_TOOL.to_string(),
+                    arguments: json!({ "path": "README.md" }),
+                }],
+            },
+            ChatResponse::from_text("README contains the project title."),
+        ]);
+
+        let outcome = AgenticModelLoop::new(&runtime, &model).run(AgenticLoopRequest::new(
+            Uuid::new_v4(),
+            "Read the README and summarize it",
+            test_model_ref(),
+        ));
+
+        assert_eq!(outcome.stop, AgenticLoopStop::Completed);
+        assert_eq!(outcome.tool_calls, 1);
+        assert_eq!(outcome.model_turns, 2);
+        assert_eq!(
+            outcome.final_response,
+            Some("README contains the project title.".to_string())
+        );
     }
 
     #[test]

@@ -22,7 +22,8 @@ use std::{
 };
 
 pub use agent_loop::{
-    AgenticLoopConfig, AgenticLoopOutcome, AgenticLoopRequest, AgenticLoopStop, AgenticModelLoop,
+    model_tool_call_may_run, AgenticLoopConfig, AgenticLoopOutcome, AgenticLoopRequest,
+    AgenticLoopStop, AgenticModelLoop,
 };
 pub use agent_run_v2::{
     AgentRunAction, AgentRunFailure, AgentRunTransition, AgentRunTransitionError, AgentRunV2,

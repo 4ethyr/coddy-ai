@@ -1,17 +1,16 @@
 use coddy_agent::{
-    AgentRunAction, AgentRunStopReason, AgentRunSummary, AgentRunV2, AgentToolRegistry,
-    ChatMessage, ChatModelClient, ChatModelError, ChatModelResult, ChatRequest, ChatResponse,
-    ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, SubagentExecutionGate,
-    SubagentExecutionHandoff, SubagentExecutionStartPlan, SubagentExecutionStartStatus,
-    SubagentOutputContract, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL,
-    SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
+    model_tool_call_may_run as agent_model_tool_call_may_run, AgentRunAction, AgentRunStopReason,
+    AgentRunSummary, AgentRunV2, AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError,
+    ChatModelResult, ChatRequest, ChatResponse, ChatToolCall, ChatToolSpec, DefaultChatModelClient,
+    LocalAgentRuntime, SubagentExecutionGate, SubagentExecutionHandoff, SubagentExecutionStartPlan,
+    SubagentExecutionStartStatus, SubagentOutputContract, LIST_FILES_TOOL, READ_FILE_TOOL,
+    SEARCH_FILES_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
 };
 use coddy_core::{
-    ApprovalPolicy, ContextItem, ContextPolicy, ModelCredential, ModelRef, PermissionReply,
-    ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode,
-    ReplSession, ReplSessionSnapshot, SubagentHandoffPrepared, SubagentLifecycleStatus,
-    SubagentLifecycleUpdate, SubagentRouteRecommendation, ToolCall, ToolDefinition, ToolName,
-    ToolOutput, ToolResultStatus, ToolRiskLevel,
+    ContextItem, ContextPolicy, ModelCredential, ModelRef, PermissionReply, ReplCommand, ReplEvent,
+    ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode, ReplSession,
+    ReplSessionSnapshot, SubagentHandoffPrepared, SubagentLifecycleStatus, SubagentLifecycleUpdate,
+    SubagentRouteRecommendation, ToolCall, ToolDefinition, ToolName, ToolOutput, ToolResultStatus,
 };
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
@@ -295,11 +294,11 @@ impl CoddyRuntime {
         };
 
         let run_id = permission_request.run_id;
-        let mut state = agent_runtime.start_run(
+        let mut state = agent_runtime.start_run_with_id(
             permission_request.session_id,
+            run_id,
             format!("Reply to permission request {permission_request_id}"),
         );
-        state.run_id = run_id;
         let outcome = agent_runtime.reply_permission(&mut state, permission_request_id, reply);
 
         for event in outcome.events {
@@ -448,8 +447,7 @@ impl CoddyRuntime {
             );
         };
 
-        let mut state = agent_runtime.start_run(session_id, goal.to_string());
-        state.run_id = run_id;
+        let mut state = agent_runtime.start_run_with_id(session_id, run_id, goal.to_string());
         agent_runtime.add_plan_item(
             &mut state,
             format!("List workspace files in {path}"),
@@ -605,8 +603,11 @@ impl CoddyRuntime {
             return AssistantResponse::from_chat_response(response);
         };
 
-        let mut state = agent_runtime.start_run(context.session_id, context.goal.clone());
-        state.run_id = context.run_id;
+        let mut state = agent_runtime.start_run_with_id(
+            context.session_id,
+            context.run_id,
+            context.goal.clone(),
+        );
         let mut messages = vec![
             ChatMessage::system(build_tool_followup_system_prompt(context.system_prompt)),
             ChatMessage::user(context.goal.clone()),
@@ -673,8 +674,11 @@ impl CoddyRuntime {
         goal: &str,
     ) -> Option<String> {
         let agent_runtime = self.agent_runtime.as_ref()?;
-        let mut state = agent_runtime.start_run(session_id, format!("Route subagents for: {goal}"));
-        state.run_id = run_id;
+        let mut state = agent_runtime.start_run_with_id(
+            session_id,
+            run_id,
+            format!("Route subagents for: {goal}"),
+        );
         agent_runtime.add_plan_item(
             &mut state,
             "Recommend focused subagents for this turn",
@@ -859,7 +863,7 @@ impl CoddyRuntime {
                 continue;
             };
 
-            if !model_tool_call_may_run(&tool_name, definition) {
+            if !agent_model_tool_call_may_run(&tool_name, definition) {
                 observations.push(format!(
                     "- `{tool_name}` was not executed because model-initiated tools must be auto-approved and low risk, except edit previews that only prepare an approval request."
                 ));
@@ -978,6 +982,7 @@ impl CoddyRuntime {
         self.tool_registry
             .definitions()
             .iter()
+            .filter(|definition| agent_model_tool_call_may_run(&definition.name, definition))
             .map(ChatToolSpec::from_tool_definition)
             .collect()
     }
@@ -1097,11 +1102,10 @@ impl CoddyRuntime {
 
     fn transition_agent_run(&self, run_id: Uuid, action: AgentRunAction) {
         let outcome = self.with_state_mut(|state| {
-            state.agent_runs.get_mut(&run_id).map(|run| {
-                run.transition(action)
-                    .map(|_| run.summary())
-                    .map_err(|error| error)
-            })
+            state
+                .agent_runs
+                .get_mut(&run_id)
+                .map(|run| run.transition(action).map(|_| run.summary()))
         });
 
         match outcome {
@@ -1366,12 +1370,6 @@ fn build_tool_followup_system_prompt(base_prompt: &str) -> String {
     ]
     .join("\n");
     format!("{base_prompt}\n\n{followup}")
-}
-
-fn model_tool_call_may_run(tool_name: &ToolName, definition: &ToolDefinition) -> bool {
-    (definition.approval_policy == ApprovalPolicy::AutoApprove
-        && definition.risk_level <= ToolRiskLevel::Low)
-        || tool_name.as_str() == PREVIEW_EDIT_TOOL
 }
 
 fn context_item_from_tool_output(tool_name: &ToolName, output: &ToolOutput) -> Option<ContextItem> {
@@ -2069,8 +2067,8 @@ fn default_workspace_root() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use coddy_agent::{
-        PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_REDUCE_OUTPUTS_TOOL,
-        SUBAGENT_ROUTE_TOOL,
+        APPLY_EDIT_TOOL, PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SHELL_RUN_TOOL, SUBAGENT_PREPARE_TOOL,
+        SUBAGENT_REDUCE_OUTPUTS_TOOL, SUBAGENT_ROUTE_TOOL,
     };
     use coddy_client::CoddyClient;
     use coddy_core::{
@@ -2968,6 +2966,51 @@ mod tests {
         let captured_requests = requests.lock().expect("requests mutex poisoned");
         assert_eq!(captured_requests.len(), 1);
         assert_eq!(captured_requests[0].model_credential, Some(credential));
+    }
+
+    #[test]
+    fn ask_command_exposes_only_model_safe_tools_to_chat_client() {
+        let request_id = Uuid::new_v4();
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("safe catalog accepted"));
+        let runtime =
+            CoddyRuntime::with_chat_client(AgentToolRegistry::default(), Arc::new(chat_client));
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect the workspace".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let tool_names = captured_requests[0]
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(tool_names.contains(&LIST_FILES_TOOL));
+        assert!(tool_names.contains(&READ_FILE_TOOL));
+        assert!(tool_names.contains(&SEARCH_FILES_TOOL));
+        assert!(tool_names.contains(&PREVIEW_EDIT_TOOL));
+        assert!(!tool_names.contains(&APPLY_EDIT_TOOL));
+        assert!(!tool_names.contains(&SHELL_RUN_TOOL));
     }
 
     #[test]
