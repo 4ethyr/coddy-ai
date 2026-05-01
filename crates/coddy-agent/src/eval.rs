@@ -254,6 +254,12 @@ struct PromptBatteryScenario {
     expected_members: &'static [&'static str],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PromptBatteryVariant {
+    key: &'static str,
+    suffix: &'static str,
+}
+
 const PROMPT_BATTERY_STACKS: &[PromptBatteryStack] = &[
     PromptBatteryStack {
         key: "rust",
@@ -443,6 +449,27 @@ const PROMPT_BATTERY_SCENARIOS: &[PromptBatteryScenario] = &[
         knowledge_area: "product-ux",
         template: "Para {stack}, planejar UX API config, implement feature, teste fluxos e revise maintainability.",
         expected_members: &["planner", "coder", "test-writer", "reviewer"],
+    },
+];
+
+const PROMPT_BATTERY_VARIANTS: &[PromptBatteryVariant] = &[
+    PromptBatteryVariant {
+        key: "baseline",
+        suffix: "Priorize diagnostico claro, plano incremental e validacao objetiva.",
+    },
+    PromptBatteryVariant {
+        key: "failure-recovery",
+        suffix:
+            "Inclua tratamento de erro, rollback seguro, retry controlado e comunicacao amigavel.",
+    },
+    PromptBatteryVariant {
+        key: "security-hardening",
+        suffix: "Enfatize sandbox, approvals, protecao de secrets e bloqueio de acoes destrutivas.",
+    },
+    PromptBatteryVariant {
+        key: "frontend-runtime",
+        suffix:
+            "Considere UX desktop, integracao runtime, eventos observaveis e testes de regressao.",
     },
 ];
 
@@ -823,22 +850,31 @@ impl PromptBatteryFailure {
 }
 
 pub fn default_prompt_battery_cases() -> Vec<PromptBatteryCase> {
-    let mut cases =
-        Vec::with_capacity(PROMPT_BATTERY_STACKS.len() * PROMPT_BATTERY_SCENARIOS.len());
+    let mut cases = Vec::with_capacity(
+        PROMPT_BATTERY_STACKS.len()
+            * PROMPT_BATTERY_SCENARIOS.len()
+            * PROMPT_BATTERY_VARIANTS.len(),
+    );
 
     for stack in PROMPT_BATTERY_STACKS {
         for scenario in PROMPT_BATTERY_SCENARIOS {
-            cases.push(PromptBatteryCase {
-                id: format!("{}:{}", stack.key, scenario.key),
-                stack: stack.key.to_string(),
-                knowledge_area: scenario.knowledge_area.to_string(),
-                prompt: scenario.template.replace("{stack}", stack.label),
-                expected_members: scenario
-                    .expected_members
-                    .iter()
-                    .map(|member| (*member).to_string())
-                    .collect(),
-            });
+            for variant in PROMPT_BATTERY_VARIANTS {
+                cases.push(PromptBatteryCase {
+                    id: format!("{}:{}:{}", stack.key, scenario.key, variant.key),
+                    stack: stack.key.to_string(),
+                    knowledge_area: scenario.knowledge_area.to_string(),
+                    prompt: format!(
+                        "{} {}",
+                        scenario.template.replace("{stack}", stack.label),
+                        variant.suffix
+                    ),
+                    expected_members: scenario
+                        .expected_members
+                        .iter()
+                        .map(|member| (*member).to_string())
+                        .collect(),
+                });
+            }
         }
     }
 
@@ -1909,7 +1945,7 @@ mod tests {
     }
 
     #[test]
-    fn default_prompt_battery_contains_300_diverse_prompts() {
+    fn default_prompt_battery_contains_1200_diverse_prompts() {
         let cases = default_prompt_battery_cases();
         let stack_count = cases
             .iter()
@@ -1922,18 +1958,18 @@ mod tests {
             .collect::<HashSet<_>>()
             .len();
 
-        assert_eq!(cases.len(), 300);
+        assert_eq!(cases.len(), 1200);
         assert_eq!(stack_count, 30);
         assert_eq!(knowledge_area_count, 10);
         assert!(cases
             .iter()
-            .any(|case| case.id == "rust:implementation-tdd"));
+            .any(|case| case.id == "rust:implementation-tdd:baseline"));
         assert!(cases
             .iter()
-            .any(|case| case.id == "gcp:security-threat-model"));
+            .any(|case| case.id == "gcp:security-threat-model:security-hardening"));
         assert!(cases
             .iter()
-            .any(|case| case.id == "embedded:low-level-reliability"));
+            .any(|case| case.id == "embedded:low-level-reliability:failure-recovery"));
     }
 
     #[test]
@@ -1941,10 +1977,10 @@ mod tests {
         let report = run_default_prompt_battery();
 
         assert!(report.is_success());
-        assert_eq!(report.prompt_count, 300);
+        assert_eq!(report.prompt_count, 1200);
         assert_eq!(report.stack_count, 30);
         assert_eq!(report.knowledge_area_count, 10);
-        assert_eq!(report.passed, 300);
+        assert_eq!(report.passed, 1200);
         assert_eq!(report.failed, 0);
         assert_eq!(report.score, 100);
 
@@ -1975,7 +2011,7 @@ mod tests {
         let report = run_default_prompt_battery();
         let metadata = report.public_metadata();
 
-        assert_eq!(metadata["promptCount"], json!(300));
+        assert_eq!(metadata["promptCount"], json!(1200));
         assert_eq!(metadata["stackCount"], json!(30));
         assert_eq!(metadata["knowledgeAreaCount"], json!(10));
         assert_eq!(metadata["failed"], json!(0));
