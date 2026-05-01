@@ -1,3 +1,4 @@
+pub mod agent_loop;
 pub mod agent_run_v2;
 pub mod command_guard;
 pub mod context;
@@ -20,6 +21,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+pub use agent_loop::{
+    AgenticLoopConfig, AgenticLoopOutcome, AgenticLoopRequest, AgenticLoopStop, AgenticModelLoop,
+};
 pub use agent_run_v2::{
     AgentRunAction, AgentRunFailure, AgentRunTransition, AgentRunTransitionError, AgentRunV2,
 };
