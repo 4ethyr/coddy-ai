@@ -275,6 +275,50 @@ describe('ModelSelector', () => {
     })
   })
 
+  it('can request secure OpenRouter credential persistence without keeping the token in the form', async () => {
+    const onLoadModels = vi.fn(async (request: ModelProviderListRequest) => {
+      const result = await modelLoader(request)
+      if (request.provider !== 'openrouter') return result
+
+      return {
+        ...result,
+        credentialStorage: {
+          persisted: true,
+          message: 'Credential saved with secure OS encryption.',
+        },
+      }
+    })
+    render(
+      <ModelSelector
+        model={{ provider: 'ollama', name: 'gemma4-E2B' }}
+        onLoadModels={onLoadModels}
+      />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Active model ollama/gemma4-E2B' }),
+    )
+
+    const openRouterGroup = providerGroup('OpenRouter')
+    const apiKeyInput = within(openRouterGroup).getByPlaceholderText('sk-or-...')
+    await userEvent.type(apiKeyInput, 'sk-or-test')
+    await userEvent.click(
+      within(openRouterGroup).getByLabelText(/Remember securely/),
+    )
+    await userEvent.click(
+      within(openRouterGroup).getByRole('button', { name: 'Load' }),
+    )
+
+    expect(onLoadModels).toHaveBeenCalledWith({
+      provider: 'openrouter',
+      apiKey: 'sk-or-test',
+      endpoint: undefined,
+      rememberCredential: true,
+    })
+    expect(apiKeyInput).toHaveValue('')
+    expect(await screen.findByText(/saved securely/)).toBeInTheDocument()
+  })
+
   it('loads Azure deployments with endpoint and API version', async () => {
     const onLoadModels = vi.fn(modelLoader)
     render(
