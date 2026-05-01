@@ -256,6 +256,10 @@ pub struct LivePromptBatteryReport {
     pub raw_passed: usize,
     pub raw_failed: usize,
     pub raw_score: u8,
+    pub model_error_count: usize,
+    pub model_error_rate: u8,
+    pub raw_routing_failure_count: usize,
+    pub guard_recovery_count: usize,
     pub raw_matched_member_count: usize,
     pub raw_member_recall_score: u8,
     pub passed: usize,
@@ -912,6 +916,10 @@ impl LivePromptBatteryReport {
             "rawPassed": self.raw_passed,
             "rawFailed": self.raw_failed,
             "rawScore": self.raw_score,
+            "modelErrorCount": self.model_error_count,
+            "modelErrorRate": self.model_error_rate,
+            "rawRoutingFailureCount": self.raw_routing_failure_count,
+            "guardRecoveryCount": self.guard_recovery_count,
             "rawMatchedMemberCount": self.raw_matched_member_count,
             "rawMemberRecallScore": self.raw_member_recall_score,
             "passed": self.passed,
@@ -1100,6 +1108,22 @@ fn build_live_prompt_battery_report(
         .count();
     let raw_failed = prompt_count.saturating_sub(raw_passed);
     let failed = prompt_count.saturating_sub(passed);
+    let model_error_count = case_results
+        .iter()
+        .filter(|case| case.model_error.is_some())
+        .count();
+    let raw_routing_failure_count = case_results
+        .iter()
+        .filter(|case| case.model_error.is_none() && !case.missing_raw_members.is_empty())
+        .count();
+    let guard_recovery_count = case_results
+        .iter()
+        .filter(|case| {
+            case.model_error.is_none()
+                && !case.missing_raw_members.is_empty()
+                && case.missing_guarded_members.is_empty()
+        })
+        .count();
     let raw_failures = case_results
         .iter()
         .filter(|case| !case.missing_raw_members.is_empty() || case.model_error.is_some())
@@ -1117,6 +1141,10 @@ fn build_live_prompt_battery_report(
         raw_passed,
         raw_failed,
         raw_score: percentage_score(raw_passed, prompt_count),
+        model_error_count,
+        model_error_rate: percentage_score(model_error_count, prompt_count),
+        raw_routing_failure_count,
+        guard_recovery_count,
         raw_matched_member_count,
         raw_member_recall_score: percentage_score(raw_matched_member_count, expected_member_count),
         passed,
@@ -2467,6 +2495,10 @@ mod tests {
         assert_eq!(report.prompt_count, 1);
         assert_eq!(report.raw_passed, 0);
         assert_eq!(report.raw_score, 0);
+        assert_eq!(report.model_error_count, 0);
+        assert_eq!(report.model_error_rate, 0);
+        assert_eq!(report.raw_routing_failure_count, 1);
+        assert_eq!(report.guard_recovery_count, 1);
         assert_eq!(report.raw_member_recall_score, 50);
         assert_eq!(report.passed, 1);
         assert_eq!(report.score, 100);
@@ -2523,12 +2555,21 @@ mod tests {
         assert_eq!(report.failed, 1);
         assert_eq!(report.raw_score, 0);
         assert_eq!(report.score, 0);
+        assert_eq!(report.model_error_count, 1);
+        assert_eq!(report.model_error_rate, 100);
+        assert_eq!(report.raw_routing_failure_count, 0);
+        assert_eq!(report.guard_recovery_count, 0);
         assert_eq!(report.raw_failures.len(), 1);
         assert_eq!(report.failures.len(), 1);
         assert!(report.failures[0]
             .model_error
             .as_deref()
             .is_some_and(|error| error.contains("User not found")));
+        let metadata = report.public_metadata();
+        assert_eq!(metadata["modelErrorCount"], 1);
+        assert_eq!(metadata["modelErrorRate"], 100);
+        assert_eq!(metadata["rawRoutingFailureCount"], 0);
+        assert_eq!(metadata["guardRecoveryCount"], 0);
     }
 
     #[derive(Debug)]
