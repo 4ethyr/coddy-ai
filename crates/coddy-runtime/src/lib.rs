@@ -3970,6 +3970,58 @@ mod tests {
     }
 
     #[test]
+    fn stop_active_run_publishes_cancelled_agent_run_summary() {
+        let request_id = Uuid::new_v4();
+        let run_id = Uuid::new_v4();
+        let runtime = CoddyRuntime::default();
+        runtime.publish_event(
+            ReplEvent::RunStarted { run_id },
+            Some(run_id),
+            1_775_000_000_060,
+        );
+        runtime.start_agent_run(run_id, "stop long running command");
+        runtime.transition_agent_run(run_id, AgentRunAction::Plan);
+        let before_stop_sequence = runtime.snapshot().last_sequence;
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::StopActiveRun,
+            speak: false,
+        }));
+
+        assert!(matches!(
+            result,
+            CoddyResult::ActionStatus {
+                request_id: actual_request_id,
+                ..
+            } if actual_request_id == request_id
+        ));
+        let events = runtime.events_after(before_stop_sequence).0;
+        let snapshot = runtime.snapshot();
+        let agent_run = snapshot
+            .session
+            .agent_run
+            .expect("cancelled agent run summary");
+
+        assert_eq!(agent_run.run_id, run_id);
+        assert_eq!(
+            agent_run.summary.last_phase,
+            coddy_agent::AgentRunPhase::Cancelled,
+        );
+        assert_eq!(
+            agent_run.summary.stop_reason,
+            Some(AgentRunStopReason::UserInterrupt),
+        );
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::AgentRunUpdated { run_id: updated, summary }
+                if *updated == run_id
+                    && summary.last_phase == coddy_agent::AgentRunPhase::Cancelled
+                    && summary.stop_reason == Some(AgentRunStopReason::UserInterrupt)
+        )));
+    }
+
+    #[test]
     fn voice_turn_records_transcript_then_minimal_run() {
         let request_id = Uuid::new_v4();
         let runtime = CoddyRuntime::default();
