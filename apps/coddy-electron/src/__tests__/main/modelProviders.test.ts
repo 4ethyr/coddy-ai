@@ -58,6 +58,60 @@ describe('modelProviders', () => {
     ])
   })
 
+  it('lists OpenRouter text models with bearer authentication', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: [
+          {
+            id: 'anthropic/claude-sonnet-4.5',
+            name: 'Claude Sonnet 4.5',
+            description: 'Anthropic model routed through OpenRouter.',
+            context_length: 200000,
+          },
+        ],
+      }),
+    )
+
+    const result = await listProviderModels(
+      { provider: 'openrouter', apiKey: 'sk-or-test' },
+      fetcher,
+    )
+
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://openrouter.ai/api/v1/models?output_modalities=text',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer sk-or-test',
+        }),
+      }),
+    )
+    expect(result.models).toEqual([
+      expect.objectContaining({
+        model: {
+          provider: 'openrouter',
+          name: 'anthropic/claude-sonnet-4.5',
+        },
+        label: 'Claude Sonnet 4.5',
+        tags: ['api', '200000 ctx'],
+      }),
+    ])
+  })
+
+  it('reports a helpful OpenRouter credential error before network calls', async () => {
+    const fetcher = vi.fn()
+
+    const result = await listProviderModels(
+      { provider: 'openrouter' },
+      fetcher,
+    )
+
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(result.error).toEqual({
+      code: 'MODEL_LIST_FAILED',
+      message: 'OpenRouter API key is required.',
+    })
+  })
+
   it('lists Gemini API models with x-goog-api-key authentication', async () => {
     const fetcher = vi.fn().mockResolvedValue(
       jsonResponse({

@@ -2645,6 +2645,57 @@ mod tests {
     }
 
     #[test]
+    fn default_client_routes_openrouter_requests_to_openai_compatible_adapter() {
+        let expected_body = serde_json::json!({
+            "model": "anthropic/claude-sonnet-4.5",
+            "messages": [
+                { "role": "user", "content": "hello" }
+            ],
+            "stream": false
+        });
+        let client = DefaultChatModelClient {
+            ollama: OllamaChatModelClient::default(),
+            openai: OpenAiCompatibleChatModelClient::openai(),
+            openrouter: OpenAiCompatibleChatModelClient::with_transport(
+                "openrouter",
+                "https://openrouter.ai/api/v1",
+                Arc::new(StaticOpenAiCompatibleTransport {
+                    provider: "openrouter".to_string(),
+                    endpoint: "https://openrouter.ai/api/v1/chat/completions".to_string(),
+                    token: "sk-or-secret-token".to_string(),
+                    body: expected_body,
+                    response: Ok(ChatResponse::from_text("hi from openrouter")),
+                }),
+            ),
+            gemini_api: GeminiApiChatModelClient::default(),
+            vertex_gemini: VertexGeminiChatModelClient::default(),
+            vertex_anthropic: VertexAnthropicChatModelClient::default(),
+            azure_openai: AzureOpenAiChatModelClient::default(),
+            unavailable: UnavailableChatModelClient,
+        };
+        let request = ChatRequest::new(
+            ModelRef {
+                provider: "openrouter".to_string(),
+                name: "anthropic/claude-sonnet-4.5".to_string(),
+            },
+            vec![ChatMessage::user("hello")],
+        )
+        .expect("request")
+        .with_model_credential(Some(ModelCredential {
+            provider: "openrouter".to_string(),
+            token: "sk-or-secret-token".to_string(),
+            endpoint: None,
+            metadata: Default::default(),
+        }))
+        .expect("credential");
+
+        assert_eq!(
+            client.complete(request),
+            Ok(ChatResponse::from_text("hi from openrouter"))
+        );
+    }
+
+    #[test]
     fn openai_compatible_client_requires_provider_credential() {
         let client = OpenAiCompatibleChatModelClient::openai();
         let request = ChatRequest::new(
