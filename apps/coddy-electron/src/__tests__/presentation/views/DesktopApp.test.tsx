@@ -61,6 +61,12 @@ describe('DesktopApp', () => {
     sessionContext.activeWorkspacePath = null
     sessionContext.workspaceSelectionStatus = 'idle'
     sessionContext.workspaceSelectionError = null
+    sessionContext.listProviderModels.mockResolvedValue({
+      provider: 'ollama',
+      source: 'local',
+      models: [],
+      fetchedAtUnixMs: 1_775_000_000_000,
+    })
     Object.defineProperty(window, 'replApi', {
       configurable: true,
       value: {
@@ -78,6 +84,30 @@ describe('DesktopApp', () => {
     expect(screen.getAllByText('runtime ready').length).toBeGreaterThan(0)
     expect(
       screen.getByText(/Gemini API-key models execute through generateContent/i),
+    ).toBeInTheDocument()
+  })
+
+  it('keeps desktop navigation above the model catalog popover', async () => {
+    const { container } = render(<DesktopApp />)
+
+    await userEvent.click(screen.getByRole('button', { name: /Neural_Link/ }))
+    await userEvent.click(
+      screen.getByRole('button', {
+        name: /Active model vertex\/claude-sonnet-test/i,
+      }),
+    )
+
+    expect(container.querySelector('.desktop-sidebar')?.className).toContain(
+      'z-[230]',
+    )
+    expect(screen.getByTestId('model-selector-popover').className).toContain(
+      'z-[220]',
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /Terminal/ }))
+
+    expect(
+      screen.getByPlaceholderText('Instruct Coddy agent...'),
     ).toBeInTheDocument()
   })
 

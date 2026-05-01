@@ -30,6 +30,7 @@ use tokio::process::Command as TokioCommand;
 use tracing::{info, warn};
 
 const CODDY_EPHEMERAL_MODEL_CREDENTIAL_ENV: &str = "CODDY_EPHEMERAL_MODEL_CREDENTIAL";
+const CODDY_SKIP_DESKTOP_LAUNCH_ENV: &str = "CODDY_SKIP_DESKTOP_LAUNCH";
 
 #[derive(Debug, Parser)]
 #[command(name = "coddy")]
@@ -586,6 +587,10 @@ async fn open_desktop_ui_or_send_runtime_command(
 }
 
 fn launch_desktop_app() -> Result<Option<PathBuf>> {
+    if desktop_launcher_launch_disabled(env::var_os(CODDY_SKIP_DESKTOP_LAUNCH_ENV)) {
+        return Ok(None);
+    }
+
     let Some(launcher) = resolve_desktop_launcher() else {
         return Ok(None);
     };
@@ -598,6 +603,16 @@ fn launch_desktop_app() -> Result<Option<PathBuf>> {
         .with_context(|| format!("failed to start Coddy Desktop {}", launcher.display()))?;
 
     Ok(Some(launcher))
+}
+
+fn desktop_launcher_launch_disabled(value: Option<OsString>) -> bool {
+    value
+        .and_then(|value| value.into_string().ok())
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
 }
 
 fn resolve_desktop_launcher() -> Option<PathBuf> {
@@ -1626,6 +1641,16 @@ mod tests {
             resolved,
             Some(PathBuf::from("/home/demo/.local/bin/coddy-desktop"))
         );
+    }
+
+    #[test]
+    fn desktop_launcher_skip_flag_disables_launch() {
+        assert!(desktop_launcher_launch_disabled(Some(OsString::from("1"))));
+        assert!(desktop_launcher_launch_disabled(Some(OsString::from(
+            "true"
+        ))));
+        assert!(!desktop_launcher_launch_disabled(Some(OsString::from("0"))));
+        assert!(!desktop_launcher_launch_disabled(None));
     }
 
     #[test]

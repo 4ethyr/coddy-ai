@@ -37,6 +37,7 @@ import {
   normalizeWorkspacePath,
   persistWorkspaceSelection,
 } from './workspaceManager'
+import { buildCoddySpawnEnv } from './coddySpawnEnv'
 
 type ModelRef = {
   provider: string
@@ -117,11 +118,7 @@ function coddySpawn(
     resourcesPath: electronProcess.resourcesPath,
   }), args, {
     detached: options.detached ?? false,
-    env: {
-      ...process.env,
-      ...activeWorkspaceEnvironment(),
-      ...env,
-    },
+    env: buildCoddySpawnEnv(process.env, activeWorkspaceEnvironment(), env),
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
