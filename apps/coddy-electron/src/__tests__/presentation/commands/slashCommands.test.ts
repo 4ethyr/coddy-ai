@@ -27,6 +27,15 @@ describe('slashCommands', () => {
     })
   })
 
+  it('routes history and new session commands to session actions', () => {
+    expect(resolveUiSlashCommand('/history')).toEqual({
+      kind: 'open-history',
+    })
+    expect(resolveUiSlashCommand('/new')).toEqual({
+      kind: 'new-session',
+    })
+  })
+
   it('expands coding workflow commands into guarded agent prompts', () => {
     expect(resolveUiSlashCommand('/plan add workspace picker')).toMatchObject({
       kind: 'agent-workflow',
@@ -54,6 +63,9 @@ describe('slashCommands', () => {
     ])
     expect(listUiSlashCommandSuggestions('/settins')).toMatchObject([
       { command: '/settings' },
+    ])
+    expect(listUiSlashCommandSuggestions('/hist')).toMatchObject([
+      { command: '/history' },
     ])
     expect(listUiSlashCommandSuggestions('/workspace')).toEqual([])
     expect(listUiSlashCommandSuggestions('/plan add tests')).toEqual([])

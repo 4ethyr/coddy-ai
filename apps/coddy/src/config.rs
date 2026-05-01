@@ -56,6 +56,10 @@ impl CoddyRuntimeConfig {
         Ok(coddy_data_dir()?.join("repl-history.txt"))
     }
 
+    pub fn conversation_history_path() -> Result<PathBuf> {
+        Ok(coddy_data_dir()?.join("conversation-history.json"))
+    }
+
     pub fn socket_path(&self) -> Result<PathBuf> {
         if let Some(path) = env::var_os("CODDY_DAEMON_SOCKET").map(PathBuf::from) {
             return Ok(path);
@@ -193,6 +197,15 @@ mod tests {
 
         assert!(rendered.contains("coddy"));
         assert!(rendered.ends_with("repl-history.txt"));
+    }
+
+    #[test]
+    fn conversation_history_path_uses_coddy_data_location() {
+        let path = CoddyRuntimeConfig::conversation_history_path().expect("history path");
+        let rendered = path.to_string_lossy().to_ascii_lowercase();
+
+        assert!(rendered.contains("coddy"));
+        assert!(rendered.ends_with("conversation-history.json"));
     }
 
     fn unique_runtime_dir() -> PathBuf {

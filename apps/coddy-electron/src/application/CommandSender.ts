@@ -11,6 +11,7 @@ import type {
   MultiagentEvalResult,
   PromptBatteryResult,
   PermissionReply,
+  ConversationRecord,
   AssessmentPolicy,
   ReplIpcClient,
   ReplCommandResult,
@@ -55,6 +56,15 @@ export async function sendVoiceTurn(
  */
 export async function cancelRun(client: ReplIpcClient): Promise<void> {
   await client.stopActiveRun()
+}
+
+/**
+ * Archives the current session and starts a fresh REPL conversation.
+ */
+export async function startNewSession(
+  client: ReplIpcClient,
+): Promise<ReplCommandResult> {
+  return assertCommandSucceeded(await client.newSession())
 }
 
 /**
@@ -109,6 +119,13 @@ export async function getActiveWorkspace(
   client: ReplIpcClient,
 ): Promise<WorkspaceSelectionResult> {
   return client.getActiveWorkspace()
+}
+
+export async function loadConversationHistory(
+  client: ReplIpcClient,
+  limit = 25,
+): Promise<ConversationRecord[]> {
+  return client.getConversationHistory(limit)
 }
 
 export async function selectWorkspaceFolder(

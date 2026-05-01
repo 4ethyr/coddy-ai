@@ -21,6 +21,7 @@ import { ToolApprovalPanel } from '@/presentation/components/ToolApprovalPanel'
 import { AssessmentConfirmModal } from '@/presentation/components/AssessmentConfirmModal'
 import { FloatingSettingsModal } from '@/presentation/components/FloatingSettingsModal'
 import { SelectionCopyRegion } from '@/presentation/components/SelectionCopyRegion'
+import { ConversationHistoryPanel } from '@/presentation/components/ConversationHistoryPanel'
 import { Icon } from '@/presentation/components/Icon'
 import {
   persistDesktopTab,
@@ -34,6 +35,7 @@ export function FloatingTerminal() {
     reconnecting,
     error,
     ask,
+    newSession,
     reconnect,
     selectModel,
     listProviderModels,
@@ -43,6 +45,10 @@ export function FloatingTerminal() {
     captureAndExplain,
     dismissConfirmation,
     replyPermission,
+    conversationHistory,
+    conversationHistoryStatus,
+    conversationHistoryError,
+    loadConversationHistory,
   } =
     useSessionContext()
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -51,6 +57,7 @@ export function FloatingTerminal() {
   const [confirmationDismissed, setConfirmationDismissed] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
     () => loadSettings().floatingAppearance,
   )
@@ -118,10 +125,22 @@ export function FloatingTerminal() {
         return
       }
 
+      if (command.kind === 'new-session') {
+        setHistoryOpen(false)
+        void newSession()
+        return
+      }
+
+      if (command.kind === 'open-history') {
+        setHistoryOpen(true)
+        void loadConversationHistory()
+        return
+      }
+
       persistDesktopTab(command.tab)
       void openUi('DesktopApp')
     },
-    [ask, openUi],
+    [ask, loadConversationHistory, newSession, openUi],
   )
 
   const terminalStyle = {
@@ -332,6 +351,15 @@ export function FloatingTerminal() {
                 ))}
               </div>
             </div>
+          )}
+
+          {historyOpen && (
+            <ConversationHistoryPanel
+              records={conversationHistory}
+              status={conversationHistoryStatus}
+              error={conversationHistoryError}
+              onClose={() => setHistoryOpen(false)}
+            />
           )}
 
           {error && (

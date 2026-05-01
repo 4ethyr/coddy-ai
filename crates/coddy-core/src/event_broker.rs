@@ -35,6 +35,19 @@ impl ReplEventBroker {
         envelope
     }
 
+    pub fn reset_session(
+        &mut self,
+        session_id: Uuid,
+        captured_at_unix_ms: u64,
+    ) -> ReplEventEnvelope {
+        self.log = ReplEventLog::new(session_id);
+        self.publish(
+            ReplEvent::SessionStarted { session_id },
+            None,
+            captured_at_unix_ms,
+        )
+    }
+
     pub fn subscribe_after(&self, sequence: u64) -> ReplEventSubscription {
         ReplEventSubscription {
             replay: self.log.events_after(sequence).into_iter(),
@@ -125,6 +138,23 @@ mod tests {
         assert_eq!(broker.last_sequence(), 2);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].sequence, 2);
+    }
+
+    #[tokio::test]
+    async fn reset_session_keeps_subscribers_and_starts_new_log() {
+        let session_id = Uuid::new_v4();
+        let mut broker = ReplEventBroker::new(session_id, 16);
+        broker.publish(ReplEvent::VoiceListeningStarted, None, 10);
+        let mut subscription = broker.subscribe_after(broker.last_sequence());
+        let new_session_id = Uuid::new_v4();
+
+        let reset_event = broker.reset_session(new_session_id, 20);
+        let live_event = subscription.next().await.expect("live reset event");
+
+        assert_eq!(reset_event.sequence, 1);
+        assert_eq!(reset_event.session_id, new_session_id);
+        assert_eq!(broker.last_sequence(), 1);
+        assert_eq!(live_event, reset_event);
     }
 
     #[tokio::test]

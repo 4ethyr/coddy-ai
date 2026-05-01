@@ -12,6 +12,7 @@ import type {
   MultiagentEvalResult,
   PermissionReply,
   PromptBatteryResult,
+  ConversationRecord,
   ReplCommandResult,
   ReplMode,
   ReplSession,
@@ -28,6 +29,7 @@ import {
   sendAsk,
   cancelRun,
   cancelSpeech,
+  startNewSession,
   selectModel,
   openUi,
   captureVoice,
@@ -39,6 +41,7 @@ import {
   runMultiagentEval,
   runPromptBatteryEval,
   getActiveWorkspace,
+  loadConversationHistory,
   selectWorkspaceFolder,
   loadSettings,
 } from '@/application'
@@ -58,6 +61,9 @@ export interface UseSessionReturn {
   promptBatteryStatus: EvalRunStatus
   promptBatteryError: string | null
   activeWorkspacePath: string | null
+  conversationHistory: ConversationRecord[]
+  conversationHistoryStatus: EvalRunStatus
+  conversationHistoryError: string | null
   workspaceSelectionStatus: EvalRunStatus
   workspaceSelectionError: string | null
   /** True while still connecting / loading the first snapshot */
@@ -71,6 +77,9 @@ export interface UseSessionReturn {
 
   /** Stop the current generation */
   cancelRun: () => Promise<void>
+
+  /** Archive the current conversation and start a clean session */
+  newSession: () => Promise<void>
 
   /** Stop TTS playback */
   cancelSpeech: () => Promise<void>
@@ -93,6 +102,9 @@ export interface UseSessionReturn {
 
   /** Select the local filesystem workspace used by the Rust runtime */
   selectWorkspaceFolder: () => Promise<WorkspaceSelectionResult>
+
+  /** Load persisted redacted conversation history */
+  loadConversationHistory: () => Promise<ConversationRecord[]>
 
   /** Switch the REPL UI mode through the daemon */
   openUi: (mode: ReplMode) => Promise<void>
@@ -140,6 +152,14 @@ export function useSession(): UseSessionReturn {
   const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(
     null,
   )
+  const [conversationHistory, setConversationHistory] = useState<
+    ConversationRecord[]
+  >([])
+  const [conversationHistoryStatus, setConversationHistoryStatus] =
+    useState<EvalRunStatus>('idle')
+  const [conversationHistoryError, setConversationHistoryError] = useState<
+    string | null
+  >(null)
   const [workspaceSelectionStatus, setWorkspaceSelectionStatus] =
     useState<EvalRunStatus>('idle')
   const [workspaceSelectionError, setWorkspaceSelectionError] =
@@ -228,6 +248,16 @@ export function useSession(): UseSessionReturn {
       setError(actionErrorMessage('Coddy could not stop the active run', err))
     }
   }, [client])
+
+  const handleNewSession = useCallback(async () => {
+    try {
+      await startNewSession(client)
+      setConversationHistoryStatus('idle')
+      init()
+    } catch (err) {
+      setError(actionErrorMessage('Coddy could not start a new session', err))
+    }
+  }, [client, init])
 
   const handleCancelSpeech = useCallback(async () => {
     try {
@@ -322,6 +352,24 @@ export function useSession(): UseSessionReturn {
     }
   }, [client, init])
 
+  const handleLoadConversationHistory = useCallback(async () => {
+    setConversationHistoryStatus('running')
+    setConversationHistoryError(null)
+
+    try {
+      const result = await loadConversationHistory(client)
+      setConversationHistory(result)
+      setConversationHistoryStatus('succeeded')
+      return result
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setConversationHistoryError(message)
+      setConversationHistoryStatus('failed')
+      setError(message)
+      throw err
+    }
+  }, [client])
+
   const handleOpenUi = useCallback(
     async (mode: ReplMode) => {
       try {
@@ -395,6 +443,9 @@ export function useSession(): UseSessionReturn {
     promptBatteryStatus,
     promptBatteryError,
     activeWorkspacePath,
+    conversationHistory,
+    conversationHistoryStatus,
+    conversationHistoryError,
     workspaceSelectionStatus,
     workspaceSelectionError,
     connecting,
@@ -402,11 +453,13 @@ export function useSession(): UseSessionReturn {
     error,
     ask,
     cancelRun: handleCancelRun,
+    newSession: handleNewSession,
     cancelSpeech: handleCancelSpeech,
     selectModel: handleSelectModel,
     listProviderModels: handleListProviderModels,
     runMultiagentEval: handleRunMultiagentEval,
     runPromptBatteryEval: handleRunPromptBatteryEval,
+    loadConversationHistory: handleLoadConversationHistory,
     selectWorkspaceFolder: handleSelectWorkspaceFolder,
     openUi: handleOpenUi,
     captureVoice: handleCaptureVoice,

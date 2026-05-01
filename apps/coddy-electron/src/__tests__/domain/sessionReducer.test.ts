@@ -48,6 +48,43 @@ describe('sessionReducer', () => {
       expect(result.status).toBe('Idle')
       expect(result.mode).toBe('FloatingTerminal')
     })
+
+    it('clears conversation state while preserving model and mode', () => {
+      const session = testSession({
+        mode: 'DesktopApp',
+        messages: [{ id: 'msg-1', role: 'user', text: 'old prompt' }],
+        workspace_context: [
+          { id: 'tool:filesystem.read_file:Cargo.toml', label: 'Cargo.toml', sensitive: false },
+        ],
+        active_run: 'run-1',
+        pending_permission: {
+          id: 'perm-1',
+          session_id: 'session-1',
+          run_id: 'run-1',
+          tool_call_id: null,
+          tool_name: 'filesystem.read_file',
+          permission: 'ReadWorkspace',
+          patterns: ['.env'],
+          risk_level: 'High',
+          metadata: {},
+          requested_at_unix_ms: 1,
+        },
+        streaming_text: 'tokens',
+      })
+
+      const result = sessionReducer(session, {
+        SessionStarted: { session_id: 'session-2' },
+      })
+
+      expect(result.id).toBe('session-2')
+      expect(result.mode).toBe('DesktopApp')
+      expect(result.selected_model).toEqual(session.selected_model)
+      expect(result.messages).toEqual([])
+      expect(result.workspace_context).toEqual([])
+      expect(result.active_run).toBeNull()
+      expect(result.pending_permission).toBeNull()
+      expect(result.streaming_text).toBe('')
+    })
   })
 
   describe('RunStarted', () => {

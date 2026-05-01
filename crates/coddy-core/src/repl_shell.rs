@@ -7,6 +7,8 @@ pub enum ReplShellInput {
     Status,
     Config,
     Tools,
+    History,
+    NewSession,
     Exit,
     Workflow {
         kind: CodingWorkflowKind,
@@ -72,6 +74,8 @@ pub fn parse_repl_shell_input(input: &str) -> ReplShellInput {
         "/status" => ReplShellInput::Status,
         "/config" => ReplShellInput::Config,
         "/tools" => ReplShellInput::Tools,
+        "/history" => ReplShellInput::History,
+        "/new" => ReplShellInput::NewSession,
         "/exit" | "/quit" => ReplShellInput::Exit,
         "/plan" => ReplShellInput::Workflow {
             kind: CodingWorkflowKind::Plan,
@@ -96,6 +100,8 @@ pub fn handle_repl_shell_input(input: &str, context: &ReplShellContext) -> ReplS
         ReplShellInput::Status => ReplShellAction::Render(status_response(context)),
         ReplShellInput::Config => ReplShellAction::Render(config_response(context)),
         ReplShellInput::Tools => ReplShellAction::Render(tools_response(context)),
+        ReplShellInput::History => ReplShellAction::Render(history_response()),
+        ReplShellInput::NewSession => ReplShellAction::SendCommand(crate::ReplCommand::NewSession),
         ReplShellInput::Exit => ReplShellAction::Exit,
         ReplShellInput::Workflow { kind, goal } => {
             if goal.is_empty() {
@@ -125,6 +131,8 @@ fn help_response() -> ReplShellResponse {
             "/help    Show available REPL commands.".to_string(),
             "/status  Show the current session and model.".to_string(),
             "/tools   Show registered local tools.".to_string(),
+            "/history Show persisted chat history.".to_string(),
+            "/new     Start a new chat session.".to_string(),
             "/plan    Build an evidence-based implementation plan.".to_string(),
             "/review  Review code, diffs or architecture risks.".to_string(),
             "/test    Design or run focused validation for a change.".to_string(),
@@ -175,6 +183,15 @@ fn tools_response(context: &ReplShellContext) -> ReplShellResponse {
     ReplShellResponse {
         title: "Coddy REPL Tools".to_string(),
         lines,
+    }
+}
+
+fn history_response() -> ReplShellResponse {
+    ReplShellResponse {
+        title: "Coddy REPL History".to_string(),
+        lines: vec![
+            "Use `coddy session history` to inspect persisted redacted chat history.".to_string(),
+        ],
     }
 }
 
@@ -241,6 +258,8 @@ mod tests {
         assert_eq!(parse_repl_shell_input("/status"), ReplShellInput::Status);
         assert_eq!(parse_repl_shell_input("/config"), ReplShellInput::Config);
         assert_eq!(parse_repl_shell_input("/tools"), ReplShellInput::Tools);
+        assert_eq!(parse_repl_shell_input("/history"), ReplShellInput::History);
+        assert_eq!(parse_repl_shell_input("/new"), ReplShellInput::NewSession);
         assert_eq!(parse_repl_shell_input("/exit"), ReplShellInput::Exit);
         assert_eq!(parse_repl_shell_input("/quit"), ReplShellInput::Exit);
         assert_eq!(
@@ -304,6 +323,12 @@ mod tests {
             ReplShellAction::Render(response)
                 if response.lines.iter().any(|line| line.contains("shell.run"))
         ));
+        assert!(matches!(
+            handle_repl_shell_input("/history", &context()),
+            ReplShellAction::Render(response)
+                if response.title == "Coddy REPL History"
+                    && response.lines.iter().any(|line| line.contains("coddy session history"))
+        ));
         assert_eq!(
             handle_repl_shell_input("/exit", &context()),
             ReplShellAction::Exit
@@ -322,6 +347,14 @@ mod tests {
                 model_credential: None,
             }) if text == "explain this error"
         ));
+    }
+
+    #[test]
+    fn new_command_dispatches_session_reset() {
+        assert_eq!(
+            handle_repl_shell_input("/new", &context()),
+            ReplShellAction::SendCommand(crate::ReplCommand::NewSession)
+        );
     }
 
     #[test]

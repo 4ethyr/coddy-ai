@@ -20,7 +20,20 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
   switch (tag) {
     case 'SessionStarted': {
       const { session_id } = (event as { SessionStarted: { session_id: string } }).SessionStarted
-      return { ...session, id: session_id, status: 'Idle' }
+      return {
+        ...session,
+        id: session_id,
+        status: 'Idle',
+        screen_context: null,
+        workspace_context: [],
+        messages: [],
+        active_run: null,
+        pending_permission: null,
+        agent_run: null,
+        streaming_text: '',
+        tool_activity: [],
+        subagent_activity: [],
+      }
     }
 
     case 'RunStarted': {

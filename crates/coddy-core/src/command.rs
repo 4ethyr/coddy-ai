@@ -81,6 +81,7 @@ pub enum ReplCommand {
         reply: crate::PermissionReply,
     },
     DismissConfirmation,
+    NewSession,
     StopActiveRun,
     StopSpeaking,
 }

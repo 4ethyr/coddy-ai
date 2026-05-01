@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { ReplSession } from '@/domain'
+import type { ConversationRecord, ReplSession } from '@/domain'
 import { FloatingTerminal } from '@/presentation/views/FloatingTerminal/FloatingTerminal'
 
 const sessionContext = {
@@ -26,9 +26,13 @@ const sessionContext = {
   reconnecting: false,
   error: null,
   activeWorkspacePath: null,
+  conversationHistory: [] as ConversationRecord[],
+  conversationHistoryStatus: 'idle',
+  conversationHistoryError: null,
   workspaceSelectionStatus: 'idle',
   workspaceSelectionError: null,
   ask: vi.fn(),
+  newSession: vi.fn(),
   reconnect: vi.fn(),
   selectModel: vi.fn(),
   listProviderModels: vi.fn(),
@@ -39,6 +43,7 @@ const sessionContext = {
   dismissConfirmation: vi.fn(),
   replyPermission: vi.fn(),
   selectWorkspaceFolder: vi.fn(),
+  loadConversationHistory: vi.fn(),
 }
 
 vi.mock('@/presentation/hooks', () => ({
@@ -56,6 +61,9 @@ describe('FloatingTerminal', () => {
       subagent_activity: [],
       streaming_text: '',
     }
+    sessionContext.conversationHistory = []
+    sessionContext.conversationHistoryStatus = 'idle'
+    sessionContext.conversationHistoryError = null
     Object.defineProperty(window, 'replApi', {
       configurable: true,
       value: {
@@ -311,5 +319,41 @@ describe('FloatingTerminal', () => {
     expect(
       screen.getByRole('dialog', { name: 'Terminal settings' }),
     ).toBeInTheDocument()
+  })
+
+  it('loads history and starts new sessions from slash commands', async () => {
+    sessionContext.conversationHistory = [
+      {
+        summary: {
+          session_id: 'session-1',
+          title: 'Review Coddy runtime',
+          created_at_unix_ms: 1,
+          updated_at_unix_ms: 2,
+          message_count: 2,
+          selected_model: { provider: 'openrouter', name: 'deepseek' },
+          mode: 'FloatingTerminal',
+        },
+        messages: [],
+      },
+    ]
+    sessionContext.conversationHistoryStatus = 'succeeded'
+    render(<FloatingTerminal />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Enter command or prompt...'),
+      '/history',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.loadConversationHistory).toHaveBeenCalledOnce()
+    expect(screen.getByText('Review Coddy runtime')).toBeInTheDocument()
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Enter command or prompt...'),
+      '/new',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.newSession).toHaveBeenCalledOnce()
   })
 })

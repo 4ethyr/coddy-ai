@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { ReplSession } from '@/domain'
+import type { ConversationRecord, ReplSession } from '@/domain'
 import { DesktopApp } from '@/presentation/views/DesktopApp/DesktopApp'
 
 const sessionContext = {
@@ -27,9 +27,13 @@ const sessionContext = {
   reconnecting: false,
   error: null,
   activeWorkspacePath: null as string | null,
+  conversationHistory: [] as ConversationRecord[],
+  conversationHistoryStatus: 'idle',
+  conversationHistoryError: null,
   workspaceSelectionStatus: 'idle',
   workspaceSelectionError: null,
   ask: vi.fn(),
+  newSession: vi.fn(),
   reconnect: vi.fn(),
   selectModel: vi.fn(),
   listProviderModels: vi.fn(),
@@ -40,6 +44,7 @@ const sessionContext = {
   dismissConfirmation: vi.fn(),
   replyPermission: vi.fn(),
   selectWorkspaceFolder: vi.fn(),
+  loadConversationHistory: vi.fn(),
 }
 
 vi.mock('@/presentation/hooks', () => ({
@@ -59,6 +64,9 @@ describe('DesktopApp', () => {
       streaming_text: '',
     }
     sessionContext.activeWorkspacePath = null
+    sessionContext.conversationHistory = []
+    sessionContext.conversationHistoryStatus = 'idle'
+    sessionContext.conversationHistoryError = null
     sessionContext.workspaceSelectionStatus = 'idle'
     sessionContext.workspaceSelectionError = null
     sessionContext.listProviderModels.mockResolvedValue({
@@ -239,5 +247,41 @@ describe('DesktopApp', () => {
     expect(sessionContext.ask).not.toHaveBeenCalled()
     expect(screen.getByText('/home/user/project')).toBeInTheDocument()
     expect(sessionContext.selectWorkspaceFolder).toHaveBeenCalledOnce()
+  })
+
+  it('loads history and starts new sessions from slash commands', async () => {
+    sessionContext.conversationHistory = [
+      {
+        summary: {
+          session_id: 'session-1',
+          title: 'Analyze workspace',
+          created_at_unix_ms: 1,
+          updated_at_unix_ms: 2,
+          message_count: 2,
+          selected_model: { provider: 'openrouter', name: 'deepseek' },
+          mode: 'DesktopApp',
+        },
+        messages: [],
+      },
+    ]
+    sessionContext.conversationHistoryStatus = 'succeeded'
+    render(<DesktopApp />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Instruct Coddy agent...'),
+      '/history',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.loadConversationHistory).toHaveBeenCalledOnce()
+    expect(screen.getByText('Analyze workspace')).toBeInTheDocument()
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Instruct Coddy agent...'),
+      '/new',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.newSession).toHaveBeenCalledOnce()
   })
 })

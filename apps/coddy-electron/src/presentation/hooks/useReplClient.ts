@@ -17,6 +17,7 @@ function createClient(): ReplIpcClient {
     getSnapshot: () => new Promise(() => {}),
     getEventsAfter: () => new Promise(() => {}),
     getToolCatalog: () => Promise.resolve([]),
+    getConversationHistory: () => Promise.resolve([]),
     getActiveWorkspace: () => Promise.resolve({ path: null }),
     selectWorkspaceFolder: () => Promise.resolve({ path: null, cancelled: true }),
     listProviderModels: (request) =>
@@ -46,6 +47,7 @@ function createClient(): ReplIpcClient {
       }),
     voiceTurn: () => new Promise(() => {}),
     stopActiveRun: () => Promise.resolve(),
+    newSession: () => Promise.resolve({}),
     stopSpeaking: () => Promise.resolve(),
     selectModel: () => Promise.resolve({}),
     openUi: () => Promise.resolve({}),

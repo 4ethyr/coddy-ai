@@ -252,6 +252,14 @@ export function registerIpcHandlers(): void {
     return readJson(coddySpawn(['session', 'tools']))
   })
 
+  ipcMain.handle('repl:history', async (_event, limit?: number) => {
+    const args = ['session', 'history']
+    if (Number.isSafeInteger(limit) && Number(limit) > 0) {
+      args.push('--limit', String(limit))
+    }
+    return readJson(coddySpawn(args))
+  })
+
   // ---- Workspace selection ----
   ipcMain.handle('workspace:get-active', async (): Promise<WorkspaceSelectionResult> => {
     return { path: getActiveWorkspacePath() }
@@ -412,6 +420,11 @@ export function registerIpcHandlers(): void {
     const child = coddySpawn(['stop-active-run'])
     await readJson(child)
     return { ok: true }
+  })
+
+  ipcMain.handle('repl:new-session', async () => {
+    activeRunCommands.terminateActive()
+    return runCoddyCommand(['session', 'new'])
   })
 
   ipcMain.handle(

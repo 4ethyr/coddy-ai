@@ -3,6 +3,8 @@ import type { DesktopTab } from '@/presentation/components/Sidebar'
 export type UiSlashCommand =
   | { kind: 'open-settings' }
   | { kind: 'open-desktop-tab'; tab: DesktopTab }
+  | { kind: 'open-history' }
+  | { kind: 'new-session' }
   | { kind: 'agent-workflow'; prompt: string }
 
 export type UiSlashCommandSuggestion = {
@@ -72,6 +74,18 @@ export const UI_SLASH_COMMAND_SUGGESTIONS: UiSlashCommandSuggestion[] = [
     insertText: '/settings',
     aliases: ['/setting', '/settins', '/config'],
   },
+  {
+    command: '/history',
+    title: 'Open history',
+    description: 'Show persisted redacted chat history.',
+    insertText: '/history',
+  },
+  {
+    command: '/new',
+    title: 'New session',
+    description: 'Archive this chat and start a clean session.',
+    insertText: '/new',
+  },
 ]
 
 export function resolveUiSlashCommand(input: string): UiSlashCommand | null {
@@ -84,6 +98,14 @@ export function resolveUiSlashCommand(input: string): UiSlashCommand | null {
 
   if (SETTINGS_COMMANDS.has(command)) {
     return { kind: 'open-settings' }
+  }
+
+  if (command === 'history') {
+    return { kind: 'open-history' }
+  }
+
+  if (command === 'new') {
+    return { kind: 'new-session' }
   }
 
   const tab = TAB_COMMANDS[command]

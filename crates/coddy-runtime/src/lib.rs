@@ -7,18 +7,22 @@ use coddy_agent::{
     SEARCH_FILES_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
 };
 use coddy_core::{
-    ContextItem, ContextPolicy, ModelCredential, ModelRef, PermissionReply, ReplCommand, ReplEvent,
-    ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode, ReplSession,
-    ReplSessionSnapshot, SubagentHandoffPrepared, SubagentLifecycleStatus, SubagentLifecycleUpdate,
-    SubagentRouteRecommendation, ToolCall, ToolDefinition, ToolName, ToolOutput, ToolResultStatus,
+    ContextItem, ContextPolicy, ConversationRecord, ModelCredential, ModelRef, PermissionReply,
+    ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode,
+    ReplSession, ReplSessionSnapshot, SubagentHandoffPrepared, SubagentLifecycleStatus,
+    SubagentLifecycleUpdate, SubagentRouteRecommendation, ToolCall, ToolDefinition, ToolName,
+    ToolOutput, ToolResultStatus,
 };
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
     CoddyWireResult, ReplCommandJob, ReplEventStreamJob, ReplToolCatalogItem,
 };
 use serde_json::json;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{
     collections::HashMap,
+    fs, io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
@@ -45,6 +49,13 @@ struct RuntimeState {
     session: ReplSession,
     broker: ReplEventBroker,
     agent_runs: HashMap<Uuid, AgentRunV2>,
+    conversation_history: ConversationHistoryStore,
+}
+
+#[derive(Debug)]
+struct ConversationHistoryStore {
+    path: Option<PathBuf>,
+    records: Vec<ConversationRecord>,
 }
 
 struct ModelBackedTurn<'a> {
@@ -140,6 +151,13 @@ impl CoddyRuntime {
         }
     }
 
+    pub fn with_conversation_history_path(self, path: impl Into<PathBuf>) -> Self {
+        self.with_state_mut(|state| {
+            state.conversation_history = ConversationHistoryStore::open(Some(path.into()));
+        });
+        self
+    }
+
     pub fn handle_request(&self, request: CoddyRequest) -> CoddyResult {
         match request {
             CoddyRequest::Command(job) => self.handle_command(job),
@@ -159,10 +177,14 @@ impl CoddyRuntime {
                 request_id: job.request_id,
                 tools: self.tool_catalog(),
             },
-            other => CoddyResult::Error {
-                request_id: other.request_id(),
+            CoddyRequest::ConversationHistory(job) => CoddyResult::ReplConversationHistory {
+                request_id: job.request_id,
+                conversations: self.conversation_history(job.limit),
+            },
+            CoddyRequest::EventStream(job) => CoddyResult::Error {
+                request_id: job.request_id,
                 code: "unsupported_request".to_string(),
-                message: "Coddy runtime does not handle this request yet".to_string(),
+                message: "Use the streaming runtime connection for event streams.".to_string(),
             },
         }
     }
@@ -231,6 +253,7 @@ impl CoddyRuntime {
                     spoken: speak,
                 }
             }
+            ReplCommand::NewSession => self.handle_new_session(request_id, speak),
             ReplCommand::StopSpeaking => {
                 self.publish_event_now(ReplEvent::TtsCompleted);
                 CoddyResult::ActionStatus {
@@ -368,6 +391,70 @@ impl CoddyRuntime {
         }
     }
 
+    fn handle_new_session(&self, request_id: Uuid, speak: bool) -> CoddyResult {
+        match self.start_new_session() {
+            Ok((previous_session_id, new_session_id)) => CoddyResult::ActionStatus {
+                request_id,
+                message: format!(
+                    "Started a new Coddy session {new_session_id}; archived {previous_session_id}."
+                ),
+                spoken: speak,
+            },
+            Err(message) => CoddyResult::Error {
+                request_id,
+                code: "conversation_history_write_failed".to_string(),
+                message,
+            },
+        }
+    }
+
+    fn start_new_session(&self) -> Result<(Uuid, Uuid), String> {
+        self.with_state_mut(|state| {
+            let now = unix_ms_now();
+            let current_session = state.broker.snapshot(state.session.clone()).session;
+            state
+                .conversation_history
+                .sync_session(&current_session, now)?;
+
+            let previous_session_id = current_session.id;
+            let mut next_session =
+                ReplSession::new(current_session.mode, current_session.selected_model);
+            let next_session_id = next_session.id;
+            state.broker.reset_session(next_session_id, now);
+            next_session = state.broker.replay(next_session);
+            state.session = next_session;
+            state.agent_runs.clear();
+
+            Ok((previous_session_id, next_session_id))
+        })
+    }
+
+    fn conversation_history(&self, limit: Option<usize>) -> Vec<ConversationRecord> {
+        let current_snapshot = self.snapshot().session;
+        let current_record = ConversationRecord::from_session(&current_snapshot, unix_ms_now());
+
+        self.with_state(|state| {
+            let mut records = state.conversation_history.records.clone();
+            if let Some(current_record) = current_record {
+                upsert_history_record(&mut records, current_record);
+            }
+            records.sort_by_key(|record| std::cmp::Reverse(record.summary.updated_at_unix_ms));
+            if let Some(limit) = limit {
+                records.truncate(limit);
+            }
+            records
+        })
+    }
+
+    fn persist_current_conversation(&self) {
+        let session = self.snapshot().session;
+        self.with_state_mut(|state| {
+            let _ = state
+                .conversation_history
+                .sync_session(&session, unix_ms_now());
+        });
+    }
+
     fn handle_ask(
         &self,
         request_id: Uuid,
@@ -434,6 +521,7 @@ impl CoddyRuntime {
         );
         self.complete_agent_run_if_active(run_id);
         self.publish_event_with_run_now(ReplEvent::RunCompleted { run_id }, run_id);
+        self.persist_current_conversation();
 
         CoddyResult::Text {
             request_id,
@@ -1285,8 +1373,84 @@ impl RuntimeState {
             session,
             broker,
             agent_runs: HashMap::new(),
+            conversation_history: ConversationHistoryStore::open(None),
         }
     }
+}
+
+impl ConversationHistoryStore {
+    fn open(path: Option<PathBuf>) -> Self {
+        let records = path
+            .as_ref()
+            .and_then(|path| read_history_records(path).ok())
+            .unwrap_or_default();
+
+        Self { path, records }
+    }
+
+    fn sync_session(
+        &mut self,
+        session: &ReplSession,
+        captured_at_unix_ms: u64,
+    ) -> Result<Option<ConversationRecord>, String> {
+        let Some(record) = ConversationRecord::from_session(session, captured_at_unix_ms) else {
+            return Ok(None);
+        };
+
+        upsert_history_record(&mut self.records, record.clone());
+        if let Some(path) = &self.path {
+            write_history_records(path, &self.records)
+                .map_err(|error| format!("failed to write conversation history: {error}"))?;
+        }
+
+        Ok(Some(record))
+    }
+}
+
+fn upsert_history_record(records: &mut Vec<ConversationRecord>, mut record: ConversationRecord) {
+    if let Some(existing) = records
+        .iter_mut()
+        .find(|existing| existing.summary.session_id == record.summary.session_id)
+    {
+        record.summary.created_at_unix_ms = existing.summary.created_at_unix_ms;
+        *existing = record;
+    } else {
+        records.push(record);
+    }
+}
+
+fn read_history_records(path: &Path) -> io::Result<Vec<ConversationRecord>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let raw = fs::read_to_string(path)?;
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    serde_json::from_str(&raw).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+fn write_history_records(path: &Path, records: &[ConversationRecord]) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let tmp_path = path.with_extension("json.tmp");
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    let mut file = options.open(&tmp_path)?;
+    serde_json::to_writer_pretty(&mut file, records).map_err(io::Error::other)?;
+    fs::rename(&tmp_path, path)?;
+
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+
+    Ok(())
 }
 
 fn default_session() -> ReplSession {
@@ -2445,7 +2609,8 @@ mod tests {
         ToolPermission, ToolRiskLevel, ToolStatus,
     };
     use coddy_ipc::{
-        ReplCommandJob, ReplEventStreamJob, ReplEventsJob, ReplSessionSnapshotJob, ReplToolsJob,
+        ReplCommandJob, ReplConversationHistoryJob, ReplEventStreamJob, ReplEventsJob,
+        ReplSessionSnapshotJob, ReplToolsJob,
     };
     use std::{collections::VecDeque, env, fs, path::PathBuf};
     use uuid::Uuid;
@@ -2595,6 +2760,109 @@ mod tests {
     }
 
     #[test]
+    fn conversation_history_persists_redacted_current_session() {
+        let workspace = TempWorkspace::new();
+        let history_path = workspace.path.join("conversation-history.json");
+        let runtime = CoddyRuntime::default().with_conversation_history_path(history_path.clone());
+        let request_id = Uuid::new_v4();
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Analyze this with OPENROUTER_API_KEY=sk-or-secret-token".to_string(),
+                context_policy: ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let result = runtime.handle_request(CoddyRequest::ConversationHistory(
+            ReplConversationHistoryJob {
+                request_id: Uuid::new_v4(),
+                limit: None,
+            },
+        ));
+
+        let CoddyResult::ReplConversationHistory { conversations, .. } = result else {
+            panic!("expected conversation history");
+        };
+        assert_eq!(conversations.len(), 1);
+        assert_eq!(conversations[0].summary.message_count, 2);
+        assert!(conversations[0].summary.title.contains("[redacted]"));
+
+        let raw = fs::read_to_string(history_path).expect("history file");
+        assert!(!raw.contains("sk-or-secret-token"));
+        assert!(raw.contains("[redacted]"));
+    }
+
+    #[test]
+    fn new_session_archives_and_resets_conversation_state() {
+        let runtime = CoddyRuntime::default();
+        let model = ModelRef {
+            provider: "openrouter".to_string(),
+            name: "deepseek/deepseek-v4-flash".to_string(),
+        };
+
+        runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id: Uuid::new_v4(),
+            command: ReplCommand::OpenUi {
+                mode: ReplMode::DesktopApp,
+            },
+            speak: false,
+        }));
+        runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id: Uuid::new_v4(),
+            command: ReplCommand::SelectModel {
+                model: model.clone(),
+                role: ModelRole::Chat,
+            },
+            speak: false,
+        }));
+        runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id: Uuid::new_v4(),
+            command: ReplCommand::Ask {
+                text: "Explain the workspace".to_string(),
+                context_policy: ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+        let previous_snapshot = runtime.snapshot();
+        assert_eq!(previous_snapshot.session.messages.len(), 2);
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id: Uuid::new_v4(),
+            command: ReplCommand::NewSession,
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::ActionStatus { .. }));
+        let snapshot = runtime.snapshot();
+        assert_ne!(snapshot.session.id, previous_snapshot.session.id);
+        assert_eq!(snapshot.session.mode, ReplMode::DesktopApp);
+        assert_eq!(snapshot.session.selected_model, model);
+        assert!(snapshot.session.messages.is_empty());
+        assert!(snapshot.session.workspace_context.is_empty());
+        assert!(snapshot.session.active_run.is_none());
+
+        let result = runtime.handle_request(CoddyRequest::ConversationHistory(
+            ReplConversationHistoryJob {
+                request_id: Uuid::new_v4(),
+                limit: Some(10),
+            },
+        ));
+        let CoddyResult::ReplConversationHistory { conversations, .. } = result else {
+            panic!("expected conversation history");
+        };
+        assert_eq!(conversations.len(), 1);
+        assert_eq!(
+            conversations[0].summary.session_id,
+            previous_snapshot.session.id
+        );
+    }
+
+    #[test]
     fn tools_request_returns_sorted_rich_catalog_from_agent_registry() {
         let request_id = Uuid::new_v4();
         let runtime = CoddyRuntime::default();
@@ -2736,7 +3004,7 @@ mod tests {
 
         assert_eq!(actual_request_id, request_id);
         assert_eq!(code, "unsupported_request");
-        assert!(message.contains("does not handle"));
+        assert!(message.contains("streaming runtime connection"));
     }
 
     #[test]

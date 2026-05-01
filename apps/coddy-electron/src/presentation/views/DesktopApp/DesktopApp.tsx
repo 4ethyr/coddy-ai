@@ -47,6 +47,7 @@ export function DesktopApp() {
     connecting,
     error,
     ask,
+    newSession,
     selectModel,
     listProviderModels,
     captureVoice,
@@ -56,11 +57,16 @@ export function DesktopApp() {
     selectWorkspaceFolder,
     openUi,
     replyPermission,
+    conversationHistory,
+    conversationHistoryStatus,
+    conversationHistoryError,
+    loadConversationHistory,
   } = useSessionContext()
   const [activeTab, setActiveTabState] = useState<DesktopTab>(
     loadPersistedDesktopTab,
   )
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
     () => loadSettings().floatingAppearance,
   )
@@ -143,9 +149,22 @@ export function DesktopApp() {
         return
       }
 
+      if (command.kind === 'new-session') {
+        setHistoryOpen(false)
+        void newSession()
+        return
+      }
+
+      if (command.kind === 'open-history') {
+        setActiveTab('chat')
+        setHistoryOpen(true)
+        void loadConversationHistory()
+        return
+      }
+
       setActiveTab(command.tab)
     },
-    [ask, setActiveTab],
+    [ask, loadConversationHistory, newSession, setActiveTab],
   )
 
   return (
@@ -245,6 +264,11 @@ export function DesktopApp() {
                 void replyPermission(requestId, reply)
               }}
               thinkingAnimation={modelThinking.animation}
+              historyOpen={historyOpen}
+              historyRecords={conversationHistory}
+              historyStatus={conversationHistoryStatus}
+              historyError={conversationHistoryError}
+              onCloseHistory={() => setHistoryOpen(false)}
             />
           )}
 

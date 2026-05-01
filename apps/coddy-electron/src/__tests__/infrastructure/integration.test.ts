@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import type { ReplIpcClient, ReplCommandResult } from '@/domain'
 import type {
+  ConversationRecord,
   ModelRef,
   ModelRole,
   AssessmentPolicy,
@@ -31,6 +32,7 @@ interface SimDaemon {
   snapshotSession: ReplSessionSnapshotSession
   toolCatalog: ReplToolCatalogItem[]
   commands: string[]
+  history: ConversationRecord[]
 }
 
 function createSimDaemon(): SimDaemon {
@@ -38,6 +40,7 @@ function createSimDaemon(): SimDaemon {
     currentSequence: 0,
     events: [],
     commands: [],
+    history: [],
     toolCatalog: [
       {
         name: 'filesystem.read_file',
@@ -109,6 +112,9 @@ function createSimBridge(daemon: SimDaemon) {
         // ---- Tool catalog ----
         case 'repl:tools':
           return Promise.resolve(daemon.toolCatalog)
+
+        case 'repl:history':
+          return Promise.resolve(daemon.history)
 
         case 'repl:eval-multiagent':
           daemon.commands.push('eval-multiagent')
@@ -232,6 +238,38 @@ function createSimBridge(daemon: SimDaemon) {
           daemon.commands.push('stop-active-run')
           return Promise.resolve({ ok: true })
 
+        case 'repl:new-session': {
+          daemon.commands.push('new-session')
+          if (daemon.snapshotSession.messages.length > 0) {
+            daemon.history.unshift({
+              summary: {
+                session_id: daemon.snapshotSession.id,
+                title: daemon.snapshotSession.messages[0]?.text ?? 'New conversation',
+                created_at_unix_ms: 1,
+                updated_at_unix_ms: 2,
+                message_count: daemon.snapshotSession.messages.length,
+                selected_model: daemon.snapshotSession.selected_model,
+                mode: daemon.snapshotSession.mode,
+              },
+              messages: daemon.snapshotSession.messages,
+            })
+          }
+          daemon.snapshotSession = {
+            ...daemon.snapshotSession,
+            id: `sim-session-${Date.now()}`,
+            status: 'Idle',
+            messages: [],
+            workspace_context: [],
+            active_run: null,
+            pending_permission: null,
+            subagent_activity: [],
+          }
+          pushEvent(daemon, watchListeners, {
+            SessionStarted: { session_id: daemon.snapshotSession.id },
+          })
+          return Promise.resolve({ message: 'new session' })
+        }
+
         case 'repl:select-model': {
           const model = args[0] as ModelRef
           const role = args[1] as ModelRole
@@ -351,7 +389,7 @@ function pushEvent(
   daemon.currentSequence++
   const envelope: ReplEventEnvelope = {
     sequence: daemon.currentSequence,
-    session_id: 'sim-session-uuid',
+    session_id: daemon.snapshotSession.id,
     run_id: null,
     captured_at_unix_ms: Date.now(),
     event,
@@ -436,6 +474,12 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
 
     async getToolCatalog() {
       return (await sim.invoke('repl:tools')) as ReplToolCatalogItem[]
+    },
+
+    async getConversationHistory() {
+      return (await sim.invoke('repl:history')) as Awaited<
+        ReturnType<ReplIpcClient['getConversationHistory']>
+      >
     },
 
     async getActiveWorkspace() {
@@ -533,6 +577,10 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
 
     async stopActiveRun() {
       await sim.invoke('repl:stop-active-run')
+    },
+
+    async newSession() {
+      return (await sim.invoke('repl:new-session')) as ReplCommandResult
     },
 
     async stopSpeaking() {

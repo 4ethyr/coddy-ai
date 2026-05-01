@@ -16,6 +16,7 @@ import type {
   ReplSessionSnapshot,
   ScreenAssistMode,
   AssessmentPolicy,
+  ConversationRecord,
   ReplToolCatalogItem,
 } from '../types'
 
@@ -60,6 +61,9 @@ export interface ReplIpcClient {
   /** Get the backend tool catalog exposed by the active Coddy runtime */
   getToolCatalog(): Promise<ReplToolCatalogItem[]>
 
+  /** Get persisted redacted chat history from the active runtime */
+  getConversationHistory(limit?: number): Promise<ConversationRecord[]>
+
   /** Get the Electron-selected filesystem workspace, if one is active */
   getActiveWorkspace(): Promise<WorkspaceSelectionResult>
 
@@ -90,6 +94,9 @@ export interface ReplIpcClient {
 
   /** Stop the active assistant run (cancel generation) */
   stopActiveRun(): Promise<void>
+
+  /** Archive the current conversation and start a new daemon session */
+  newSession(): Promise<ReplCommandResult>
 
   /** Stop TTS speech immediately */
   stopSpeaking(): Promise<void>

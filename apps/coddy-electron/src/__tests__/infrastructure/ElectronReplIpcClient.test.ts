@@ -107,6 +107,7 @@ describe('ElectronReplIpcClient', () => {
       { localProviderPreference: 'vllm' },
     )
     await client.getToolCatalog()
+    await client.getConversationHistory(10)
     await client.getActiveWorkspace()
     await client.selectWorkspaceFolder()
     await client.runMultiagentEval({
@@ -119,6 +120,7 @@ describe('ElectronReplIpcClient', () => {
       apiKey: 'sk-test',
     })
     await client.openUi('DesktopApp')
+    await client.newSession()
     await client.captureAndExplain('MultipleChoice', 'RestrictedAssessment')
     await client.dismissConfirmation()
     await client.replyPermission('perm-1', 'Reject')
@@ -131,6 +133,7 @@ describe('ElectronReplIpcClient', () => {
       { localProviderPreference: 'vllm' },
     )
     expect(invoke).toHaveBeenCalledWith('repl:tools')
+    expect(invoke).toHaveBeenCalledWith('repl:history', 10)
     expect(invoke).toHaveBeenCalledWith('workspace:get-active')
     expect(invoke).toHaveBeenCalledWith('workspace:select-folder')
     expect(invoke).toHaveBeenCalledWith('repl:eval-multiagent', {
@@ -143,6 +146,7 @@ describe('ElectronReplIpcClient', () => {
       apiKey: 'sk-test',
     })
     expect(invoke).toHaveBeenCalledWith('repl:open-ui', 'DesktopApp')
+    expect(invoke).toHaveBeenCalledWith('repl:new-session')
     expect(invoke).toHaveBeenCalledWith(
       'repl:capture-and-explain',
       'MultipleChoice',
