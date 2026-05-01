@@ -846,7 +846,7 @@ impl OpenAiCompatibleTransport for HttpOpenAiCompatibleTransport {
                 Err(ChatModelError::ProviderError {
                     provider: provider.to_string(),
                     message: openai_compatible_provider_error_message(provider, &body, status),
-                    retryable: status == 429 || status >= 500,
+                    retryable: is_retryable_provider_status(status),
                 })
             }
             Err(ureq::Error::Transport(error)) => Err(ChatModelError::Transport {
@@ -1170,8 +1170,8 @@ fn openai_compatible_chat_body(request: &ChatRequest) -> Value {
             serde_json::json!({
                 "type": "function",
                 "function": {
-                    "name": tool.name,
-                    "description": tool.description,
+                    "name": openai_compatible_tool_name(&tool.name),
+                    "description": openai_compatible_tool_description(tool),
                     "parameters": tool.input_schema,
                 }
             })
@@ -1194,6 +1194,36 @@ fn openai_compatible_chat_body(request: &ChatRequest) -> Value {
         body["max_tokens"] = serde_json::json!(max_output_tokens);
     }
     body
+}
+
+fn openai_compatible_tool_name(name: &str) -> String {
+    if is_openai_compatible_function_name(name) {
+        return name.to_string();
+    }
+
+    format!("coddy_tool__{}", name.replace('.', "__dot__"))
+}
+
+fn openai_compatible_tool_description(tool: &ChatToolSpec) -> String {
+    let name = openai_compatible_tool_name(&tool.name);
+    if name == tool.name {
+        tool.description.clone()
+    } else {
+        format!("Coddy tool `{}`. {}", tool.name, tool.description)
+    }
+}
+
+fn decode_openai_compatible_tool_name(name: &str) -> String {
+    name.strip_prefix("coddy_tool__")
+        .map(|name| name.replace("__dot__", "."))
+        .unwrap_or_else(|| name.to_string())
+}
+
+fn is_openai_compatible_function_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
 fn openai_compatible_message_body(message: &ChatMessage) -> Value {
@@ -1849,15 +1879,148 @@ fn openai_compatible_transport_error(provider: &str, error: std::io::Error) -> C
 }
 
 fn openai_compatible_provider_error_message(provider: &str, body: &str, status: u16) -> String {
+    let fallback = format!("{provider} returned HTTP {status}");
     serde_json::from_str::<Value>(body)
         .ok()
         .and_then(|value| {
-            value["error"]["message"]
-                .as_str()
-                .or_else(|| value["error"].as_str())
-                .map(ToOwned::to_owned)
+            openai_compatible_json_error(&value)
+                .map(|error| format_openai_compatible_error(provider, error, Some(status)))
         })
-        .unwrap_or_else(|| format!("{provider} returned HTTP {status}"))
+        .unwrap_or(fallback)
+}
+
+fn openai_compatible_json_error(value: &Value) -> Option<&Value> {
+    value.get("error").filter(|error| !error.is_null())
+}
+
+fn openai_compatible_error_retryable(error: &Value, status: Option<u16>) -> bool {
+    if status.is_some_and(is_retryable_provider_status) {
+        return true;
+    }
+    if let Some(code) = openai_compatible_error_code(error) {
+        if let Ok(status) = code.parse::<u16>() {
+            return is_retryable_provider_status(status);
+        }
+        let normalized = code.to_ascii_lowercase();
+        return normalized.contains("rate_limit")
+            || normalized.contains("timeout")
+            || normalized.contains("server_error")
+            || normalized.contains("provider_error")
+            || normalized.contains("temporar")
+            || normalized.contains("overload")
+            || normalized.contains("unavailable");
+    }
+    false
+}
+
+fn is_retryable_provider_status(status: u16) -> bool {
+    matches!(status, 408 | 429) || status >= 500
+}
+
+fn format_openai_compatible_error(provider: &str, error: &Value, status: Option<u16>) -> String {
+    let base = openai_compatible_error_message(error)
+        .unwrap_or_else(|| format!("{provider} returned an error"));
+    let mut details = Vec::new();
+    if let Some(status) = status {
+        details.push(format!("HTTP {status}"));
+    }
+    if let Some(code) = openai_compatible_error_code(error) {
+        if status.map(|status| status.to_string()) != Some(code.clone()) {
+            details.push(format!("code {code}"));
+        }
+    }
+    if let Some(provider_name) = error["metadata"]["provider_name"].as_str() {
+        details.push(format!("upstream provider: {provider_name}"));
+    }
+    if let Some(raw) = openai_compatible_raw_error_message(error) {
+        details.push(format!("upstream detail: {raw}"));
+    }
+
+    let message = if details.is_empty() {
+        base
+    } else {
+        format!("{base} ({})", details.join("; "))
+    };
+    redact_provider_error_text(&truncate_provider_error_detail(&message, 720))
+}
+
+fn openai_compatible_error_message(error: &Value) -> Option<String> {
+    error["message"]
+        .as_str()
+        .or_else(|| error.as_str())
+        .map(ToOwned::to_owned)
+}
+
+fn openai_compatible_error_code(error: &Value) -> Option<String> {
+    error["code"]
+        .as_i64()
+        .map(|code| code.to_string())
+        .or_else(|| error["status"].as_i64().map(|code| code.to_string()))
+        .or_else(|| error["code"].as_str().map(ToOwned::to_owned))
+        .or_else(|| error["status"].as_str().map(ToOwned::to_owned))
+}
+
+fn openai_compatible_raw_error_message(error: &Value) -> Option<String> {
+    let raw = &error["metadata"]["raw"];
+    if raw.is_null() {
+        return None;
+    }
+    raw["error"]["message"]
+        .as_str()
+        .or_else(|| raw["message"].as_str())
+        .or_else(|| raw["error"].as_str())
+        .map(ToOwned::to_owned)
+        .or_else(|| raw.as_str().map(ToOwned::to_owned))
+        .or_else(|| serde_json::to_string(raw).ok())
+        .map(|text| truncate_provider_error_detail(&text, 360))
+}
+
+fn truncate_provider_error_detail(text: &str, max_chars: usize) -> String {
+    let mut output = String::new();
+    for character in text.chars().take(max_chars) {
+        output.push(character);
+    }
+    if text.chars().count() > max_chars {
+        output.push_str("...");
+    }
+    output
+}
+
+fn redact_provider_error_text(text: &str) -> String {
+    let markers = ["Bearer ", "sk-or-", "ya29.", "sk-"];
+    let mut output = String::with_capacity(text.len());
+    let mut index = 0;
+
+    while index < text.len() {
+        if let Some(marker) = markers
+            .iter()
+            .find(|candidate| text[index..].starts_with(**candidate))
+        {
+            output.push_str(marker);
+            output.push_str("[REDACTED]");
+            let token_start = index + marker.len();
+            index = text[token_start..]
+                .char_indices()
+                .find_map(|(offset, character)| {
+                    (!is_provider_secret_token_character(character)).then_some(token_start + offset)
+                })
+                .unwrap_or(text.len());
+            continue;
+        }
+
+        let character = text[index..]
+            .chars()
+            .next()
+            .expect("index remains on a UTF-8 boundary");
+        output.push(character);
+        index += character.len_utf8();
+    }
+
+    output
+}
+
+fn is_provider_secret_token_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
 }
 
 fn gemini_api_transport_error(error: std::io::Error) -> ChatModelError {
@@ -2037,14 +2200,11 @@ fn parse_openai_compatible_chat_body(provider: &str, body: &str) -> ChatModelRes
             provider: provider.to_string(),
             message: format!("invalid JSON response: {error}"),
         })?;
-    if let Some(message) = value["error"]["message"]
-        .as_str()
-        .or_else(|| value["error"].as_str())
-    {
+    if let Some(error) = openai_compatible_json_error(&value) {
         return Err(ChatModelError::ProviderError {
             provider: provider.to_string(),
-            message: message.to_string(),
-            retryable: false,
+            message: format_openai_compatible_error(provider, error, None),
+            retryable: openai_compatible_error_retryable(error, None),
         });
     }
 
@@ -2055,6 +2215,20 @@ fn parse_openai_compatible_chat_body(provider: &str, body: &str) -> ChatModelRes
             provider: provider.to_string(),
             message: "response did not include choices".to_string(),
         })?;
+    if let Some(error) = openai_compatible_json_error(choice) {
+        return Err(ChatModelError::ProviderError {
+            provider: provider.to_string(),
+            message: format_openai_compatible_error(provider, error, None),
+            retryable: openai_compatible_error_retryable(error, None),
+        });
+    }
+    if choice["finish_reason"].as_str() == Some("error") {
+        return Err(ChatModelError::ProviderError {
+            provider: provider.to_string(),
+            message: format!("{provider} returned finish_reason=error without error details"),
+            retryable: true,
+        });
+    }
     let message = &choice["message"];
     let text = openai_compatible_message_content(&message["content"]);
     let tool_calls = parse_openai_compatible_tool_calls(provider, message)?;
@@ -2130,7 +2304,7 @@ fn parse_openai_compatible_tool_calls(
             })?;
             Ok(ChatToolCall {
                 id: call["id"].as_str().map(ToOwned::to_owned),
-                name: name.to_string(),
+                name: decode_openai_compatible_tool_name(name),
                 arguments: parse_tool_arguments_for_provider(provider, &function["arguments"])?,
             })
         })
@@ -2753,7 +2927,11 @@ mod tests {
         );
         assert_eq!(
             body["tools"][0]["function"]["name"],
-            "filesystem.list_files"
+            "coddy_tool__filesystem__dot__list_files"
+        );
+        assert_eq!(
+            body["tools"][0]["function"]["description"],
+            "Coddy tool `filesystem.list_files`. List files"
         );
         assert_eq!(body["tool_choice"], "auto");
         let temperature = body["temperature"].as_f64().expect("temperature");
@@ -2895,7 +3073,7 @@ mod tests {
         );
         assert_eq!(
             body["tools"][0]["function"]["name"],
-            "filesystem.list_files"
+            "coddy_tool__filesystem__dot__list_files"
         );
         assert_eq!(body["tool_choice"], "auto");
         let temperature = body["temperature"].as_f64().expect("temperature");
@@ -3579,7 +3757,7 @@ mod tests {
                                 "id": "call-1",
                                 "type": "function",
                                 "function": {
-                                    "name": "filesystem.list_files",
+                                    "name": "coddy_tool__filesystem__dot__list_files",
                                     "arguments": "{\"path\":\".\"}"
                                 }
                             }
@@ -3604,6 +3782,81 @@ mod tests {
                 arguments: serde_json::json!({ "path": "." }),
             }]
         );
+    }
+
+    #[test]
+    fn parses_openrouter_error_metadata_from_success_status_body() {
+        let body = serde_json::json!({
+            "error": {
+                "code": 502,
+                "message": "Provider returned error",
+                "metadata": {
+                    "provider_name": "DeepSeek",
+                    "raw": {
+                        "error": {
+                            "message": "upstream overloaded sk-or-secret-token"
+                        }
+                    }
+                }
+            }
+        })
+        .to_string();
+
+        let error =
+            parse_openai_compatible_chat_body("openrouter", &body).expect_err("provider error");
+
+        assert_eq!(error.code(), "provider_error");
+        let ChatModelError::ProviderError {
+            provider,
+            message,
+            retryable,
+        } = error
+        else {
+            panic!("expected provider error");
+        };
+        assert_eq!(provider, "openrouter");
+        assert!(retryable);
+        assert!(message.contains("Provider returned error"));
+        assert!(message.contains("code 502"));
+        assert!(message.contains("upstream provider: DeepSeek"));
+        assert!(message.contains("upstream detail: upstream overloaded"));
+        assert!(message.contains("sk-or-[REDACTED]"));
+        assert!(!message.contains("secret-token"));
+    }
+
+    #[test]
+    fn parses_openrouter_choice_error_as_provider_error() {
+        let body = serde_json::json!({
+            "choices": [
+                {
+                    "finish_reason": "error",
+                    "error": {
+                        "code": "server_error",
+                        "message": "Provider returned error",
+                        "metadata": {
+                            "provider_name": "DeepSeek",
+                            "raw": { "message": "provider disconnected" }
+                        }
+                    }
+                }
+            ]
+        })
+        .to_string();
+
+        let error =
+            parse_openai_compatible_chat_body("openrouter", &body).expect_err("provider error");
+
+        let ChatModelError::ProviderError {
+            message, retryable, ..
+        } = error
+        else {
+            panic!("expected provider error");
+        };
+        assert!(retryable);
+        assert!(message.contains("Provider returned error"));
+        assert!(message.contains("code server_error"));
+        assert!(message.contains("upstream provider: DeepSeek"));
+        assert!(message.contains("provider disconnected"));
     }
 
     #[test]
