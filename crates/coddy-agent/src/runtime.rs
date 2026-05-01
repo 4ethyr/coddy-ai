@@ -95,7 +95,15 @@ impl LocalAgentRuntime {
     }
 
     pub fn start_run(&self, session_id: Uuid, goal: impl Into<String>) -> RunState {
-        let run_id = Uuid::new_v4();
+        self.start_run_with_id(session_id, Uuid::new_v4(), goal)
+    }
+
+    pub fn start_run_with_id(
+        &self,
+        session_id: Uuid,
+        run_id: Uuid,
+        goal: impl Into<String>,
+    ) -> RunState {
         RunState {
             session_id,
             run_id,
@@ -365,6 +373,23 @@ mod tests {
         assert!(matches!(
             state.events.last(),
             Some(ReplEvent::RunCompleted { run_id }) if *run_id == state.run_id
+        ));
+    }
+
+    #[test]
+    fn start_run_with_id_preserves_external_run_id() {
+        let workspace = TempWorkspace::new();
+        let runtime = LocalAgentRuntime::new(&workspace.path).expect("runtime");
+        let session_id = Uuid::new_v4();
+        let run_id = Uuid::new_v4();
+
+        let state = runtime.start_run_with_id(session_id, run_id, "correlate ui run");
+
+        assert_eq!(state.session_id, session_id);
+        assert_eq!(state.run_id, run_id);
+        assert!(matches!(
+            state.events.first(),
+            Some(ReplEvent::RunStarted { run_id: event_run_id }) if *event_run_id == run_id
         ));
     }
 }

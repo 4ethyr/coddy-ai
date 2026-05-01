@@ -32,6 +32,7 @@ pub struct AgenticLoopConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgenticLoopRequest {
     pub session_id: Uuid,
+    pub run_id: Option<Uuid>,
     pub goal: String,
     pub model: ModelRef,
     pub model_credential: Option<ModelCredential>,
@@ -98,6 +99,7 @@ impl AgenticLoopRequest {
     pub fn new(session_id: Uuid, goal: impl Into<String>, model: ModelRef) -> AgenticLoopRequest {
         Self {
             session_id,
+            run_id: None,
             goal: goal.into(),
             model,
             model_credential: None,
@@ -109,6 +111,11 @@ impl AgenticLoopRequest {
 
     pub fn with_model_credential(mut self, credential: Option<ModelCredential>) -> Self {
         self.model_credential = credential;
+        self
+    }
+
+    pub fn with_run_id(mut self, run_id: Uuid) -> Self {
+        self.run_id = Some(run_id);
         self
     }
 }
@@ -135,9 +142,15 @@ impl<'a> AgenticModelLoop<'a> {
     }
 
     pub fn run(&self, request: AgenticLoopRequest) -> AgenticLoopOutcome {
-        let mut state = self
-            .runtime
-            .start_run(request.session_id, request.goal.clone());
+        let mut state = match request.run_id {
+            Some(run_id) => {
+                self.runtime
+                    .start_run_with_id(request.session_id, run_id, request.goal.clone())
+            }
+            None => self
+                .runtime
+                .start_run(request.session_id, request.goal.clone()),
+        };
         self.runtime.add_plan_item(
             &mut state,
             "Run model-driven coding loop with tool calls, observations and validation",
@@ -825,5 +838,26 @@ mod tests {
             .messages
             .iter()
             .any(|message| message.content.contains("Coddy's coding agent")));
+    }
+
+    #[test]
+    fn can_use_external_run_id_for_ui_event_correlation() {
+        let workspace = TempWorkspace::new();
+        let runtime = LocalAgentRuntime::new(&workspace.path).expect("runtime");
+        let model = ScriptedModel::new(vec![ChatResponse::from_text("done")]);
+        let run_id = Uuid::new_v4();
+
+        let outcome = AgenticModelLoop::new(&runtime, &model).run(
+            AgenticLoopRequest::new(Uuid::new_v4(), "finish", test_model_ref()).with_run_id(run_id),
+        );
+
+        assert_eq!(outcome.state.run_id, run_id);
+        assert!(matches!(
+            outcome.state.events.first(),
+            Some(ReplEvent::RunStarted { run_id: event_run_id }) if *event_run_id == run_id
+        ));
+        assert!(outcome.state.events.iter().any(
+            |event| matches!(event, ReplEvent::RunCompleted { run_id: event_run_id } if *event_run_id == run_id)
+        ));
     }
 }
