@@ -238,7 +238,14 @@ impl AgentRunV2 {
             (AgentRunPhase::Inspecting, AgentRunAction::Edit) => AgentRunPhase::Editing,
             (AgentRunPhase::Editing, AgentRunAction::Test) => AgentRunPhase::Testing,
             (AgentRunPhase::Testing, AgentRunAction::Review) => AgentRunPhase::Reviewing,
-            (AgentRunPhase::Reviewing, AgentRunAction::Complete) => AgentRunPhase::Completed,
+            (
+                AgentRunPhase::Planning
+                | AgentRunPhase::Inspecting
+                | AgentRunPhase::Editing
+                | AgentRunPhase::Testing
+                | AgentRunPhase::Reviewing,
+                AgentRunAction::Complete,
+            ) => AgentRunPhase::Completed,
             (_, AgentRunAction::Cancel { .. }) => AgentRunPhase::Cancelled,
             (_, AgentRunAction::Fail { .. }) => AgentRunPhase::Failed,
             _ => return Err(invalid_transition(self.phase, action)),
@@ -291,6 +298,18 @@ mod tests {
         assert_eq!(error.code(), "invalid_agent_run_transition");
         assert_eq!(run.phase(), AgentRunPhase::Received);
         assert!(run.history().is_empty());
+    }
+
+    #[test]
+    fn completes_read_only_flow_after_inspection() {
+        let mut run = AgentRunV2::start("list workspace files");
+
+        run.transition(AgentRunAction::Plan).expect("plan");
+        run.transition(AgentRunAction::Inspect).expect("inspect");
+        run.transition(AgentRunAction::Complete).expect("complete");
+
+        assert_eq!(run.phase(), AgentRunPhase::Completed);
+        assert_eq!(run.completed_steps(), 3);
     }
 
     #[test]
