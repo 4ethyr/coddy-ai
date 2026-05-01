@@ -27,10 +27,12 @@ export {
 export {
   DEFAULT_FLOATING_APPEARANCE,
   DEFAULT_EVAL_HARNESS,
+  DEFAULT_LOCAL_MODEL_SETTINGS,
   DEFAULT_MODEL_THINKING,
   loadSettings,
   normalizeEvalHarness,
   normalizeFloatingAppearance,
+  normalizeLocalModelSettings,
   normalizeModelThinking,
   saveSettings,
 } from './SettingsStore'
@@ -38,6 +40,8 @@ export type {
   EvalHarnessSettings,
   FloatingFontFamily,
   FloatingAppearanceSettings,
+  LocalModelProviderPreference,
+  LocalModelSettings,
   ModelThinkingEffort,
   ModelThinkingSettings,
   ThinkingAnimation,

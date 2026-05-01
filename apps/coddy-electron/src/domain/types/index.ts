@@ -25,6 +25,8 @@ export type {
   ModelProviderListRequest,
   ModelProviderListResult,
   ModelProviderOption,
+  ModelSelectionOptions,
+  LocalModelProviderPreference,
   ProviderConnectionKind,
   RuntimeChatCapability,
   RuntimeChatSupport,

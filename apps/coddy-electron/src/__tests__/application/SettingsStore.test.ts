@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_EVAL_HARNESS,
   DEFAULT_FLOATING_APPEARANCE,
+  DEFAULT_LOCAL_MODEL_SETTINGS,
   DEFAULT_MODEL_THINKING,
   normalizeEvalHarness,
   normalizeFloatingAppearance,
+  normalizeLocalModelSettings,
   normalizeModelThinking,
 } from '@/application'
 
@@ -89,5 +91,26 @@ describe('SettingsStore', () => {
 
   it('falls back when eval harness paths are absent', () => {
     expect(normalizeEvalHarness(undefined)).toEqual(DEFAULT_EVAL_HARNESS)
+  })
+
+  it('normalizes the preferred local model provider', () => {
+    expect(
+      normalizeLocalModelSettings({
+        providerPreference: 'vllm',
+      }),
+    ).toEqual({
+      providerPreference: 'vllm',
+    })
+  })
+
+  it('falls back when local model provider settings are invalid or absent', () => {
+    expect(
+      normalizeLocalModelSettings({
+        providerPreference: 'bad-provider',
+      } as never),
+    ).toEqual(DEFAULT_LOCAL_MODEL_SETTINGS)
+    expect(normalizeLocalModelSettings(undefined)).toEqual(
+      DEFAULT_LOCAL_MODEL_SETTINGS,
+    )
   })
 })

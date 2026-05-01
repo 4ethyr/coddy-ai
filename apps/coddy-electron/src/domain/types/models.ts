@@ -15,6 +15,7 @@ export type ProviderConnectionKind =
 
 export type RuntimeChatSupport = 'supported' | 'adapter_pending'
 export type RuntimeTtsRoute = 'native' | 'fallback'
+export type LocalModelProviderPreference = 'auto' | 'ollama' | 'hf' | 'vllm'
 
 export interface RuntimeChatCapability {
   status: RuntimeChatSupport
@@ -57,6 +58,10 @@ export interface ModelProviderListResult {
     persisted: boolean
     message: string
   }
+}
+
+export interface ModelSelectionOptions {
+  localProviderPreference?: LocalModelProviderPreference
 }
 
 export interface ModelProviderOption {

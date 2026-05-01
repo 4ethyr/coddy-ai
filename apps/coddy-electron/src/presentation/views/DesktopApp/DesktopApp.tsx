@@ -6,9 +6,15 @@ import { useCallback, useState, type ComponentProps } from 'react'
 import type {
   EvalHarnessSettings,
   FloatingAppearanceSettings,
+  LocalModelSettings,
   ModelThinkingSettings,
 } from '@/application'
-import { loadSettings, normalizeEvalHarness, saveSettings } from '@/application'
+import {
+  loadSettings,
+  normalizeEvalHarness,
+  normalizeLocalModelSettings,
+  saveSettings,
+} from '@/application'
 import { getRuntimeChatCapability, getRuntimeTtsCapability } from '@/domain'
 import { useSessionContext } from '@/presentation/hooks'
 import { Sidebar, type DesktopTab } from '@/presentation/components/Sidebar'
@@ -50,6 +56,9 @@ export function DesktopApp() {
   const [modelThinking, setModelThinking] = useState<ModelThinkingSettings>(
     () => loadSettings().modelThinking,
   )
+  const [localModel, setLocalModel] = useState<LocalModelSettings>(
+    () => loadSettings().localModel,
+  )
   const [evalHarness, setEvalHarness] = useState<EvalHarnessSettings>(
     () => loadSettings().evalHarness,
   )
@@ -87,6 +96,12 @@ export function DesktopApp() {
     },
     [],
   )
+
+  const handleLocalModelChange = useCallback((next: LocalModelSettings) => {
+    const normalized = normalizeLocalModelSettings(next)
+    setLocalModel(normalized)
+    saveSettings({ localModel: normalized })
+  }, [])
 
   const handleEvalHarnessChange = useCallback((next: EvalHarnessSettings) => {
     const normalized = normalizeEvalHarness(next)
@@ -229,8 +244,10 @@ export function DesktopApp() {
             <SettingsTab
               appearance={appearance}
               modelThinking={modelThinking}
+              localModel={localModel}
               onOpenAppearance={() => setSettingsOpen(true)}
               onModelThinkingChange={handleModelThinkingChange}
+              onLocalModelChange={handleLocalModelChange}
             />
           )}
         </div>
@@ -369,16 +386,23 @@ function ModelsTab({
 function SettingsTab({
   appearance,
   modelThinking,
+  localModel,
   onOpenAppearance,
   onModelThinkingChange,
+  onLocalModelChange,
 }: {
   appearance: FloatingAppearanceSettings
   modelThinking: ModelThinkingSettings
+  localModel: LocalModelSettings
   onOpenAppearance: () => void
   onModelThinkingChange: (next: ModelThinkingSettings) => void
+  onLocalModelChange: (next: LocalModelSettings) => void
 }) {
   const setThinking = (patch: Partial<ModelThinkingSettings>) => {
     onModelThinkingChange({ ...modelThinking, ...patch })
+  }
+  const setLocalModel = (patch: Partial<LocalModelSettings>) => {
+    onLocalModelChange(normalizeLocalModelSettings({ ...localModel, ...patch }))
   }
 
   return (
@@ -484,6 +508,28 @@ function SettingsTab({
             </div>
           </div>
         </section>
+
+        <section className="desktop-glass-panel mt-4 rounded-xl p-5">
+          <div className="flex flex-col gap-5">
+            <div>
+              <h2 className="font-display text-lg text-on-surface">
+                Local model provider
+              </h2>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-on-surface-variant">
+                Escolha qual ferramenta local o Coddy deve preferir ao preparar
+                modelos na maquina. Auto detecta Ollama, vLLM e hf nessa ordem.
+              </p>
+            </div>
+            <SegmentedControl
+              label="Provider"
+              value={localModel.providerPreference}
+              options={['auto', 'ollama', 'hf', 'vllm']}
+              onChange={(providerPreference) =>
+                setLocalModel({ providerPreference })
+              }
+            />
+          </div>
+        </section>
       </div>
     </div>
   )
@@ -510,6 +556,7 @@ function SegmentedControl<TValue extends string>({
           <button
             key={option}
             type="button"
+            aria-pressed={option === value}
             onClick={() => onChange(option)}
             className={`rounded-full border px-3 py-1 font-mono text-xs capitalize transition-colors ${
               option === value

@@ -19,6 +19,10 @@ import {
 } from './secureCredentialStore'
 import { buildRuntimeCredentialEnvironment } from './runtimeCredentialBridge'
 import { redactSensitiveLogText } from './sensitiveLogRedaction'
+import {
+  ensureLocalModelReady,
+  type LocalModelProviderPreference,
+} from './localModelManager'
 
 type ModelRef = {
   provider: string
@@ -26,6 +30,9 @@ type ModelRef = {
 }
 
 type ModelRole = 'Chat' | 'Ocr' | 'Asr' | 'Tts' | 'Embedding'
+type ModelSelectionOptions = {
+  localProviderPreference?: LocalModelProviderPreference
+}
 type ReplMode = 'FloatingTerminal' | 'DesktopApp'
 type ScreenAssistMode =
   | 'ExplainVisibleScreen'
@@ -424,7 +431,25 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(
     'repl:select-model',
-    async (_event, model: ModelRef, role: ModelRole) => {
+    async (
+      _event,
+      model: ModelRef,
+      role: ModelRole,
+      options?: ModelSelectionOptions,
+    ) => {
+      const localModelReady = await ensureLocalModelReady(model, {
+        preferredProvider: normalizeLocalProviderPreference(
+          options?.localProviderPreference,
+        ),
+      })
+      if (localModelReady.status === 'error') {
+        return {
+          error: {
+            code: localModelReady.code ?? 'LOCAL_MODEL_PRELOAD_FAILED',
+            message: localModelReady.message,
+          },
+        }
+      }
       const child = coddySpawn([
         'model',
         'select',
@@ -665,6 +690,14 @@ function normalizeOptionalPath(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+function normalizeLocalProviderPreference(
+  value: unknown,
+): LocalModelProviderPreference {
+  return value === 'ollama' || value === 'hf' || value === 'vllm'
+    ? value
+    : 'auto'
 }
 
 async function runtimeCredentialEnvironmentForActiveModel(

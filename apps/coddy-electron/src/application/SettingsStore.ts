@@ -2,7 +2,9 @@
 // Simple JSON persistence for user preferences (model, voice, theme, mode).
 // Uses localStorage. Falls back to in-memory default when not in browser.
 
-import type { ModelRef, ReplMode } from '@/domain'
+import type { LocalModelProviderPreference, ModelRef, ReplMode } from '@/domain'
+
+export type { LocalModelProviderPreference } from '@/domain'
 
 export interface FloatingAppearanceSettings {
   blurPx: number
@@ -33,6 +35,10 @@ export interface EvalHarnessSettings {
   writeBaselinePath: string
 }
 
+export interface LocalModelSettings {
+  providerPreference: LocalModelProviderPreference
+}
+
 export interface UserSettings {
   selectedModel: ModelRef
   mode: ReplMode
@@ -41,6 +47,7 @@ export interface UserSettings {
   floatingAppearance: FloatingAppearanceSettings
   modelThinking: ModelThinkingSettings
   evalHarness: EvalHarnessSettings
+  localModel: LocalModelSettings
 }
 
 const STORAGE_KEY = 'coddy:settings'
@@ -70,6 +77,10 @@ export const DEFAULT_EVAL_HARNESS: EvalHarnessSettings = {
   writeBaselinePath: '',
 }
 
+export const DEFAULT_LOCAL_MODEL_SETTINGS: LocalModelSettings = {
+  providerPreference: 'auto',
+}
+
 const DEFAULT_SETTINGS: UserSettings = {
   selectedModel: { provider: 'ollama', name: 'gemma4:e2b' },
   mode: 'FloatingTerminal',
@@ -78,6 +89,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   floatingAppearance: { ...DEFAULT_FLOATING_APPEARANCE },
   modelThinking: { ...DEFAULT_MODEL_THINKING },
   evalHarness: { ...DEFAULT_EVAL_HARNESS },
+  localModel: { ...DEFAULT_LOCAL_MODEL_SETTINGS },
 }
 
 function isBrowser(): boolean {
@@ -100,6 +112,7 @@ export function loadSettings(): UserSettings {
       floatingAppearance: normalizeFloatingAppearance(parsed.floatingAppearance),
       modelThinking: normalizeModelThinking(parsed.modelThinking),
       evalHarness: normalizeEvalHarness(parsed.evalHarness),
+      localModel: normalizeLocalModelSettings(parsed.localModel),
     }
   } catch {
     return { ...DEFAULT_SETTINGS }
@@ -137,6 +150,16 @@ export function normalizeModelThinking(
       DEFAULT_MODEL_THINKING.budgetTokens,
     ),
     animation: validThinkingAnimation(value?.animation),
+  }
+}
+
+export function normalizeLocalModelSettings(
+  value: Partial<LocalModelSettings> | undefined,
+): LocalModelSettings {
+  return {
+    providerPreference: validLocalModelProviderPreference(
+      value?.providerPreference,
+    ),
   }
 }
 
@@ -238,4 +261,12 @@ function validThinkingAnimation(
   return value === 'pulse' || value === 'scan' || value === 'orbit'
     ? value
     : DEFAULT_MODEL_THINKING.animation
+}
+
+function validLocalModelProviderPreference(
+  value: LocalModelProviderPreference | undefined,
+): LocalModelProviderPreference {
+  return value === 'auto' || value === 'ollama' || value === 'hf' || value === 'vllm'
+    ? value
+    : DEFAULT_LOCAL_MODEL_SETTINGS.providerPreference
 }

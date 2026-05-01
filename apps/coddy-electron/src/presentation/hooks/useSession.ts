@@ -37,6 +37,7 @@ import {
   listProviderModels,
   runMultiagentEval,
   runPromptBatteryEval,
+  loadSettings,
 } from '@/application'
 import { useReplClient } from './useReplClient'
 
@@ -211,7 +212,10 @@ export function useSession(): UseSessionReturn {
   const handleSelectModel = useCallback(
     async (model: ModelRef, role: ModelRole = 'Chat') => {
       try {
-        await selectModel(client, model, role)
+        await selectModel(client, model, role, {
+          localProviderPreference:
+            loadSettings().localModel.providerPreference,
+        })
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err))
       }
