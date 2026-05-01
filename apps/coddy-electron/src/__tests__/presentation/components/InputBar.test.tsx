@@ -95,6 +95,64 @@ describe('InputBar', () => {
     })
     expect(readText).toHaveBeenCalledOnce()
   })
+
+  it('suggests slash workflow commands and inserts the selected command', async () => {
+    const onSend = vi.fn()
+    render(<InputBar onSend={onSend} />)
+
+    const textarea = screen.getByPlaceholderText(
+      'Enter command or prompt...',
+    ) as HTMLTextAreaElement
+    await userEvent.type(textarea, '/pl')
+
+    const planOption = screen.getByRole('option', {
+      name: /\/plan plan a coding task/i,
+    })
+    await userEvent.click(planOption)
+
+    expect(textarea.value).toBe('/plan ')
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('selects the active slash suggestion with Enter before submitting', async () => {
+    const onSend = vi.fn()
+    const user = userEvent.setup()
+    render(<InputBar onSend={onSend} />)
+
+    const textarea = screen.getByPlaceholderText(
+      'Enter command or prompt...',
+    ) as HTMLTextAreaElement
+    await user.type(textarea, '/rev')
+    await user.keyboard('{Enter}')
+
+    expect(textarea.value).toBe('/review ')
+    expect(onSend).not.toHaveBeenCalled()
+
+    await user.type(textarea, 'recent diff{Enter}')
+
+    expect(onSend).toHaveBeenCalledWith('/review recent diff')
+  })
+
+  it('closes slash suggestions with Escape without clearing the input', async () => {
+    const user = userEvent.setup()
+    render(<InputBar onSend={() => {}} />)
+
+    const textarea = screen.getByPlaceholderText(
+      'Enter command or prompt...',
+    ) as HTMLTextAreaElement
+    await user.type(textarea, '/')
+
+    expect(
+      screen.getByRole('listbox', { name: 'Slash commands' }),
+    ).toBeInTheDocument()
+
+    await user.keyboard('{Escape}')
+
+    expect(textarea.value).toBe('/')
+    expect(
+      screen.queryByRole('listbox', { name: 'Slash commands' }),
+    ).not.toBeInTheDocument()
+  })
 })
 
 function tagName(el: HTMLElement): string {

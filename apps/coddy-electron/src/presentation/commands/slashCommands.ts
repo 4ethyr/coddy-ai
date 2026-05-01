@@ -5,6 +5,15 @@ export type UiSlashCommand =
   | { kind: 'open-desktop-tab'; tab: DesktopTab }
   | { kind: 'agent-workflow'; prompt: string }
 
+export type UiSlashCommandSuggestion = {
+  command: string
+  title: string
+  description: string
+  insertText: string
+  aliases?: string[]
+  requiresArgument?: boolean
+}
+
 const DESKTOP_TAB_STORAGE_KEY = 'coddy:desktop-active-tab'
 
 const TAB_COMMANDS: Record<string, DesktopTab> = {
@@ -18,6 +27,52 @@ const TAB_COMMANDS: Record<string, DesktopTab> = {
 
 const SETTINGS_COMMANDS = new Set(['settings', 'setting', 'settins', 'config'])
 const WORKFLOW_COMMANDS = new Set(['plan', 'review', 'test', 'tests'])
+
+export const UI_SLASH_COMMAND_SUGGESTIONS: UiSlashCommandSuggestion[] = [
+  {
+    command: '/plan',
+    title: 'Plan a coding task',
+    description: 'Read-only plan with assumptions, risks and validation steps.',
+    insertText: '/plan ',
+    requiresArgument: true,
+  },
+  {
+    command: '/review',
+    title: 'Review code or a diff',
+    description: 'Bug, regression, security and test-risk review workflow.',
+    insertText: '/review ',
+    requiresArgument: true,
+  },
+  {
+    command: '/test',
+    title: 'Choose focused validation',
+    description: 'Find and run the smallest useful test, lint or build check.',
+    insertText: '/test ',
+    aliases: ['/tests'],
+    requiresArgument: true,
+  },
+  {
+    command: '/workspace',
+    title: 'Open workspace',
+    description: 'Select folders, inspect context, tools and evals.',
+    insertText: '/workspace',
+    aliases: ['/workspaces', '/files'],
+  },
+  {
+    command: '/models',
+    title: 'Open models',
+    description: 'Load providers, choose models and inspect runtime readiness.',
+    insertText: '/models',
+    aliases: ['/model'],
+  },
+  {
+    command: '/settings',
+    title: 'Open settings',
+    description: 'Adjust appearance, local model provider and thinking UI.',
+    insertText: '/settings',
+    aliases: ['/setting', '/settins', '/config'],
+  },
+]
 
 export function resolveUiSlashCommand(input: string): UiSlashCommand | null {
   const trimmed = input.trim()
@@ -46,6 +101,22 @@ export function resolveUiSlashCommand(input: string): UiSlashCommand | null {
   }
 
   return null
+}
+
+export function listUiSlashCommandSuggestions(
+  input: string,
+): UiSlashCommandSuggestion[] {
+  const query = input.trimStart()
+  if (!query.startsWith('/')) return []
+  if (/\s/.test(query)) return []
+
+  const loweredQuery = query.toLowerCase()
+  return UI_SLASH_COMMAND_SUGGESTIONS.filter((suggestion) => {
+    const names = [suggestion.command, ...(suggestion.aliases ?? [])]
+    const exactPrimaryCommand = suggestion.command === loweredQuery
+    if (exactPrimaryCommand && !suggestion.requiresArgument) return false
+    return names.some((name) => name.startsWith(loweredQuery))
+  })
 }
 
 function codingWorkflowPrompt(command: string, goal: string): string {
