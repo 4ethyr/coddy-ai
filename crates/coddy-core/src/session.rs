@@ -67,6 +67,12 @@ pub struct SubagentActivity {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentRunActivity {
+    pub run_id: Uuid,
+    pub summary: crate::AgentRunSummary,
+}
+
 const SUBAGENT_READY_SCORE: u8 = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -82,6 +88,8 @@ pub struct ReplSession {
     pub messages: Vec<ReplMessage>,
     pub active_run: Option<Uuid>,
     pub pending_permission: Option<crate::PermissionRequest>,
+    #[serde(default)]
+    pub agent_run: Option<AgentRunActivity>,
     pub subagent_activity: Vec<SubagentActivity>,
 }
 
@@ -99,6 +107,7 @@ impl ReplSession {
             messages: Vec::new(),
             active_run: None,
             pending_permission: None,
+            agent_run: None,
             subagent_activity: Vec::new(),
         }
     }
@@ -115,6 +124,7 @@ impl ReplSession {
             }
             crate::ReplEvent::RunStarted { run_id } => {
                 self.active_run = Some(*run_id);
+                self.agent_run = None;
                 self.subagent_activity.clear();
                 self.status = SessionStatus::Thinking;
             }
@@ -139,6 +149,12 @@ impl ReplSession {
             }
             crate::ReplEvent::IntentDetected { .. } => {
                 self.status = SessionStatus::Thinking;
+            }
+            crate::ReplEvent::AgentRunUpdated { run_id, summary } => {
+                self.agent_run = Some(AgentRunActivity {
+                    run_id: *run_id,
+                    summary: summary.clone(),
+                });
             }
             crate::ReplEvent::PolicyEvaluated { policy, allowed } => {
                 self.policy = *policy;
@@ -579,6 +595,71 @@ mod tests {
 
         assert!(session.subagent_activity.is_empty());
         assert_eq!(session.active_run, Some(run_id));
+    }
+
+    #[test]
+    fn agent_run_updated_records_observable_summary() {
+        let mut session = ReplSession::new(
+            ReplMode::DesktopApp,
+            crate::ModelRef {
+                provider: "openai".to_string(),
+                name: "gpt-test".to_string(),
+            },
+        );
+        let run_id = Uuid::new_v4();
+
+        session.apply_event(&crate::ReplEvent::AgentRunUpdated {
+            run_id,
+            summary: crate::AgentRunSummary {
+                goal: "list files".to_string(),
+                last_phase: crate::AgentRunPhase::Completed,
+                completed_steps: 3,
+                stop_reason: None,
+                failure_code: None,
+                failure_message: None,
+                recoverable_failure: false,
+            },
+        });
+
+        let agent_run = session.agent_run.expect("agent run summary");
+        assert_eq!(agent_run.run_id, run_id);
+        assert_eq!(agent_run.summary.goal, "list files");
+        assert_eq!(
+            agent_run.summary.last_phase,
+            crate::AgentRunPhase::Completed
+        );
+    }
+
+    #[test]
+    fn run_started_clears_previous_agent_run_summary() {
+        let mut session = ReplSession::new(
+            ReplMode::DesktopApp,
+            crate::ModelRef {
+                provider: "openai".to_string(),
+                name: "gpt-test".to_string(),
+            },
+        );
+        let previous_run_id = Uuid::new_v4();
+        let next_run_id = Uuid::new_v4();
+
+        session.apply_event(&crate::ReplEvent::AgentRunUpdated {
+            run_id: previous_run_id,
+            summary: crate::AgentRunSummary {
+                goal: "old task".to_string(),
+                last_phase: crate::AgentRunPhase::Completed,
+                completed_steps: 3,
+                stop_reason: None,
+                failure_code: None,
+                failure_message: None,
+                recoverable_failure: false,
+            },
+        });
+        session.apply_event(&crate::ReplEvent::RunStarted {
+            run_id: next_run_id,
+        });
+
+        assert!(session.agent_run.is_none());
+        assert_eq!(session.active_run, Some(next_run_id));
     }
 
     #[test]

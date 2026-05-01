@@ -36,6 +36,44 @@ pub enum ToolStatus {
     Denied,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum AgentRunPhase {
+    Received,
+    Planning,
+    Inspecting,
+    Editing,
+    Testing,
+    Reviewing,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+impl AgentRunPhase {
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Cancelled | Self::Failed)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum AgentRunStopReason {
+    UserInterrupt,
+    Timeout,
+    Superseded,
+    Shutdown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentRunSummary {
+    pub goal: String,
+    pub last_phase: AgentRunPhase,
+    pub completed_steps: usize,
+    pub stop_reason: Option<AgentRunStopReason>,
+    pub failure_code: Option<String>,
+    pub failure_message: Option<String>,
+    pub recoverable_failure: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SubagentRouteRecommendation {
     pub name: String,
@@ -117,6 +155,10 @@ pub enum ReplEvent {
     IntentDetected {
         intent: ReplIntent,
         confidence: f32,
+    },
+    AgentRunUpdated {
+        run_id: Uuid,
+        summary: AgentRunSummary,
     },
     PolicyEvaluated {
         policy: crate::AssessmentPolicy,

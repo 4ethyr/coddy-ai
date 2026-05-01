@@ -25,6 +25,38 @@ export type ReplIntent =
 
 export type ToolStatus = 'Succeeded' | 'Failed' | 'Cancelled' | 'Denied'
 
+export type AgentRunPhase =
+  | 'Received'
+  | 'Planning'
+  | 'Inspecting'
+  | 'Editing'
+  | 'Testing'
+  | 'Reviewing'
+  | 'Completed'
+  | 'Cancelled'
+  | 'Failed'
+
+export type AgentRunStopReason =
+  | 'UserInterrupt'
+  | 'Timeout'
+  | 'Superseded'
+  | 'Shutdown'
+
+export interface AgentRunSummary {
+  goal: string
+  last_phase: AgentRunPhase
+  completed_steps: number
+  stop_reason: AgentRunStopReason | null
+  failure_code: string | null
+  failure_message: string | null
+  recoverable_failure: boolean
+}
+
+export interface AgentRunActivity {
+  run_id: string
+  summary: AgentRunSummary
+}
+
 export interface SubagentRouteRecommendation {
   name: string
   score: number
@@ -107,6 +139,7 @@ export type ReplEvent =
   | { ScreenCaptured: { source: ExtractionSource; bytes: number } }
   | { OcrCompleted: { chars: number; language_hint?: string } }
   | { IntentDetected: { intent: ReplIntent; confidence: number } }
+  | { AgentRunUpdated: { run_id: string; summary: AgentRunSummary } }
   | { PolicyEvaluated: { policy: string; allowed: boolean } }
   | { ConfirmationDismissed: Record<string, never> }
   | { ModelSelected: { model: ModelRef; role: ModelRole } }
@@ -156,6 +189,7 @@ export interface ReplSessionSnapshotSession {
   messages: ReplMessage[]
   active_run: string | null
   pending_permission?: PermissionRequest | null
+  agent_run?: AgentRunActivity | null
   tool_activity?: unknown[]
   subagent_activity?: unknown[]
   streaming_text?: string

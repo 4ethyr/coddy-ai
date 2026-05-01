@@ -1,23 +1,5 @@
+use coddy_core::{AgentRunPhase, AgentRunStopReason, AgentRunSummary};
 use thiserror::Error;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AgentRunPhase {
-    Received,
-    Planning,
-    Inspecting,
-    Editing,
-    Testing,
-    Reviewing,
-    Completed,
-    Cancelled,
-    Failed,
-}
-
-impl AgentRunPhase {
-    pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Cancelled | Self::Failed)
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentRunAction {
@@ -54,14 +36,6 @@ impl AgentRunAction {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum AgentRunStopReason {
-    UserInterrupt,
-    Timeout,
-    Superseded,
-    Shutdown,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentRunFailure {
     pub code: String,
@@ -74,17 +48,6 @@ pub struct AgentRunTransition {
     pub from: AgentRunPhase,
     pub to: AgentRunPhase,
     pub action: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentRunSummary {
-    pub goal: String,
-    pub last_phase: AgentRunPhase,
-    pub completed_steps: usize,
-    pub stop_reason: Option<AgentRunStopReason>,
-    pub failure_code: Option<String>,
-    pub failure_message: Option<String>,
-    pub recoverable_failure: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

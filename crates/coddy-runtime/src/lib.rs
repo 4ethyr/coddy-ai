@@ -379,7 +379,6 @@ impl CoddyRuntime {
         let run_id = Uuid::new_v4();
         let (intent, confidence) = classify_ask_intent(&text, &action);
 
-        self.start_agent_run(run_id, text.clone());
         self.publish_event_with_run_now(
             ReplEvent::MessageAppended {
                 message: repl_message("user", text.clone()),
@@ -387,6 +386,7 @@ impl CoddyRuntime {
             run_id,
         );
         self.publish_event_with_run_now(ReplEvent::RunStarted { run_id }, run_id);
+        self.start_agent_run(run_id, text.clone());
         self.transition_agent_run(run_id, AgentRunAction::Plan);
         self.publish_event_with_run_now(ReplEvent::IntentDetected { intent, confidence }, run_id);
 
@@ -1086,28 +1086,41 @@ impl CoddyRuntime {
     }
 
     fn start_agent_run(&self, run_id: Uuid, goal: impl Into<String>) {
-        self.with_state_mut(|state| {
-            state.agent_runs.insert(run_id, AgentRunV2::start(goal));
+        let summary = self.with_state_mut(|state| {
+            let run = AgentRunV2::start(goal);
+            let summary = run.summary();
+            state.agent_runs.insert(run_id, run);
+            summary
         });
+        self.publish_agent_run_update(run_id, summary);
     }
 
     fn transition_agent_run(&self, run_id: Uuid, action: AgentRunAction) {
-        let error = self.with_state_mut(|state| {
-            state
-                .agent_runs
-                .get_mut(&run_id)
-                .and_then(|run| run.transition(action).err())
+        let outcome = self.with_state_mut(|state| {
+            state.agent_runs.get_mut(&run_id).map(|run| {
+                run.transition(action)
+                    .map(|_| run.summary())
+                    .map_err(|error| error)
+            })
         });
 
-        if let Some(error) = error {
-            self.publish_event_with_run_now(
-                ReplEvent::Error {
-                    code: error.code().to_string(),
-                    message: error.to_string(),
-                },
-                run_id,
-            );
+        match outcome {
+            Some(Ok(summary)) => self.publish_agent_run_update(run_id, summary),
+            Some(Err(error)) => {
+                self.publish_event_with_run_now(
+                    ReplEvent::Error {
+                        code: error.code().to_string(),
+                        message: error.to_string(),
+                    },
+                    run_id,
+                );
+            }
+            None => {}
         }
+    }
+
+    fn publish_agent_run_update(&self, run_id: Uuid, summary: AgentRunSummary) {
+        self.publish_event_with_run_now(ReplEvent::AgentRunUpdated { run_id, summary }, run_id);
     }
 
     fn complete_agent_run_if_active(&self, run_id: Uuid) {
@@ -3783,11 +3796,24 @@ mod tests {
             })
             .expect("run started");
         let summary = runtime.agent_run_summary(run_id).expect("run summary");
+        let snapshot = runtime.snapshot();
 
         assert_eq!(summary.goal, "list files");
         assert_eq!(summary.last_phase, coddy_agent::AgentRunPhase::Completed);
         assert_eq!(summary.completed_steps, 3);
         assert!(summary.failure_code.is_none());
+        assert_eq!(
+            snapshot.session.agent_run.as_ref().map(|run| run.run_id),
+            Some(run_id)
+        );
+        assert_eq!(
+            snapshot
+                .session
+                .agent_run
+                .as_ref()
+                .map(|run| run.summary.last_phase),
+            Some(coddy_agent::AgentRunPhase::Completed)
+        );
     }
 
     #[test]
@@ -3835,10 +3861,19 @@ mod tests {
             })
             .expect("run started");
         let summary = runtime.agent_run_summary(run_id).expect("run summary");
+        let snapshot = runtime.snapshot();
 
         assert_eq!(summary.last_phase, coddy_agent::AgentRunPhase::Failed);
         assert_eq!(summary.failure_code.as_deref(), Some("transport_error"));
         assert!(summary.recoverable_failure);
+        assert_eq!(
+            snapshot
+                .session
+                .agent_run
+                .as_ref()
+                .and_then(|run| run.summary.failure_code.as_deref()),
+            Some("transport_error")
+        );
     }
 
     #[test]

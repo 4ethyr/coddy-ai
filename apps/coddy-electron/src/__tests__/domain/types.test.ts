@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { ReplEvent, ReplEventEnvelope, ReplIntent, ToolStatus, ShortcutSource, ExtractionSource } from '@/domain/types/events'
+import type { ReplEvent, ReplEventEnvelope, ReplIntent, ToolStatus, ShortcutSource, ExtractionSource, AgentRunPhase } from '@/domain/types/events'
 import type { SessionStatus, AssessmentPolicy } from '@/domain/types/session'
 import type { RequestedHelp, AssistanceFallback } from '@/domain/types/policy'
 
@@ -17,6 +17,20 @@ describe('Domain type contracts', () => {
         ScreenCaptured: { ScreenCaptured: { source: 'ScreenshotOcr' as ExtractionSource, bytes: 1024 } },
         OcrCompleted: { OcrCompleted: { chars: 500 } },
         IntentDetected: { IntentDetected: { intent: 'OpenApplication' as ReplIntent, confidence: 0.95 } },
+        AgentRunUpdated: {
+          AgentRunUpdated: {
+            run_id: 'run-1',
+            summary: {
+              goal: 'list files',
+              last_phase: 'Completed' as AgentRunPhase,
+              completed_steps: 3,
+              stop_reason: null,
+              failure_code: null,
+              failure_message: null,
+              recoverable_failure: false,
+            },
+          },
+        },
         PolicyEvaluated: { PolicyEvaluated: { policy: 'Practice', allowed: true } },
         ConfirmationDismissed: { ConfirmationDismissed: {} },
         ModelSelected: {
@@ -110,7 +124,7 @@ describe('Domain type contracts', () => {
         Error: { Error: { code: 'E001', message: 'Something went wrong' } },
       }
 
-      expect(Object.keys(events)).toHaveLength(30)
+      expect(Object.keys(events)).toHaveLength(31)
 
       // Verify each event is correctly typed
       for (const [key, event] of Object.entries(events)) {

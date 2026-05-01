@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
       messages: [],
       active_run: null,
       pending_permission: null,
+      agent_run: null,
       tool_activity: [],
       subagent_activity: [],
       streaming_text: '',

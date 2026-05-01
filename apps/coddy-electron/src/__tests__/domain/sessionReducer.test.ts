@@ -17,6 +17,7 @@ function testSession(overrides?: Partial<ReplSession>): ReplSession {
     messages: [],
     active_run: null,
     pending_permission: null,
+    agent_run: null,
     tool_activity: [],
     subagent_activity: [],
     streaming_text: '',
@@ -53,6 +54,18 @@ describe('sessionReducer', () => {
     it('sets active_run, clears run-local activity, transitions to Thinking', () => {
       const session = testSession({
         streaming_text: 'previous tokens',
+        agent_run: {
+          run_id: 'previous-run',
+          summary: {
+            goal: 'previous task',
+            last_phase: 'Completed',
+            completed_steps: 3,
+            stop_reason: null,
+            failure_code: null,
+            failure_message: null,
+            recoverable_failure: false,
+          },
+        },
         tool_activity: [
           { id: 'filesystem.read_file-1', name: 'filesystem.read_file', status: 'Succeeded' },
         ],
@@ -77,9 +90,46 @@ describe('sessionReducer', () => {
 
       expect(result.active_run).toBe('run-001')
       expect(result.status).toBe('Thinking')
+      expect(result.agent_run).toBeNull()
       expect(result.streaming_text).toBe('')
       expect(result.tool_activity).toEqual([])
       expect(result.subagent_activity).toEqual([])
+    })
+  })
+
+  describe('AgentRunUpdated', () => {
+    it('records the latest observable agent run summary', () => {
+      const session = testSession({ active_run: 'run-001', status: 'Thinking' })
+      const event: ReplEvent = {
+        AgentRunUpdated: {
+          run_id: 'run-001',
+          summary: {
+            goal: 'list files',
+            last_phase: 'Completed',
+            completed_steps: 3,
+            stop_reason: null,
+            failure_code: null,
+            failure_message: null,
+            recoverable_failure: false,
+          },
+        },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result.agent_run).toEqual({
+        run_id: 'run-001',
+        summary: {
+          goal: 'list files',
+          last_phase: 'Completed',
+          completed_steps: 3,
+          stop_reason: null,
+          failure_code: null,
+          failure_message: null,
+          recoverable_failure: false,
+        },
+      })
+      expect(result.status).toBe('Thinking')
     })
   })
 

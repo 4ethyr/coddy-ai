@@ -6,6 +6,7 @@ import type {
   ReplMessage,
   ModelRef,
   PermissionRequest,
+  AgentRunActivity,
   SubagentLifecycleStatus,
   ToolStatus,
 } from './events'
@@ -80,6 +81,7 @@ export interface ReplSession {
   messages: ReplMessage[]
   active_run: string | null
   pending_permission: PermissionRequest | null
+  agent_run: AgentRunActivity | null
   tool_activity: ToolActivity[]
   subagent_activity: SubagentActivity[]
   /** Frontend-only: text being accumulated from TokenDelta events */
@@ -99,6 +101,7 @@ export function createInitialSession(mode: ReplMode, model: ModelRef): ReplSessi
     messages: [],
     active_run: null,
     pending_permission: null,
+    agent_run: null,
     tool_activity: [],
     subagent_activity: [],
     streaming_text: '',
