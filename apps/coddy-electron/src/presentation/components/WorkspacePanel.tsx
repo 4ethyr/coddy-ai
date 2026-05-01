@@ -21,8 +21,12 @@ interface Props {
   promptBattery?: PromptBatteryResult | null
   promptBatteryStatus?: EvalRunStatus
   promptBatteryError?: string | null
+  workspacePath?: string | null
+  workspaceStatus?: EvalRunStatus
+  workspaceError?: string | null
   evalHarnessSettings?: EvalHarnessSettings
   onEvalHarnessSettingsChange?: (settings: EvalHarnessSettings) => void
+  onSelectWorkspace?: () => void
   onRunMultiagentEval?: (request: MultiagentEvalRequest) => void
   onRunPromptBattery?: () => void
 }
@@ -41,11 +45,17 @@ export function WorkspacePanel({
   promptBattery,
   promptBatteryStatus = 'idle',
   promptBatteryError = null,
+  workspacePath = null,
+  workspaceStatus = 'idle',
+  workspaceError = null,
   evalHarnessSettings,
   onEvalHarnessSettingsChange,
+  onSelectWorkspace,
   onRunMultiagentEval,
   onRunPromptBattery,
 }: Props) {
+  const workspaceBusy = workspaceStatus === 'running'
+
   return (
     <div className="h-full overflow-y-auto p-5 sm:p-8">
       <div className="mx-auto flex max-w-6xl flex-col gap-6">
@@ -64,10 +74,13 @@ export function WorkspacePanel({
           </div>
           <button
             type="button"
+            onClick={onSelectWorkspace}
+            disabled={!onSelectWorkspace || workspaceBusy}
             className="desktop-glass-panel inline-flex items-center gap-2 rounded-lg px-4 py-2 font-display text-[11px] uppercase tracking-[0.18em] text-primary transition-colors hover:bg-primary/10"
+            aria-label="Select workspace folder"
           >
             <Icon name="cloud" className="h-4 w-4" />
-            Local environment
+            {workspaceBusy ? 'Selecting...' : 'Select folder'}
           </button>
         </header>
 
@@ -77,17 +90,30 @@ export function WorkspacePanel({
             <Icon name="file" className="h-9 w-9 drop-shadow-[0_0_12px_rgba(0,219,233,0.6)]" />
           </div>
           <h2 className="font-display text-2xl font-medium text-on-surface">
-            Drop context files here
+            {workspacePath ? 'Workspace connected' : 'Choose a workspace folder'}
           </h2>
           <p className="mt-3 max-w-md text-sm leading-6 text-on-surface-variant">
-            Injete documentos, trechos de código ou screenshots no contexto
-            ativo do Coddy. O backend ainda vai receber o upload real.
+            {workspacePath
+              ? 'Coddy will inspect, read and prepare approved edits against this folder through the local runtime.'
+              : 'Select a local folder so the agent can work against your files without repeated uploads.'}
           </p>
+          {workspacePath && (
+            <p className="mt-4 max-w-2xl break-all rounded border border-primary/20 bg-primary/5 px-3 py-2 font-mono text-xs text-primary">
+              {workspacePath}
+            </p>
+          )}
+          {workspaceError && (
+            <p className="mt-4 max-w-2xl rounded border border-red-300/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+              {workspaceError}
+            </p>
+          )}
           <button
             type="button"
+            onClick={onSelectWorkspace}
+            disabled={!onSelectWorkspace || workspaceBusy}
             className="mt-6 rounded border border-primary/60 px-5 py-2 font-display text-[11px] uppercase tracking-[0.18em] text-primary transition-all hover:bg-primary/10"
           >
-            Browse files
+            {workspacePath ? 'Change workspace' : 'Browse folders'}
           </button>
         </section>
 

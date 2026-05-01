@@ -4,9 +4,10 @@
 import { spawn, ChildProcess } from 'child_process'
 import { createInterface } from 'readline'
 import * as path from 'path'
-import { app, ipcMain, BrowserWindow, screen, safeStorage } from 'electron'
+import { app, ipcMain, BrowserWindow, screen, safeStorage, dialog } from 'electron'
 import type { Rectangle } from 'electron'
 import { resolveCoddyBinaryPath } from './coddyBinary'
+import { restartCoddyRuntimeProcess } from './runtimeProcess'
 import {
   listProviderModels,
   type ModelProviderListPayload,
@@ -29,6 +30,13 @@ import {
   readJsonWithTimeout,
   terminateChild,
 } from './childProcessJson'
+import {
+  activeWorkspaceEnvironment,
+  getActiveWorkspacePath,
+  isDirectory,
+  normalizeWorkspacePath,
+  persistWorkspaceSelection,
+} from './workspaceManager'
 
 type ModelRef = {
   provider: string
@@ -77,6 +85,13 @@ type ReplCommandResult = {
   error?: { code: string; message: string }
 }
 
+type WorkspaceSelectionResult = {
+  path: string | null
+  cancelled?: boolean
+  message?: string
+  error?: { code: string; message: string }
+}
+
 type MultiagentEvalPayload = {
   baseline?: string
   writeBaseline?: string
@@ -104,6 +119,7 @@ function coddySpawn(
     detached: options.detached ?? false,
     env: {
       ...process.env,
+      ...activeWorkspaceEnvironment(),
       ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -237,6 +253,46 @@ export function registerIpcHandlers(): void {
   // ---- Tool catalog ----
   ipcMain.handle('repl:tools', async () => {
     return readJson(coddySpawn(['session', 'tools']))
+  })
+
+  // ---- Workspace selection ----
+  ipcMain.handle('workspace:get-active', async (): Promise<WorkspaceSelectionResult> => {
+    return { path: getActiveWorkspacePath() }
+  })
+
+  ipcMain.handle('workspace:select-folder', async (event): Promise<WorkspaceSelectionResult> => {
+    const targetWindow = BrowserWindow.fromWebContents(event.sender)
+    const result = targetWindow
+      ? await dialog.showOpenDialog(targetWindow, {
+          title: 'Select Coddy workspace',
+          properties: ['openDirectory'],
+        })
+      : await dialog.showOpenDialog({
+          title: 'Select Coddy workspace',
+          properties: ['openDirectory'],
+        })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { path: getActiveWorkspacePath(), cancelled: true }
+    }
+
+    const selectedPath = normalizeWorkspacePath(result.filePaths[0])
+    if (!selectedPath || !isDirectory(selectedPath)) {
+      return {
+        path: getActiveWorkspacePath(),
+        error: {
+          code: 'WORKSPACE_INVALID_PATH',
+          message: 'Coddy needs a readable directory as the active workspace.',
+        },
+      }
+    }
+
+    persistWorkspaceSelection(app.getPath('userData'), selectedPath)
+    restartRuntimeForActiveWorkspace()
+    return {
+      path: selectedPath,
+      message: `Coddy workspace set to ${selectedPath}.`,
+    }
   })
 
   // ---- Provider model catalogs ----
@@ -633,6 +689,21 @@ async function runMultiagentEval(payload: MultiagentEvalPayload): Promise<unknow
 
 async function runPromptBatteryEval(): Promise<unknown> {
   return readJson(coddySpawn(['eval', 'prompt-battery', '--json']))
+}
+
+function restartRuntimeForActiveWorkspace(): void {
+  cleanupStreams()
+  const electronProcess = process as NodeJS.Process & {
+    resourcesPath?: string
+  }
+  restartCoddyRuntimeProcess({
+    appPath: app.getAppPath(),
+    env: {
+      ...process.env,
+      ...activeWorkspaceEnvironment(),
+    },
+    resourcesPath: electronProcess.resourcesPath,
+  })
 }
 
 function normalizeOptionalPath(value: unknown): string | null {

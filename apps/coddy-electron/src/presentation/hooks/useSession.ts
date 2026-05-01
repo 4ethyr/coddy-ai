@@ -16,6 +16,7 @@ import type {
   ReplMode,
   ReplSession,
   ReplToolCatalogItem,
+  WorkspaceSelectionResult,
   AssessmentPolicy,
   ScreenAssistMode,
 } from '@/domain'
@@ -37,6 +38,8 @@ import {
   listProviderModels,
   runMultiagentEval,
   runPromptBatteryEval,
+  getActiveWorkspace,
+  selectWorkspaceFolder,
   loadSettings,
 } from '@/application'
 import { useReplClient } from './useReplClient'
@@ -54,6 +57,9 @@ export interface UseSessionReturn {
   promptBattery: PromptBatteryResult | null
   promptBatteryStatus: EvalRunStatus
   promptBatteryError: string | null
+  activeWorkspacePath: string | null
+  workspaceSelectionStatus: EvalRunStatus
+  workspaceSelectionError: string | null
   /** True while still connecting / loading the first snapshot */
   connecting: boolean
   /** True when the daemon stream disconnected and we're retrying */
@@ -82,8 +88,11 @@ export interface UseSessionReturn {
     request?: MultiagentEvalRequest,
   ) => Promise<MultiagentEvalResult>
 
-  /** Run the deterministic 300-prompt routing battery exposed by the backend */
+  /** Run the deterministic 1,200-prompt routing battery exposed by the backend */
   runPromptBatteryEval: () => Promise<PromptBatteryResult>
+
+  /** Select the local filesystem workspace used by the Rust runtime */
+  selectWorkspaceFolder: () => Promise<WorkspaceSelectionResult>
 
   /** Switch the REPL UI mode through the daemon */
   openUi: (mode: ReplMode) => Promise<void>
@@ -128,6 +137,13 @@ export function useSession(): UseSessionReturn {
     useState<EvalRunStatus>('idle')
   const [promptBatteryError, setPromptBatteryError] =
     useState<string | null>(null)
+  const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(
+    null,
+  )
+  const [workspaceSelectionStatus, setWorkspaceSelectionStatus] =
+    useState<EvalRunStatus>('idle')
+  const [workspaceSelectionError, setWorkspaceSelectionError] =
+    useState<string | null>(null)
   const abortRef = useRef<(() => void) | null>(null)
   const initCountRef = useRef(0)
 
@@ -143,10 +159,14 @@ export function useSession(): UseSessionReturn {
 
     void (async () => {
       try {
-        const initial = await initializeSession(client)
+        const [initial, workspace] = await Promise.all([
+          initializeSession(client),
+          getActiveWorkspace(client).catch(() => ({ path: null })),
+        ])
         if (cancelled || count !== initCountRef.current) return
 
         setState(initial)
+        setActiveWorkspacePath(workspace.path)
         setConnecting(false)
 
         // Start live event stream
@@ -281,6 +301,27 @@ export function useSession(): UseSessionReturn {
     }
   }, [client])
 
+  const handleSelectWorkspaceFolder = useCallback(async () => {
+    setWorkspaceSelectionStatus('running')
+    setWorkspaceSelectionError(null)
+
+    try {
+      const result = await selectWorkspaceFolder(client)
+      setActiveWorkspacePath(result.path)
+      setWorkspaceSelectionStatus('succeeded')
+      if (!result.cancelled) {
+        init()
+      }
+      return result
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setWorkspaceSelectionError(message)
+      setWorkspaceSelectionStatus('failed')
+      setError(message)
+      throw err
+    }
+  }, [client, init])
+
   const handleOpenUi = useCallback(
     async (mode: ReplMode) => {
       try {
@@ -353,6 +394,9 @@ export function useSession(): UseSessionReturn {
     promptBattery,
     promptBatteryStatus,
     promptBatteryError,
+    activeWorkspacePath,
+    workspaceSelectionStatus,
+    workspaceSelectionError,
     connecting,
     reconnecting,
     error,
@@ -363,6 +407,7 @@ export function useSession(): UseSessionReturn {
     listProviderModels: handleListProviderModels,
     runMultiagentEval: handleRunMultiagentEval,
     runPromptBatteryEval: handleRunPromptBatteryEval,
+    selectWorkspaceFolder: handleSelectWorkspaceFolder,
     openUi: handleOpenUi,
     captureVoice: handleCaptureVoice,
     cancelVoiceCapture: handleCancelVoiceCapture,

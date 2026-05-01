@@ -2,7 +2,12 @@
 // Implements ReplIpcClient using the preload-exposed window.replApi bridge.
 
 import './globals' // side-effect: registers Window.replApi type
-import type { ReplIpcClient, ReplCommandResult, ReplEventsBatch } from '@/domain'
+import type {
+  ReplIpcClient,
+  ReplCommandResult,
+  ReplEventsBatch,
+  WorkspaceSelectionResult,
+} from '@/domain'
 import type {
   ModelRef,
   ModelProviderListRequest,
@@ -164,6 +169,18 @@ export class ElectronReplIpcClient implements ReplIpcClient {
 
   async getToolCatalog(): Promise<ReplToolCatalogItem[]> {
     return (await window.replApi.invoke('repl:tools')) as ReplToolCatalogItem[]
+  }
+
+  async getActiveWorkspace(): Promise<WorkspaceSelectionResult> {
+    return (await window.replApi.invoke(
+      'workspace:get-active',
+    )) as WorkspaceSelectionResult
+  }
+
+  async selectWorkspaceFolder(): Promise<WorkspaceSelectionResult> {
+    return (await window.replApi.invoke(
+      'workspace:select-folder',
+    )) as WorkspaceSelectionResult
   }
 
   async runMultiagentEval(

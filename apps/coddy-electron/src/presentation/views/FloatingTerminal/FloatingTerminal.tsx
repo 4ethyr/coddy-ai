@@ -22,6 +22,10 @@ import { AssessmentConfirmModal } from '@/presentation/components/AssessmentConf
 import { FloatingSettingsModal } from '@/presentation/components/FloatingSettingsModal'
 import { SelectionCopyRegion } from '@/presentation/components/SelectionCopyRegion'
 import { Icon } from '@/presentation/components/Icon'
+import {
+  persistDesktopTab,
+  resolveUiSlashCommand,
+} from '@/presentation/commands/slashCommands'
 
 export function FloatingTerminal() {
   const {
@@ -94,6 +98,25 @@ export function FloatingTerminal() {
       saveSettings({ floatingAppearance: next })
     },
     [],
+  )
+
+  const handleSend = useCallback(
+    (text: string) => {
+      const command = resolveUiSlashCommand(text)
+      if (!command) {
+        void ask(text)
+        return
+      }
+
+      if (command.kind === 'open-settings') {
+        setSettingsOpen(true)
+        return
+      }
+
+      persistDesktopTab(command.tab)
+      void openUi('DesktopApp')
+    },
+    [ask, openUi],
   )
 
   const terminalStyle = {
@@ -367,7 +390,7 @@ export function FloatingTerminal() {
       <div className="floating-terminal-input-row flex flex-shrink-0 items-center gap-3 border-t border-primary/15 bg-surface-dim/70 px-8 py-4 backdrop-blur-md">
         <div className="flex-1">
           <InputBar
-            onSend={ask}
+            onSend={handleSend}
             disabled={
               connecting
               || session.status === 'Streaming'

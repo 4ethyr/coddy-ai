@@ -5,6 +5,10 @@ import { app, BrowserWindow } from 'electron'
 import * as path from 'path'
 import { registerIpcHandlers, cleanupStreams } from './ipcBridge'
 import { startCoddyRuntimeProcess, stopCoddyRuntimeProcess } from './runtimeProcess'
+import {
+  activeWorkspaceEnvironment,
+  loadPersistedWorkspaceSelection,
+} from './workspaceManager'
 
 let mainWindow: BrowserWindow | null = null
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
@@ -47,9 +51,13 @@ app.whenReady().then(() => {
   const electronProcess = process as NodeJS.Process & {
     resourcesPath?: string
   }
+  loadPersistedWorkspaceSelection(app.getPath('userData'))
   startCoddyRuntimeProcess({
     appPath: app.getAppPath(),
-    env: process.env,
+    env: {
+      ...process.env,
+      ...activeWorkspaceEnvironment(),
+    },
     resourcesPath: electronProcess.resourcesPath,
   })
   registerIpcHandlers()

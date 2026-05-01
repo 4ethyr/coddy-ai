@@ -12,6 +12,8 @@ const replApi = {
       'repl:tools',
       'repl:eval-multiagent',
       'repl:eval-prompt-battery',
+      'workspace:get-active',
+      'workspace:select-folder',
       'models:list',
       'repl:ask',
       'repl:voice-turn',

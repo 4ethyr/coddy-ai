@@ -27,6 +27,13 @@ export interface ReplCommandResult {
   error?: { code: string; message: string }
 }
 
+export interface WorkspaceSelectionResult {
+  path: string | null
+  cancelled?: boolean
+  message?: string
+  error?: { code: string; message: string }
+}
+
 /** Batch of incremental events */
 export interface ReplEventsBatch {
   events: ReplEventEnvelope[]
@@ -53,12 +60,18 @@ export interface ReplIpcClient {
   /** Get the backend tool catalog exposed by the active Coddy runtime */
   getToolCatalog(): Promise<ReplToolCatalogItem[]>
 
+  /** Get the Electron-selected filesystem workspace, if one is active */
+  getActiveWorkspace(): Promise<WorkspaceSelectionResult>
+
+  /** Let the user select a local folder and restart Coddy against that workspace */
+  selectWorkspaceFolder(): Promise<WorkspaceSelectionResult>
+
   /** Run the deterministic multiagent harness and optionally compare/write a baseline */
   runMultiagentEval(
     request?: MultiagentEvalRequest,
   ): Promise<MultiagentEvalResult>
 
-  /** Run the deterministic 300-prompt routing battery without model API spend */
+  /** Run the deterministic 1,200-prompt routing battery without model API spend */
   runPromptBatteryEval(): Promise<PromptBatteryResult>
 
   /** List available models for a provider using a session-scoped credential */

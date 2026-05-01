@@ -25,6 +25,11 @@ import { StatusIndicator } from '@/presentation/components/StatusIndicator'
 import { FloatingSettingsModal } from '@/presentation/components/FloatingSettingsModal'
 import { VoiceButton } from '@/presentation/components/VoiceButton'
 import { Icon } from '@/presentation/components/Icon'
+import {
+  loadPersistedDesktopTab,
+  persistDesktopTab,
+  resolveUiSlashCommand,
+} from '@/presentation/commands/slashCommands'
 
 export function DesktopApp() {
   const {
@@ -36,6 +41,9 @@ export function DesktopApp() {
     promptBattery,
     promptBatteryStatus,
     promptBatteryError,
+    activeWorkspacePath,
+    workspaceSelectionStatus,
+    workspaceSelectionError,
     connecting,
     error,
     ask,
@@ -45,10 +53,13 @@ export function DesktopApp() {
     cancelVoiceCapture,
     runMultiagentEval,
     runPromptBatteryEval,
+    selectWorkspaceFolder,
     openUi,
     replyPermission,
   } = useSessionContext()
-  const [activeTab, setActiveTab] = useState<DesktopTab>('chat')
+  const [activeTab, setActiveTabState] = useState<DesktopTab>(
+    loadPersistedDesktopTab,
+  )
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
     () => loadSettings().floatingAppearance,
@@ -62,6 +73,11 @@ export function DesktopApp() {
   const [evalHarness, setEvalHarness] = useState<EvalHarnessSettings>(
     () => loadSettings().evalHarness,
   )
+
+  const setActiveTab = useCallback((tab: DesktopTab) => {
+    setActiveTabState(tab)
+    persistDesktopTab(tab)
+  }, [])
 
   const handleClose = useCallback(() => {
     if (typeof window !== 'undefined' && window.replApi) {
@@ -108,6 +124,24 @@ export function DesktopApp() {
     setEvalHarness(normalized)
     saveSettings({ evalHarness: normalized })
   }, [])
+
+  const handleSend = useCallback(
+    (text: string) => {
+      const command = resolveUiSlashCommand(text)
+      if (!command) {
+        void ask(text)
+        return
+      }
+
+      if (command.kind === 'open-settings') {
+        setActiveTab('settings')
+        return
+      }
+
+      setActiveTab(command.tab)
+    },
+    [ask, setActiveTab],
+  )
 
   return (
     <div className="desktop-shell relative flex h-screen overflow-hidden bg-background text-on-surface">
@@ -201,7 +235,7 @@ export function DesktopApp() {
           {activeTab === 'chat' && (
             <ConversationPanel
               session={session}
-              onSend={ask}
+              onSend={handleSend}
               onPermissionReply={(requestId, reply) => {
                 void replyPermission(requestId, reply)
               }}
@@ -213,6 +247,12 @@ export function DesktopApp() {
             <WorkspacePanel
               items={session.workspace_context}
               tools={toolCatalog}
+              workspacePath={activeWorkspacePath}
+              workspaceStatus={workspaceSelectionStatus}
+              workspaceError={workspaceSelectionError}
+              onSelectWorkspace={() => {
+                void selectWorkspaceFolder()
+              }}
               multiagentEval={multiagentEval}
               multiagentEvalStatus={multiagentEvalStatus}
               multiagentEvalError={multiagentEvalError}

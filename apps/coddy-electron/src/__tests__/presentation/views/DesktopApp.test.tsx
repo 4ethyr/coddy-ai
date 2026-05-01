@@ -26,6 +26,9 @@ const sessionContext = {
   connecting: false,
   reconnecting: false,
   error: null,
+  activeWorkspacePath: null as string | null,
+  workspaceSelectionStatus: 'idle',
+  workspaceSelectionError: null,
   ask: vi.fn(),
   reconnect: vi.fn(),
   selectModel: vi.fn(),
@@ -36,6 +39,7 @@ const sessionContext = {
   captureAndExplain: vi.fn(),
   dismissConfirmation: vi.fn(),
   replyPermission: vi.fn(),
+  selectWorkspaceFolder: vi.fn(),
 }
 
 vi.mock('@/presentation/hooks', () => ({
@@ -54,6 +58,9 @@ describe('DesktopApp', () => {
       pending_permission: null,
       streaming_text: '',
     }
+    sessionContext.activeWorkspacePath = null
+    sessionContext.workspaceSelectionStatus = 'idle'
+    sessionContext.workspaceSelectionError = null
     Object.defineProperty(window, 'replApi', {
       configurable: true,
       value: {
@@ -153,5 +160,36 @@ describe('DesktopApp', () => {
         'subagent.security-reviewer // Blocked // readiness=80 // output=riskLevel, findings // strict',
       ),
     ).toBeInTheDocument()
+  })
+
+  it('routes /models from the desktop input without sending it to the model', async () => {
+    render(<DesktopApp />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Instruct Coddy agent...'),
+      '/models',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(screen.getAllByText('runtime ready').length).toBeGreaterThan(0)
+  })
+
+  it('opens the workspace tab and triggers folder selection', async () => {
+    sessionContext.activeWorkspacePath = '/home/user/project'
+    render(<DesktopApp />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Instruct Coddy agent...'),
+      '/workspace',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Change workspace' }),
+    )
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(screen.getByText('/home/user/project')).toBeInTheDocument()
+    expect(sessionContext.selectWorkspaceFolder).toHaveBeenCalledOnce()
   })
 })

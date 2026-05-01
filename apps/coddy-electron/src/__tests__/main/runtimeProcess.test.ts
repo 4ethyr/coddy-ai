@@ -23,4 +23,16 @@ describe('runtimeProcess', () => {
     expect(plan.command).toBe('/repo/target/debug/coddy')
     expect(plan.args).toEqual(['runtime', 'serve'])
   })
+
+  it('keeps CODDY_WORKSPACE in the runtime server environment', () => {
+    const plan = coddyRuntimeSpawnPlan({
+      appPath: '/repo/apps/coddy-electron/dist/main',
+      env: {
+        CODDY_BIN: '/repo/target/debug/coddy',
+        CODDY_WORKSPACE: '/home/user/project',
+      },
+    })
+
+    expect(plan.env.CODDY_WORKSPACE).toBe('/home/user/project')
+  })
 })

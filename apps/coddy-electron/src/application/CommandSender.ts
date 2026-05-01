@@ -16,6 +16,7 @@ import type {
   ReplCommandResult,
   ReplMode,
   ScreenAssistMode,
+  WorkspaceSelectionResult,
 } from '@/domain'
 
 export class ReplCommandError extends Error {
@@ -96,12 +97,28 @@ export async function runMultiagentEval(
 }
 
 /**
- * Runs the deterministic 300-prompt routing battery exposed by the backend.
+ * Runs the deterministic 1,200-prompt routing battery exposed by the backend.
  */
 export async function runPromptBatteryEval(
   client: ReplIpcClient,
 ): Promise<PromptBatteryResult> {
   return client.runPromptBatteryEval()
+}
+
+export async function getActiveWorkspace(
+  client: ReplIpcClient,
+): Promise<WorkspaceSelectionResult> {
+  return client.getActiveWorkspace()
+}
+
+export async function selectWorkspaceFolder(
+  client: ReplIpcClient,
+): Promise<WorkspaceSelectionResult> {
+  const result = await client.selectWorkspaceFolder()
+  if (result.error) {
+    throw new ReplCommandError(result.error.code, result.error.message)
+  }
+  return result
 }
 
 /**
