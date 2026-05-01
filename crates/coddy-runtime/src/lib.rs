@@ -21,13 +21,16 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixListener;
 use uuid::Uuid;
 
 const MAX_MODEL_TOOL_ROUNDS: usize = 5;
+const MAX_MODEL_REQUEST_ATTEMPTS: usize = 3;
+const MODEL_RETRY_BASE_DELAY_MS: u64 = 250;
 
 #[derive(Debug, Clone)]
 pub struct CoddyRuntime {
@@ -54,12 +57,18 @@ struct ModelBackedTurn<'a> {
     user_text: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ToolUsePolicy {
+    max_tool_calls: Option<usize>,
+}
+
 struct ModelResponseContext<'a> {
     session_id: Uuid,
     run_id: Uuid,
     selected_model: &'a ModelRef,
     model_credential: Option<ModelCredential>,
     system_prompt: &'a str,
+    tool_use_policy: ToolUsePolicy,
     goal: String,
 }
 
@@ -520,16 +529,19 @@ impl CoddyRuntime {
             user_text,
         } = turn;
 
+        let tool_use_policy = tool_use_policy_from_text(&user_text);
         let mut system_prompt = build_model_system_prompt(
             context_policy,
             session_context,
             self.tool_registry.definitions(),
         );
-        if let Some(routing_context) =
-            self.prepare_subagent_routing_context(session_id, run_id, &user_text)
-        {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&routing_context);
+        if tool_use_policy.max_tool_calls.is_none() {
+            if let Some(routing_context) =
+                self.prepare_subagent_routing_context(session_id, run_id, &user_text)
+            {
+                system_prompt.push_str("\n\n");
+                system_prompt.push_str(&routing_context);
+            }
         }
         let request = match ChatRequest::new(
             selected_model.clone(),
@@ -539,7 +551,7 @@ impl CoddyRuntime {
             ],
         ) {
             Ok(request) => match request.with_model_credential(model_credential.clone()) {
-                Ok(request) => request.with_tools(self.chat_tool_specs()),
+                Ok(request) => request.with_tools(self.chat_tool_specs_for_policy(tool_use_policy)),
                 Err(error) => {
                     self.fail_agent_run(run_id, &error);
                     return AssistantResponse::from_text(model_error_message(
@@ -559,7 +571,7 @@ impl CoddyRuntime {
             }
         };
 
-        match self.chat_client.complete(request) {
+        match self.complete_model_request_with_retry(request) {
             Ok(response) => self.assistant_response_from_model(
                 ModelResponseContext {
                     session_id,
@@ -567,6 +579,7 @@ impl CoddyRuntime {
                     selected_model,
                     model_credential,
                     system_prompt: &system_prompt,
+                    tool_use_policy,
                     goal: user_text,
                 },
                 response,
@@ -614,12 +627,21 @@ impl CoddyRuntime {
         ];
         let mut response = response;
         let mut last_tool_observations = None;
+        let mut remaining_tool_calls = context.tool_use_policy.max_tool_calls;
 
         for _ in 0..MAX_MODEL_TOOL_ROUNDS {
-            let round =
-                self.execute_model_tool_round(agent_runtime, &mut state, &context, &response);
+            let round = self.execute_model_tool_round(
+                agent_runtime,
+                &mut state,
+                &context,
+                &response,
+                remaining_tool_calls,
+            );
             if round.executed_tool_calls == 0 {
                 return round.response;
+            }
+            if let Some(remaining) = remaining_tool_calls.as_mut() {
+                *remaining = remaining.saturating_sub(round.executed_tool_calls);
             }
             if round.pending_permission {
                 return round.response;
@@ -635,6 +657,7 @@ impl CoddyRuntime {
                 context.selected_model,
                 context.model_credential.clone(),
                 messages.clone(),
+                remaining_tool_calls.is_none_or(|remaining| remaining > 0),
             ) {
                 Ok(response) => response,
                 Err(error) => {
@@ -839,6 +862,7 @@ impl CoddyRuntime {
         state: &mut coddy_agent::RunState,
         context: &ModelResponseContext<'_>,
         response: &ChatResponse,
+        mut remaining_tool_calls: Option<usize>,
     ) -> ToolRoundOutcome {
         let mut observations = Vec::new();
         let mut executed_tool_calls = 0_usize;
@@ -855,6 +879,13 @@ impl CoddyRuntime {
                     continue;
                 }
             };
+
+            if remaining_tool_calls == Some(0) {
+                observations.push(format!(
+                    "- `{tool_name}` was not executed because this turn reached the user-requested tool budget."
+                ));
+                continue;
+            }
 
             let Some(definition) = self.tool_registry.get(&tool_name) else {
                 observations.push(format!(
@@ -884,6 +915,9 @@ impl CoddyRuntime {
             );
             let outcome = agent_runtime.execute_tool_call(state, &call);
             executed_tool_calls += 1;
+            if let Some(remaining) = remaining_tool_calls.as_mut() {
+                *remaining = remaining.saturating_sub(1);
+            }
             for event in outcome.events {
                 self.publish_event_with_run_now(event, context.run_id);
             }
@@ -971,11 +1005,38 @@ impl CoddyRuntime {
         selected_model: &ModelRef,
         model_credential: Option<ModelCredential>,
         messages: Vec<ChatMessage>,
+        tools_enabled: bool,
     ) -> ChatModelResult {
-        let request = ChatRequest::new(selected_model.clone(), messages)
-            .and_then(|request| request.with_model_credential(model_credential))?
-            .with_tools(self.chat_tool_specs());
-        self.chat_client.complete(request)
+        let mut request = ChatRequest::new(selected_model.clone(), messages)
+            .and_then(|request| request.with_model_credential(model_credential))?;
+        if tools_enabled {
+            request = request.with_tools(self.chat_tool_specs());
+        }
+        self.complete_model_request_with_retry(request)
+    }
+
+    fn complete_model_request_with_retry(&self, request: ChatRequest) -> ChatModelResult {
+        let mut last_error = None;
+        for attempt in 0..MAX_MODEL_REQUEST_ATTEMPTS {
+            match self.chat_client.complete(request.clone()) {
+                Ok(response) => return Ok(response),
+                Err(error)
+                    if attempt + 1 < MAX_MODEL_REQUEST_ATTEMPTS
+                        && should_retry_model_request_error(&error) =>
+                {
+                    last_error = Some(error);
+                    sleep_before_model_retry(attempt);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(
+            last_error.unwrap_or_else(|| ChatModelError::InvalidProviderResponse {
+                provider: request.model.provider,
+                message: "model retry exhausted without provider response".to_string(),
+            }),
+        )
     }
 
     fn chat_tool_specs(&self) -> Vec<ChatToolSpec> {
@@ -985,6 +1046,14 @@ impl CoddyRuntime {
             .filter(|definition| agent_model_tool_call_may_run(&definition.name, definition))
             .map(ChatToolSpec::from_tool_definition)
             .collect()
+    }
+
+    fn chat_tool_specs_for_policy(&self, policy: ToolUsePolicy) -> Vec<ChatToolSpec> {
+        if policy.max_tool_calls == Some(0) {
+            Vec::new()
+        } else {
+            self.chat_tool_specs()
+        }
     }
 
     pub fn snapshot(&self) -> ReplSessionSnapshot {
@@ -1275,6 +1344,13 @@ impl AssistantResponse {
                 text,
             };
         }
+        if looks_like_textual_tool_call(&response.text) {
+            let text = "Coddy received a textual tool-call attempt from the model instead of a native structured tool call. The request was not executed for safety. Retry with a narrower prompt, ask for an answer without tools, or switch to a model/provider with reliable OpenAI-compatible tool calling.".to_string();
+            return Self {
+                deltas: vec![text.clone()],
+                text,
+            };
+        }
 
         Self {
             text: response.text,
@@ -1289,6 +1365,56 @@ impl AssistantResponse {
             self.deltas.iter().collect()
         }
     }
+}
+
+fn looks_like_textual_tool_call(text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase();
+    if contains_any(
+        &normalized,
+        &[
+            "<｜dsml｜tool_calls>",
+            "<|tool_calls|>",
+            "<tool_call",
+            "</tool_call",
+            "<｜dsml｜invoke",
+            "</｜dsml｜invoke",
+            "<invoke name=",
+        ],
+    ) {
+        return true;
+    }
+
+    if normalized.contains("\"tool_calls\"") && normalized.contains("\"arguments\"") {
+        return true;
+    }
+
+    if normalized.contains("\"name\"")
+        && normalized.contains("\"arguments\"")
+        && contains_any(
+            &normalized,
+            &[
+                "filesystem.read_file",
+                "filesystem.list_files",
+                "filesystem.search_files",
+                "filesystem.apply_edit",
+                "shell.run",
+                "subagent.",
+            ],
+        )
+    {
+        return true;
+    }
+
+    normalized.contains("subprocess.run(")
+        && contains_any(
+            &normalized,
+            &[
+                "filesystem.read_file",
+                "filesystem.list_files",
+                "filesystem.search_files",
+                "shell.run",
+            ],
+        )
 }
 
 fn summarize_chat_tool_calls(tool_calls: &[ChatToolCall]) -> String {
@@ -1342,6 +1468,8 @@ fn build_model_system_prompt(
         [
             "Security rules:",
             "- Use tools only through the Coddy runtime.",
+            "- When tools are available, call them through the provider's native structured tool_calls field only.",
+            "- Never print textual tool-call markup, XML/DSML tags, JSON tool-call snippets, Python subprocess code, or shell commands as a substitute for a native tool call.",
             "- Model-initiated tools may execute automatically only when low-risk and auto-approved.",
             "- Higher-risk filesystem writes and shell commands require explicit user approval.",
             "- Do not expose secrets, tokens, credentials, or hidden configuration values.",
@@ -2024,12 +2152,120 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
 }
 
+fn tool_use_policy_from_text(text: &str) -> ToolUsePolicy {
+    let normalized = text.to_ascii_lowercase();
+    if contains_any(
+        &normalized,
+        &[
+            "sem chamar ferramentas",
+            "sem usar ferramentas",
+            "sem ferramentas",
+            "sem tools",
+            "no tools",
+            "without tools",
+        ],
+    ) {
+        return ToolUsePolicy {
+            max_tool_calls: Some(0),
+        };
+    }
+
+    ToolUsePolicy {
+        max_tool_calls: parse_requested_tool_limit(&normalized),
+    }
+}
+
+fn parse_requested_tool_limit(text: &str) -> Option<usize> {
+    let markers = [
+        "no maximo",
+        "no máximo",
+        "maximo",
+        "máximo",
+        "at most",
+        "maximum",
+    ];
+    for marker in markers {
+        let Some(index) = text.find(marker) else {
+            continue;
+        };
+        let after_marker = &text[index + marker.len()..];
+        if contains_any(
+            after_marker,
+            &[
+                " ferramenta",
+                " ferramentas",
+                " tool",
+                " tools",
+                " busca",
+                " buscas",
+                " leitura",
+                " leituras",
+                " read",
+                " reads",
+            ],
+        ) {
+            if let Some(limit) = first_number(after_marker) {
+                return Some(limit);
+            }
+        }
+    }
+    None
+}
+
+fn first_number(text: &str) -> Option<usize> {
+    let mut digits = String::new();
+    for character in text.chars() {
+        if character.is_ascii_digit() {
+            digits.push(character);
+        } else if !digits.is_empty() {
+            break;
+        }
+    }
+    digits.parse::<usize>().ok()
+}
+
+fn should_retry_model_request_error(error: &ChatModelError) -> bool {
+    match error {
+        ChatModelError::ProviderError { retryable, .. } => *retryable,
+        ChatModelError::Transport {
+            retryable, message, ..
+        } => *retryable && !is_timeout_transport_error(message),
+        ChatModelError::InvalidProviderResponse { message, .. } => {
+            is_retryable_invalid_provider_response(message)
+        }
+        _ => false,
+    }
+}
+
+fn is_timeout_transport_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("timeout")
+        || normalized.contains("timed out")
+        || normalized.contains("deadline")
+}
+
+fn is_retryable_invalid_provider_response(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("did not include assistant content or tool calls")
+        || normalized.contains("did not include choices")
+        || normalized.contains("finish_reason=error")
+}
+
+fn sleep_before_model_retry(attempt: usize) {
+    if cfg!(test) {
+        return;
+    }
+    thread::sleep(Duration::from_millis(
+        MODEL_RETRY_BASE_DELAY_MS * (attempt as u64 + 1),
+    ));
+}
+
 fn model_error_message(
     error: &ChatModelError,
     selected_model: &ModelRef,
     tool_count: usize,
 ) -> String {
-    match error {
+    let message = match error {
         ChatModelError::UnselectedModel => format!(
             "Coddy received the request, but no chat model is selected yet. Select a provider/model to enable model-backed coding responses. {tool_count} local tools are available for safe workspace actions."
         ),
@@ -2045,15 +2281,38 @@ fn model_error_message(
             format!("Coddy could not build a valid chat request: {message}")
         }
         ChatModelError::ProviderError {
-            provider, message, ..
-        }
-        | ChatModelError::Transport {
-            provider, message, ..
-        }
-        | ChatModelError::InvalidProviderResponse { provider, message } => format!(
+            provider,
+            message,
+            retryable,
+        } => format!(
             "Coddy could not get a response from {provider} for {}/{}: {message}",
+            selected_model.provider, selected_model.name,
+        ) + model_recovery_hint(provider, *retryable),
+        ChatModelError::Transport {
+            provider,
+            message,
+            retryable,
+        } => format!(
+            "Coddy could not get a response from {provider} for {}/{}: {message}",
+            selected_model.provider, selected_model.name,
+        ) + model_recovery_hint(provider, *retryable),
+        ChatModelError::InvalidProviderResponse { provider, message } => format!(
+            "Coddy could not get a response from {provider} for {}/{}: {message}. Retry the request; if it keeps happening, reduce the prompt/tool output size or switch to another model/provider.",
             selected_model.provider, selected_model.name
         ),
+    };
+    redact_context_text(&message)
+}
+
+fn model_recovery_hint(provider: &str, retryable: bool) -> &'static str {
+    if retryable && provider == "openrouter" {
+        " This looks recoverable; retry the request, reduce large tool outputs/context, or switch OpenRouter routing/model. If it persists, check OpenRouter credits, rate limits and provider availability."
+    } else if retryable {
+        " This looks recoverable; retry the request or switch to another model/provider if it persists."
+    } else if provider == "openrouter" {
+        " Check the OpenRouter API key, account credits, model availability and request compatibility."
+    } else {
+        ""
     }
 }
 
@@ -2173,6 +2432,43 @@ mod tests {
                     coddy_agent::ChatModelError::InvalidRequest(
                         "missing queued response".to_string(),
                     )
+                })
+        }
+    }
+
+    #[derive(Debug)]
+    struct QueuedChatResultClient {
+        requests: Arc<Mutex<Vec<ChatRequest>>>,
+        results: Mutex<VecDeque<ChatModelResult>>,
+    }
+
+    impl QueuedChatResultClient {
+        fn new(results: Vec<ChatModelResult>) -> (Self, Arc<Mutex<Vec<ChatRequest>>>) {
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    requests: Arc::clone(&requests),
+                    results: Mutex::new(results.into()),
+                },
+                requests,
+            )
+        }
+    }
+
+    impl ChatModelClient for QueuedChatResultClient {
+        fn complete(&self, request: ChatRequest) -> coddy_agent::ChatModelResult {
+            self.requests
+                .lock()
+                .expect("requests mutex poisoned")
+                .push(request);
+            self.results
+                .lock()
+                .expect("results mutex poisoned")
+                .pop_front()
+                .unwrap_or_else(|| {
+                    Err(coddy_agent::ChatModelError::InvalidRequest(
+                        "missing queued result".to_string(),
+                    ))
                 })
         }
     }
@@ -2632,6 +2928,8 @@ mod tests {
 
         assert!(system_prompt.contains("Agent loop:"));
         assert!(system_prompt.contains("Security rules:"));
+        assert!(system_prompt.contains("native structured tool_calls field only"));
+        assert!(system_prompt.contains("Never print textual tool-call markup"));
         assert!(system_prompt.contains("Context policy: ScreenAndWorkspace"));
         assert!(system_prompt.contains("Recent session messages before this turn:"));
         assert!(system_prompt.contains("sk-[REDACTED]"));
@@ -2643,6 +2941,37 @@ mod tests {
             captured_requests[0].messages[1].content,
             "continue the implementation"
         );
+    }
+
+    #[test]
+    fn assistant_response_blocks_textual_tool_call_markup() {
+        let response = ChatResponse::from_text(
+            r#"Let me call<｜DSML｜tool_calls>
+<｜DSML｜invoke name="filesystem.read_file">
+<｜DSML｜parameter name="file_path">README.md</｜DSML｜parameter>
+</｜DSML｜invoke>
+</｜DSML｜tool_calls>"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("README.md"));
+    }
+
+    #[test]
+    fn assistant_response_allows_plain_tool_explanations() {
+        let response = ChatResponse::from_text(
+            "The filesystem.read_file tool has parameters like path and max_bytes, but this is only documentation.",
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response.text.contains("filesystem.read_file tool"));
+        assert!(!response.text.contains("textual tool-call attempt"));
     }
 
     #[test]
@@ -2927,6 +3256,26 @@ mod tests {
     }
 
     #[test]
+    fn model_error_message_redacts_provider_secret_tokens() {
+        let model = ModelRef {
+            provider: "openrouter".to_string(),
+            name: "deepseek/deepseek-v4-flash".to_string(),
+        };
+        let message = model_error_message(
+            &ChatModelError::ProviderError {
+                provider: "openrouter".to_string(),
+                message: "upstream included sk-or-router-token in error".to_string(),
+                retryable: false,
+            },
+            &model,
+            11,
+        );
+
+        assert!(message.contains("sk-or-[REDACTED]"));
+        assert!(!message.contains("router-token"));
+    }
+
+    #[test]
     fn ask_command_forwards_ephemeral_model_credential_to_chat_client() {
         let request_id = Uuid::new_v4();
         let (chat_client, requests) =
@@ -3151,6 +3500,137 @@ mod tests {
     }
 
     #[test]
+    fn ask_command_respects_user_requested_no_tools_budget() {
+        let request_id = Uuid::new_v4();
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("Answer without tools."));
+        let runtime =
+            CoddyRuntime::with_chat_client(AgentToolRegistry::default(), Arc::new(chat_client));
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Sem chamar ferramentas nesta resposta, explique a arquitetura.".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+
+        assert_eq!(text, "Answer without tools.");
+        assert_eq!(captured_requests.len(), 1);
+        assert!(captured_requests[0].tools.is_empty());
+        assert!(!captured_requests[0].messages[0]
+            .content
+            .contains("Subagent routing guidance:"));
+        let events = runtime.events_after(0).0;
+        assert!(!events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolStarted { name }
+                if name == SUBAGENT_ROUTE_TOOL
+                    || name == SUBAGENT_PREPARE_TOOL
+                    || name == SUBAGENT_TEAM_PLAN_TOOL
+        )));
+    }
+
+    #[test]
+    fn ask_command_disables_followup_tools_after_user_requested_budget_is_spent() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("src/main.rs", "fn main() {}\n");
+        let (chat_client, requests) = QueuedChatClient::new(vec![
+            ChatResponse {
+                text: "I will inspect once.".to_string(),
+                deltas: vec!["I will inspect once.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![
+                    ChatToolCall {
+                        id: Some("call-1".to_string()),
+                        name: LIST_FILES_TOOL.to_string(),
+                        arguments: json!({ "path": ".", "max_entries": 20 }),
+                    },
+                    ChatToolCall {
+                        id: Some("call-2".to_string()),
+                        name: READ_FILE_TOOL.to_string(),
+                        arguments: json!({ "path": "src/main.rs", "max_bytes": 100 }),
+                    },
+                ],
+            },
+            ChatResponse::from_text("Final answer after one tool."),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Use no maximo 1 ferramenta read-only e responda.".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+
+        assert_eq!(text, "Final answer after one tool.");
+        assert_eq!(captured_requests.len(), 2);
+        assert!(captured_requests[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == LIST_FILES_TOOL));
+        assert!(captured_requests[1].tools.is_empty());
+        let events = runtime.events_after(0).0;
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(&event.event, ReplEvent::ToolStarted { name } if name == LIST_FILES_TOOL || name == READ_FILE_TOOL || name == SUBAGENT_ROUTE_TOOL || name == SUBAGENT_PREPARE_TOOL || name == SUBAGENT_TEAM_PLAN_TOOL))
+                .count(),
+            1
+        );
+        assert!(captured_requests[1].messages.iter().any(|message| {
+            message.role == coddy_agent::ChatMessageRole::Tool
+                && message
+                    .content
+                    .contains("reached the user-requested tool budget")
+        }));
+    }
+
+    #[test]
     fn ask_command_surfaces_tool_followup_model_errors() {
         let request_id = Uuid::new_v4();
         let workspace = TempWorkspace::new();
@@ -3203,6 +3683,127 @@ mod tests {
         assert!(text.contains("filesystem.list_files"));
         assert!(text.contains("could not get a follow-up response after tool observations"));
         assert!(text.contains("missing queued response"));
+    }
+
+    #[test]
+    fn ask_command_retries_recoverable_tool_followup_model_errors() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("src/main.rs", "fn main() {}\n");
+        let (chat_client, requests) = QueuedChatResultClient::new(vec![
+            Ok(ChatResponse {
+                text: "I will inspect the workspace.".to_string(),
+                deltas: vec!["I will inspect the workspace.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-1".to_string()),
+                    name: LIST_FILES_TOOL.to_string(),
+                    arguments: json!({ "path": ".", "max_entries": 20 }),
+                }],
+            }),
+            Err(ChatModelError::ProviderError {
+                provider: "openrouter".to_string(),
+                message: "Provider returned error (HTTP 502; upstream provider: DeepSeek)"
+                    .to_string(),
+                retryable: true,
+            }),
+            Ok(ChatResponse::from_text("Recovered after retry.")),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openrouter".to_string(),
+                    name: "deepseek/deepseek-v4-flash".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect the workspace".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: Some(ModelCredential {
+                    provider: "openrouter".to_string(),
+                    token: "sk-or-test-token".to_string(),
+                    endpoint: None,
+                    metadata: Default::default(),
+                }),
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+
+        assert_eq!(text, "Recovered after retry.");
+        assert_eq!(captured_requests.len(), 3);
+        assert!(captured_requests[1].messages.iter().any(|message| {
+            message.role == coddy_agent::ChatMessageRole::Tool
+                && message.content.contains("filesystem.list_files")
+        }));
+        assert_eq!(captured_requests[1], captured_requests[2]);
+    }
+
+    #[test]
+    fn ask_command_does_not_retry_transport_timeouts_past_client_budget() {
+        let request_id = Uuid::new_v4();
+        let (chat_client, requests) = QueuedChatResultClient::new(vec![
+            Err(ChatModelError::Transport {
+                provider: "openrouter".to_string(),
+                message: "request timed out".to_string(),
+                retryable: true,
+            }),
+            Ok(ChatResponse::from_text("late retry")),
+        ]);
+        let runtime =
+            CoddyRuntime::with_chat_client(AgentToolRegistry::default(), Arc::new(chat_client));
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openrouter".to_string(),
+                    name: "deepseek/deepseek-v4-flash".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: Some(ModelCredential {
+                    provider: "openrouter".to_string(),
+                    token: "sk-or-test-token".to_string(),
+                    endpoint: None,
+                    metadata: Default::default(),
+                }),
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+
+        assert_eq!(captured_requests.len(), 1);
+        assert!(text.contains("request timed out"));
+        assert!(!text.contains("late retry"));
     }
 
     #[test]

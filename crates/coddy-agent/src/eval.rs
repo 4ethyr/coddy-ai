@@ -1182,7 +1182,11 @@ fn evaluate_prompt_battery_case_with_model(
         Ok(members) => (members, None),
         Err(error) => (Vec::new(), Some(error.to_string())),
     };
-    let guarded_predicted_members = guard_prompt_battery_members(case, &raw_predicted_members);
+    let guarded_predicted_members = if model_error.is_some() {
+        raw_predicted_members.clone()
+    } else {
+        guard_prompt_battery_members(case, &raw_predicted_members)
+    };
     let missing_raw_members = missing_expected_members(case, &raw_predicted_members);
     let missing_guarded_members = missing_expected_members(case, &guarded_predicted_members);
 
@@ -2470,6 +2474,61 @@ mod tests {
         assert_eq!(report.raw_failures.len(), 1);
         assert!(report.failures.is_empty());
         assert_eq!(report.concurrency, 1);
+    }
+
+    #[derive(Debug)]
+    struct FailingRoutingClient;
+
+    impl ChatModelClient for FailingRoutingClient {
+        fn complete(&self, _request: ChatRequest) -> ChatModelResult {
+            Err(ChatModelError::ProviderError {
+                provider: "openrouter".to_string(),
+                message: "User not found.".to_string(),
+                retryable: false,
+            })
+        }
+    }
+
+    #[test]
+    fn live_prompt_battery_does_not_guard_provider_failures_as_success() {
+        let case = PromptBatteryCase {
+            id: "case-1".to_string(),
+            stack: "rust".to_string(),
+            knowledge_area: "architecture".to_string(),
+            prompt: "map architecture entrypoint dependency risk and plan strategy incremental"
+                .to_string(),
+            expected_members: vec!["explorer".to_string(), "planner".to_string()],
+        };
+        let cases = [&case];
+
+        let report = run_live_prompt_battery_cases(
+            &FailingRoutingClient,
+            &ModelRef {
+                provider: "openrouter".to_string(),
+                name: "deepseek/deepseek-v4-flash".to_string(),
+            },
+            ModelCredential {
+                provider: "openrouter".to_string(),
+                token: "test-token".to_string(),
+                endpoint: None,
+                metadata: Default::default(),
+            },
+            &cases,
+            1,
+        );
+
+        assert_eq!(report.raw_passed, 0);
+        assert_eq!(report.passed, 0);
+        assert_eq!(report.raw_failed, 1);
+        assert_eq!(report.failed, 1);
+        assert_eq!(report.raw_score, 0);
+        assert_eq!(report.score, 0);
+        assert_eq!(report.raw_failures.len(), 1);
+        assert_eq!(report.failures.len(), 1);
+        assert!(report.failures[0]
+            .model_error
+            .as_deref()
+            .is_some_and(|error| error.contains("User not found")));
     }
 
     #[derive(Debug)]
