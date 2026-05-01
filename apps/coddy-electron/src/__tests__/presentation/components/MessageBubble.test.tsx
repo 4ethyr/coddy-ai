@@ -54,6 +54,24 @@ describe('MessageBubble', () => {
     expect(screen.getByText('Seguranca:')).toBeInTheDocument()
   })
 
+  it('renders italic markdown without leaking raw markers', () => {
+    const { container } = render(
+      <MessageBubble
+        message={{
+          id: '8',
+          role: 'assistant',
+          text: 'Use *pipeline* de CI e _feedback_ rapido.',
+        }}
+      />,
+    )
+
+    expect(screen.getByText('pipeline')).toBeInTheDocument()
+    expect(screen.getByText('feedback')).toBeInTheDocument()
+    expect(container.querySelectorAll('em')).toHaveLength(2)
+    expect(container.textContent).not.toContain('*pipeline*')
+    expect(container.textContent).not.toContain('_feedback_')
+  })
+
   it('renders code blocks with language label', () => {
     const text = '```rust\nfn main() {}\n```'
     const { container } = render(

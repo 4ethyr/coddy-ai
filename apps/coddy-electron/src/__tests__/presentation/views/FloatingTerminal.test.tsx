@@ -238,4 +238,23 @@ describe('FloatingTerminal', () => {
 
     expect(screen.getByText('Pressione (Esc) para parar.')).toBeInTheDocument()
   })
+
+  it('renders streaming responses with markdown formatting', () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      status: 'Streaming',
+      active_run: 'run-1',
+      streaming_text:
+        '### Principais funcionalidades:\n\n1. **Deteccao:** encontra problemas.\n\nUse *pipeline* de CI.',
+    }
+
+    const { container } = render(<FloatingTerminal />)
+
+    expect(screen.getByText('Principais funcionalidades:')).toBeInTheDocument()
+    expect(screen.getByText('Deteccao:')).toBeInTheDocument()
+    expect(screen.getByText('pipeline')).toBeInTheDocument()
+    expect(container.textContent).not.toContain('###')
+    expect(container.textContent).not.toContain('**Deteccao:**')
+    expect(container.textContent).not.toContain('*pipeline*')
+  })
 })

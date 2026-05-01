@@ -8,12 +8,14 @@ import type { ScreenAssistMode } from '@/domain'
 import type { FloatingAppearanceSettings } from '@/application'
 import { loadSettings, saveSettings } from '@/application'
 import { useSessionContext } from '@/presentation/hooks'
-import { MessageBubble } from '@/presentation/components/MessageBubble'
+import {
+  MarkdownContent,
+  MessageBubble,
+} from '@/presentation/components/MessageBubble'
 import { StatusIndicator } from '@/presentation/components/StatusIndicator'
 import { InputBar } from '@/presentation/components/InputBar'
 import { ModelSelector } from '@/presentation/components/ModelSelector'
 import { VoiceButton } from '@/presentation/components/VoiceButton'
-import { StreamingText } from '@/presentation/components/StreamingText'
 import { ThinkingIndicator } from '@/presentation/components/ThinkingIndicator'
 import { ToolApprovalPanel } from '@/presentation/components/ToolApprovalPanel'
 import { AssessmentConfirmModal } from '@/presentation/components/AssessmentConfirmModal'
@@ -340,10 +342,8 @@ export function FloatingTerminal() {
                 <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.22em] text-primary/80">
                   streaming_response
                 </div>
-                <p className="whitespace-pre-wrap break-words font-mono text-sm leading-6 text-on-surface">
-                  <StreamingText text={session.streaming_text} />
-                  <span className="streaming-cursor" />
-                </p>
+                <MarkdownContent text={session.streaming_text} />
+                <span className="streaming-cursor mt-2 inline-block" />
                 <p className="mt-3 text-[11px] text-on-surface-muted">
                   Pressione (Esc) para parar.
                 </p>

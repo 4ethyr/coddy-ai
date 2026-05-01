@@ -48,13 +48,13 @@ export function MessageBubble({ message }: Props) {
         <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.22em] text-primary/80">
           coddy_agent
         </div>
-        {renderContent(message.text)}
+        <MarkdownContent text={message.text} />
       </div>
     </div>
   )
 }
 
-function renderContent(text: string): JSX.Element {
+export function MarkdownContent({ text }: { text: string }): JSX.Element {
   const segments = parseMarkdown(text)
 
   return (
@@ -230,7 +230,7 @@ function parseMarkdownBlocks(text: string): MarkdownBlock[] {
 function renderInlineMarkdown(text: string): ReactNode[] {
   const nodes: ReactNode[] = []
   const pattern =
-    /(\*\*[^*]+?\*\*|__[^_]+?__|`[^`]+?`|\[[^\]]+\]\([^)]+\))/g
+    /(\*\*[^*]+?\*\*|__[^_]+?__|`[^`]+?`|\[[^\]]+\]\([^)]+\)|\*[^*\n]+?\*|_[^_\n]+?_)/g
   let lastIndex = 0
   let match: RegExpExecArray | null
 
@@ -263,6 +263,22 @@ function renderInlineToken(token: string, key: number): ReactNode {
       <strong key={key} className="coddy-markdown-strong font-semibold">
         {renderInlineMarkdown(token.slice(2, -2))}
       </strong>
+    )
+  }
+
+  if (token.startsWith('*') && token.endsWith('*')) {
+    return (
+      <em key={key} className="coddy-markdown-emphasis italic">
+        {renderInlineMarkdown(token.slice(1, -1))}
+      </em>
+    )
+  }
+
+  if (token.startsWith('_') && token.endsWith('_')) {
+    return (
+      <em key={key} className="coddy-markdown-emphasis italic">
+        {renderInlineMarkdown(token.slice(1, -1))}
+      </em>
     )
   }
 

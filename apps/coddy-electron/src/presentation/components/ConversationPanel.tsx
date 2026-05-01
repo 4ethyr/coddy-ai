@@ -2,9 +2,11 @@
 
 import { useRef, useEffect } from 'react'
 import type { ReplSession } from '@/domain'
-import { MessageBubble } from '@/presentation/components/MessageBubble'
+import {
+  MarkdownContent,
+  MessageBubble,
+} from '@/presentation/components/MessageBubble'
 import { InputBar } from '@/presentation/components/InputBar'
-import { StreamingText } from '@/presentation/components/StreamingText'
 import { ToolApprovalPanel } from '@/presentation/components/ToolApprovalPanel'
 import { SelectionCopyRegion } from '@/presentation/components/SelectionCopyRegion'
 import {
@@ -64,10 +66,8 @@ export function ConversationPanel({
                 <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.22em] text-primary/80">
                   coddy_agent
                 </div>
-                <p className="whitespace-pre-wrap break-words text-sm leading-6 text-on-surface">
-                  <StreamingText text={session.streaming_text} />
-                  <span className="streaming-cursor" />
-                </p>
+                <MarkdownContent text={session.streaming_text} />
+                <span className="streaming-cursor mt-2 inline-block" />
                 <p className="mt-3 text-[11px] text-on-surface-muted">
                   Pressione (Esc) para parar.
                 </p>
