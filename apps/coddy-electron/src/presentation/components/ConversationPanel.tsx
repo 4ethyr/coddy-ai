@@ -112,6 +112,7 @@ export function ConversationPanel({
 function PlanOfAttack({ session }: { session: ReplSession }) {
   const toolActivity = session.tool_activity ?? []
   const subagentActivity = session.subagent_activity ?? []
+  const agentRun = session.agent_run
   const hasToolActivity = toolActivity.length > 0
   const hasSubagentActivity = subagentActivity.length > 0
 
@@ -123,10 +124,37 @@ function PlanOfAttack({ session }: { session: ReplSession }) {
           Agent activity
         </h2>
         <div className="flex flex-col gap-0 pl-1">
-          <TaskStep
-            label={session.active_run ? 'Run is active' : 'Waiting for run'}
-            state={session.active_run ? 'active' : 'pending'}
-          />
+          {agentRun ? (
+            <>
+              <TaskStep
+                label={`agent.run // ${agentRun.summary.last_phase} // steps=${agentRun.summary.completed_steps}`}
+                state={agentRunState(agentRun.summary.last_phase)}
+              />
+              <TaskStep
+                label={`goal // ${agentRun.summary.goal}`}
+                state={agentRun.summary.last_phase === 'Failed' ? 'blocked' : 'done'}
+              />
+              {agentRun.summary.failure_code && (
+                <TaskStep
+                  label={`failure // ${agentRun.summary.failure_code} // ${
+                    agentRun.summary.recoverable_failure ? 'recoverable' : 'fatal'
+                  }`}
+                  state="blocked"
+                />
+              )}
+              {agentRun.summary.stop_reason && (
+                <TaskStep
+                  label={`stopped // ${agentRun.summary.stop_reason}`}
+                  state="blocked"
+                />
+              )}
+            </>
+          ) : (
+            <TaskStep
+              label={session.active_run ? 'Run is active' : 'Waiting for run'}
+              state={session.active_run ? 'active' : 'pending'}
+            />
+          )}
           {hasToolActivity ? (
             toolActivity.map((activity) => (
               <TaskStep
@@ -153,6 +181,15 @@ function PlanOfAttack({ session }: { session: ReplSession }) {
       </div>
     </section>
   )
+}
+
+function agentRunState(
+  phase: NonNullable<ReplSession['agent_run']>['summary']['last_phase'],
+): 'done' | 'active' | 'pending' | 'blocked' {
+  if (phase === 'Failed' || phase === 'Cancelled') return 'blocked'
+  if (phase === 'Completed') return 'done'
+  if (phase === 'Received') return 'pending'
+  return 'active'
 }
 
 function subagentOutputSuffix(
@@ -211,7 +248,7 @@ function TaskStep({
         )}
       </span>
       <p
-        className={`font-mono text-sm ${
+        className={`min-w-0 break-words font-mono text-sm ${
           state === 'active'
             ? 'font-bold text-primary'
             : state === 'blocked'

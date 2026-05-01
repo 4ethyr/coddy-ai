@@ -30,7 +30,7 @@ export function SelectionCopyRegion({
 
   const handleContextMenu = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
-      const text = getSelectedText()
+      const text = getSelectedText(regionRef.current)
       if (!text) return
 
       event.preventDefault()
@@ -54,7 +54,7 @@ export function SelectionCopyRegion({
       if (!isCopySelectionShortcut(event)) return
       if (isEditableElement(document.activeElement)) return
 
-      const text = getSelectedText()
+      const text = getSelectedText(regionRef.current)
       if (!text) return
 
       event.preventDefault()
@@ -101,8 +101,38 @@ function isCopySelectionShortcut(event: KeyboardEvent): boolean {
   )
 }
 
-function getSelectedText(): string {
-  return window.getSelection?.()?.toString().trim() ?? ''
+function getSelectedText(container: HTMLElement | null): string {
+  if (!container) return ''
+
+  const selection = window.getSelection?.()
+  const text = selection?.toString().trim() ?? ''
+  if (!selection || !text) return ''
+  if (!selectionBelongsToContainer(selection, container)) return ''
+
+  return text
+}
+
+function selectionBelongsToContainer(
+  selection: Selection,
+  container: HTMLElement,
+): boolean {
+  if (selection.rangeCount <= 0) return false
+
+  if (typeof selection.getRangeAt !== 'function') {
+    return selection.anchorNode ? container.contains(selection.anchorNode) : true
+  }
+
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    try {
+      const range = selection.getRangeAt(index)
+      if (container.contains(range.commonAncestorContainer)) return true
+      if (range.intersectsNode(container)) return true
+    } catch {
+      // Ignore stale ranges and continue checking the remaining selection ranges.
+    }
+  }
+
+  return selection.anchorNode ? container.contains(selection.anchorNode) : false
 }
 
 function isEditableElement(element: Element | null): boolean {

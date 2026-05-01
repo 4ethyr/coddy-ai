@@ -1,17 +1,16 @@
 use coddy_agent::{
-    AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError, ChatModelResult, ChatRequest,
-    ChatResponse, ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime,
-    SubagentExecutionGate, SubagentExecutionHandoff, SubagentExecutionStartPlan,
-    SubagentExecutionStartStatus, SubagentOutputContract, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL,
-    READ_FILE_TOOL, SEARCH_FILES_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
-    SUBAGENT_TEAM_PLAN_TOOL,
+    model_tool_call_may_run as agent_model_tool_call_may_run, AgentRunAction, AgentRunStopReason,
+    AgentRunSummary, AgentRunV2, AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError,
+    ChatModelResult, ChatRequest, ChatResponse, ChatToolCall, ChatToolSpec, DefaultChatModelClient,
+    LocalAgentRuntime, SubagentExecutionGate, SubagentExecutionHandoff, SubagentExecutionStartPlan,
+    SubagentExecutionStartStatus, SubagentOutputContract, LIST_FILES_TOOL, READ_FILE_TOOL,
+    SEARCH_FILES_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
 };
 use coddy_core::{
-    ApprovalPolicy, ContextItem, ContextPolicy, ModelCredential, ModelRef, PermissionReply,
-    ReplCommand, ReplEvent, ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode,
-    ReplSession, ReplSessionSnapshot, SubagentHandoffPrepared, SubagentLifecycleStatus,
-    SubagentLifecycleUpdate, SubagentRouteRecommendation, ToolCall, ToolDefinition, ToolName,
-    ToolOutput, ToolResultStatus, ToolRiskLevel,
+    ContextItem, ContextPolicy, ModelCredential, ModelRef, PermissionReply, ReplCommand, ReplEvent,
+    ReplEventBroker, ReplEventEnvelope, ReplIntent, ReplMessage, ReplMode, ReplSession,
+    ReplSessionSnapshot, SubagentHandoffPrepared, SubagentLifecycleStatus, SubagentLifecycleUpdate,
+    SubagentRouteRecommendation, ToolCall, ToolDefinition, ToolName, ToolOutput, ToolResultStatus,
 };
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcResult, CoddyRequest, CoddyResult, CoddyWireRequest,
@@ -19,6 +18,7 @@ use coddy_ipc::{
 };
 use serde_json::json;
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -41,6 +41,7 @@ pub struct CoddyRuntime {
 struct RuntimeState {
     session: ReplSession,
     broker: ReplEventBroker,
+    agent_runs: HashMap<Uuid, AgentRunV2>,
 }
 
 struct ModelBackedTurn<'a> {
@@ -231,6 +232,12 @@ impl CoddyRuntime {
             }
             ReplCommand::StopActiveRun => {
                 if let Some(run_id) = self.snapshot().session.active_run {
+                    self.transition_agent_run(
+                        run_id,
+                        AgentRunAction::Cancel {
+                            reason: AgentRunStopReason::UserInterrupt,
+                        },
+                    );
                     self.publish_event_with_run_now(ReplEvent::RunCompleted { run_id }, run_id);
                     CoddyResult::ActionStatus {
                         request_id,
@@ -287,11 +294,11 @@ impl CoddyRuntime {
         };
 
         let run_id = permission_request.run_id;
-        let mut state = agent_runtime.start_run(
+        let mut state = agent_runtime.start_run_with_id(
             permission_request.session_id,
+            run_id,
             format!("Reply to permission request {permission_request_id}"),
         );
-        state.run_id = run_id;
         let outcome = agent_runtime.reply_permission(&mut state, permission_request_id, reply);
 
         for event in outcome.events {
@@ -378,21 +385,27 @@ impl CoddyRuntime {
             run_id,
         );
         self.publish_event_with_run_now(ReplEvent::RunStarted { run_id }, run_id);
+        self.start_agent_run(run_id, text.clone());
+        self.transition_agent_run(run_id, AgentRunAction::Plan);
         self.publish_event_with_run_now(ReplEvent::IntentDetected { intent, confidence }, run_id);
 
         let assistant_response = match action {
             AskAction::ListWorkspace { path } => {
+                self.transition_agent_run(run_id, AgentRunAction::Inspect);
                 self.execute_workspace_listing(session_id, run_id, &text, &path, selected_model)
             }
-            AskAction::ModelBackedResponse => self.execute_model_backed_response(ModelBackedTurn {
-                session_id,
-                run_id,
-                selected_model: &selected_model,
-                context_policy,
-                session_context: &session_context,
-                model_credential,
-                user_text: text.clone(),
-            }),
+            AskAction::ModelBackedResponse => {
+                self.transition_agent_run(run_id, AgentRunAction::Inspect);
+                self.execute_model_backed_response(ModelBackedTurn {
+                    session_id,
+                    run_id,
+                    selected_model: &selected_model,
+                    context_policy,
+                    session_context: &session_context,
+                    model_credential,
+                    user_text: text.clone(),
+                })
+            }
         };
 
         for delta in assistant_response.deltas() {
@@ -410,6 +423,7 @@ impl CoddyRuntime {
             },
             run_id,
         );
+        self.complete_agent_run_if_active(run_id);
         self.publish_event_with_run_now(ReplEvent::RunCompleted { run_id }, run_id);
 
         CoddyResult::Text {
@@ -433,8 +447,7 @@ impl CoddyRuntime {
             );
         };
 
-        let mut state = agent_runtime.start_run(session_id, goal.to_string());
-        state.run_id = run_id;
+        let mut state = agent_runtime.start_run_with_id(session_id, run_id, goal.to_string());
         agent_runtime.add_plan_item(
             &mut state,
             format!("List workspace files in {path}"),
@@ -528,6 +541,7 @@ impl CoddyRuntime {
             Ok(request) => match request.with_model_credential(model_credential.clone()) {
                 Ok(request) => request.with_tools(self.chat_tool_specs()),
                 Err(error) => {
+                    self.fail_agent_run(run_id, &error);
                     return AssistantResponse::from_text(model_error_message(
                         &error,
                         selected_model,
@@ -536,6 +550,7 @@ impl CoddyRuntime {
                 }
             },
             Err(error) => {
+                self.fail_agent_run(run_id, &error);
                 return AssistantResponse::from_text(model_error_message(
                     &error,
                     selected_model,
@@ -556,11 +571,14 @@ impl CoddyRuntime {
                 },
                 response,
             ),
-            Err(error) => AssistantResponse::from_text(model_error_message(
-                &error,
-                selected_model,
-                self.tool_registry.definitions().len(),
-            )),
+            Err(error) => {
+                self.fail_agent_run(run_id, &error);
+                AssistantResponse::from_text(model_error_message(
+                    &error,
+                    selected_model,
+                    self.tool_registry.definitions().len(),
+                ))
+            }
         }
     }
 
@@ -585,8 +603,11 @@ impl CoddyRuntime {
             return AssistantResponse::from_chat_response(response);
         };
 
-        let mut state = agent_runtime.start_run(context.session_id, context.goal.clone());
-        state.run_id = context.run_id;
+        let mut state = agent_runtime.start_run_with_id(
+            context.session_id,
+            context.run_id,
+            context.goal.clone(),
+        );
         let mut messages = vec![
             ChatMessage::system(build_tool_followup_system_prompt(context.system_prompt)),
             ChatMessage::user(context.goal.clone()),
@@ -617,6 +638,7 @@ impl CoddyRuntime {
             ) {
                 Ok(response) => response,
                 Err(error) => {
+                    self.fail_agent_run(context.run_id, &error);
                     let mut text = round.response.text;
                     text.push_str("\n\n");
                     text.push_str(
@@ -652,8 +674,11 @@ impl CoddyRuntime {
         goal: &str,
     ) -> Option<String> {
         let agent_runtime = self.agent_runtime.as_ref()?;
-        let mut state = agent_runtime.start_run(session_id, format!("Route subagents for: {goal}"));
-        state.run_id = run_id;
+        let mut state = agent_runtime.start_run_with_id(
+            session_id,
+            run_id,
+            format!("Route subagents for: {goal}"),
+        );
         agent_runtime.add_plan_item(
             &mut state,
             "Recommend focused subagents for this turn",
@@ -838,7 +863,7 @@ impl CoddyRuntime {
                 continue;
             };
 
-            if !model_tool_call_may_run(&tool_name, definition) {
+            if !agent_model_tool_call_may_run(&tool_name, definition) {
                 observations.push(format!(
                     "- `{tool_name}` was not executed because model-initiated tools must be auto-approved and low risk, except edit previews that only prepare an approval request."
                 ));
@@ -957,6 +982,7 @@ impl CoddyRuntime {
         self.tool_registry
             .definitions()
             .iter()
+            .filter(|definition| agent_model_tool_call_may_run(&definition.name, definition))
             .map(ChatToolSpec::from_tool_definition)
             .collect()
     }
@@ -1060,6 +1086,70 @@ impl CoddyRuntime {
         tools
     }
 
+    pub fn agent_run_summary(&self, run_id: Uuid) -> Option<AgentRunSummary> {
+        self.with_state(|state| state.agent_runs.get(&run_id).map(AgentRunV2::summary))
+    }
+
+    fn start_agent_run(&self, run_id: Uuid, goal: impl Into<String>) {
+        let summary = self.with_state_mut(|state| {
+            let run = AgentRunV2::start(goal);
+            let summary = run.summary();
+            state.agent_runs.insert(run_id, run);
+            summary
+        });
+        self.publish_agent_run_update(run_id, summary);
+    }
+
+    fn transition_agent_run(&self, run_id: Uuid, action: AgentRunAction) {
+        let outcome = self.with_state_mut(|state| {
+            state
+                .agent_runs
+                .get_mut(&run_id)
+                .map(|run| run.transition(action).map(|_| run.summary()))
+        });
+
+        match outcome {
+            Some(Ok(summary)) => self.publish_agent_run_update(run_id, summary),
+            Some(Err(error)) => {
+                self.publish_event_with_run_now(
+                    ReplEvent::Error {
+                        code: error.code().to_string(),
+                        message: error.to_string(),
+                    },
+                    run_id,
+                );
+            }
+            None => {}
+        }
+    }
+
+    fn publish_agent_run_update(&self, run_id: Uuid, summary: AgentRunSummary) {
+        self.publish_event_with_run_now(ReplEvent::AgentRunUpdated { run_id, summary }, run_id);
+    }
+
+    fn complete_agent_run_if_active(&self, run_id: Uuid) {
+        let should_complete = self.with_state(|state| {
+            state
+                .agent_runs
+                .get(&run_id)
+                .is_some_and(|run| !run.phase().is_terminal())
+        });
+        if should_complete {
+            self.transition_agent_run(run_id, AgentRunAction::Complete);
+        }
+    }
+
+    fn fail_agent_run(&self, run_id: Uuid, error: &ChatModelError) {
+        self.transition_agent_run(
+            run_id,
+            AgentRunAction::Fail {
+                code: error.code().to_string(),
+                message: error.to_string(),
+                recoverable: error.retryable(),
+            },
+        );
+    }
+
     fn subscribe_after(&self, sequence: u64) -> coddy_core::ReplEventSubscription {
         self.with_state(|state| state.broker.subscribe_after(sequence))
     }
@@ -1096,7 +1186,11 @@ impl RuntimeState {
             None,
             unix_ms_now(),
         );
-        Self { session, broker }
+        Self {
+            session,
+            broker,
+            agent_runs: HashMap::new(),
+        }
     }
 }
 
@@ -1276,12 +1370,6 @@ fn build_tool_followup_system_prompt(base_prompt: &str) -> String {
     ]
     .join("\n");
     format!("{base_prompt}\n\n{followup}")
-}
-
-fn model_tool_call_may_run(tool_name: &ToolName, definition: &ToolDefinition) -> bool {
-    (definition.approval_policy == ApprovalPolicy::AutoApprove
-        && definition.risk_level <= ToolRiskLevel::Low)
-        || tool_name.as_str() == PREVIEW_EDIT_TOOL
 }
 
 fn context_item_from_tool_output(tool_name: &ToolName, output: &ToolOutput) -> Option<ContextItem> {
@@ -1979,8 +2067,8 @@ fn default_workspace_root() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use coddy_agent::{
-        PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_REDUCE_OUTPUTS_TOOL,
-        SUBAGENT_ROUTE_TOOL,
+        APPLY_EDIT_TOOL, PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SHELL_RUN_TOOL, SUBAGENT_PREPARE_TOOL,
+        SUBAGENT_REDUCE_OUTPUTS_TOOL, SUBAGENT_ROUTE_TOOL,
     };
     use coddy_client::CoddyClient;
     use coddy_core::{
@@ -2086,6 +2174,17 @@ mod tests {
                         "missing queued response".to_string(),
                     )
                 })
+        }
+    }
+
+    #[derive(Debug)]
+    struct FailingChatClient {
+        error: ChatModelError,
+    }
+
+    impl ChatModelClient for FailingChatClient {
+        fn complete(&self, _request: ChatRequest) -> coddy_agent::ChatModelResult {
+            Err(self.error.clone())
         }
     }
 
@@ -2867,6 +2966,51 @@ mod tests {
         let captured_requests = requests.lock().expect("requests mutex poisoned");
         assert_eq!(captured_requests.len(), 1);
         assert_eq!(captured_requests[0].model_credential, Some(credential));
+    }
+
+    #[test]
+    fn ask_command_exposes_only_model_safe_tools_to_chat_client() {
+        let request_id = Uuid::new_v4();
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("safe catalog accepted"));
+        let runtime =
+            CoddyRuntime::with_chat_client(AgentToolRegistry::default(), Arc::new(chat_client));
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect the workspace".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let tool_names = captured_requests[0]
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(tool_names.contains(&LIST_FILES_TOOL));
+        assert!(tool_names.contains(&READ_FILE_TOOL));
+        assert!(tool_names.contains(&SEARCH_FILES_TOOL));
+        assert!(tool_names.contains(&PREVIEW_EDIT_TOOL));
+        assert!(!tool_names.contains(&APPLY_EDIT_TOOL));
+        assert!(!tool_names.contains(&SHELL_RUN_TOOL));
     }
 
     #[test]
@@ -3667,6 +3811,115 @@ mod tests {
     }
 
     #[test]
+    fn ask_command_tracks_agent_run_v2_for_workspace_listing() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("README.md", "# Coddy\n");
+        let runtime = CoddyRuntime::with_workspace(AgentToolRegistry::default(), &workspace.path)
+            .expect("runtime");
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "list files".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let run_id = runtime
+            .events_after(1)
+            .0
+            .iter()
+            .find_map(|event| match event.event {
+                ReplEvent::RunStarted { run_id } => Some(run_id),
+                _ => None,
+            })
+            .expect("run started");
+        let summary = runtime.agent_run_summary(run_id).expect("run summary");
+        let snapshot = runtime.snapshot();
+
+        assert_eq!(summary.goal, "list files");
+        assert_eq!(summary.last_phase, coddy_agent::AgentRunPhase::Completed);
+        assert_eq!(summary.completed_steps, 3);
+        assert!(summary.failure_code.is_none());
+        assert_eq!(
+            snapshot.session.agent_run.as_ref().map(|run| run.run_id),
+            Some(run_id)
+        );
+        assert_eq!(
+            snapshot
+                .session
+                .agent_run
+                .as_ref()
+                .map(|run| run.summary.last_phase),
+            Some(coddy_agent::AgentRunPhase::Completed)
+        );
+    }
+
+    #[test]
+    fn ask_command_tracks_recoverable_model_failure_in_agent_run_v2() {
+        let request_id = Uuid::new_v4();
+        let chat_client = FailingChatClient {
+            error: ChatModelError::Transport {
+                provider: "openai".to_string(),
+                message: "timeout".to_string(),
+                retryable: true,
+            },
+        };
+        let runtime =
+            CoddyRuntime::with_chat_client(AgentToolRegistry::default(), Arc::new(chat_client));
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "debug this timeout".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let run_id = runtime
+            .events_after(1)
+            .0
+            .iter()
+            .find_map(|event| match event.event {
+                ReplEvent::RunStarted { run_id } => Some(run_id),
+                _ => None,
+            })
+            .expect("run started");
+        let summary = runtime.agent_run_summary(run_id).expect("run summary");
+        let snapshot = runtime.snapshot();
+
+        assert_eq!(summary.last_phase, coddy_agent::AgentRunPhase::Failed);
+        assert_eq!(summary.failure_code.as_deref(), Some("transport_error"));
+        assert!(summary.recoverable_failure);
+        assert_eq!(
+            snapshot
+                .session
+                .agent_run
+                .as_ref()
+                .and_then(|run| run.summary.failure_code.as_deref()),
+            Some("transport_error")
+        );
+    }
+
+    #[test]
     fn workspace_listing_does_not_allow_path_traversal() {
         let request_id = Uuid::new_v4();
         let workspace = TempWorkspace::new();
@@ -3757,6 +4010,58 @@ mod tests {
         assert!(events.iter().any(
             |event| matches!(event.event, ReplEvent::RunCompleted { run_id: completed } if completed == run_id)
         ));
+    }
+
+    #[test]
+    fn stop_active_run_publishes_cancelled_agent_run_summary() {
+        let request_id = Uuid::new_v4();
+        let run_id = Uuid::new_v4();
+        let runtime = CoddyRuntime::default();
+        runtime.publish_event(
+            ReplEvent::RunStarted { run_id },
+            Some(run_id),
+            1_775_000_000_060,
+        );
+        runtime.start_agent_run(run_id, "stop long running command");
+        runtime.transition_agent_run(run_id, AgentRunAction::Plan);
+        let before_stop_sequence = runtime.snapshot().last_sequence;
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::StopActiveRun,
+            speak: false,
+        }));
+
+        assert!(matches!(
+            result,
+            CoddyResult::ActionStatus {
+                request_id: actual_request_id,
+                ..
+            } if actual_request_id == request_id
+        ));
+        let events = runtime.events_after(before_stop_sequence).0;
+        let snapshot = runtime.snapshot();
+        let agent_run = snapshot
+            .session
+            .agent_run
+            .expect("cancelled agent run summary");
+
+        assert_eq!(agent_run.run_id, run_id);
+        assert_eq!(
+            agent_run.summary.last_phase,
+            coddy_agent::AgentRunPhase::Cancelled,
+        );
+        assert_eq!(
+            agent_run.summary.stop_reason,
+            Some(AgentRunStopReason::UserInterrupt),
+        );
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::AgentRunUpdated { run_id: updated, summary }
+                if *updated == run_id
+                    && summary.last_phase == coddy_agent::AgentRunPhase::Cancelled
+                    && summary.stop_reason == Some(AgentRunStopReason::UserInterrupt)
+        )));
     }
 
     #[test]

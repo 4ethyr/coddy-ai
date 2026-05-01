@@ -202,11 +202,19 @@ export function useSession(): UseSessionReturn {
   )
 
   const handleCancelRun = useCallback(async () => {
-    await cancelRun(client)
+    try {
+      await cancelRun(client)
+    } catch (err) {
+      setError(actionErrorMessage('Coddy could not stop the active run', err))
+    }
   }, [client])
 
   const handleCancelSpeech = useCallback(async () => {
-    await cancelSpeech(client)
+    try {
+      await cancelSpeech(client)
+    } catch (err) {
+      setError(actionErrorMessage('Coddy could not stop speech playback', err))
+    }
   }, [client])
 
   const handleSelectModel = useCallback(
@@ -298,7 +306,7 @@ export function useSession(): UseSessionReturn {
     try {
       await cancelVoiceCapture(client)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(actionErrorMessage('Coddy could not cancel voice capture', err))
     }
   }, [client])
 
@@ -363,4 +371,9 @@ export function useSession(): UseSessionReturn {
     replyPermission: handleReplyPermission,
     reconnect: init,
   }
+}
+
+function actionErrorMessage(action: string, err: unknown): string {
+  const detail = err instanceof Error ? err.message : String(err)
+  return detail ? `${action}: ${detail}` : action
 }

@@ -23,6 +23,7 @@ import {
   ensureLocalModelReady,
   type LocalModelProviderPreference,
 } from './localModelManager'
+import { ActiveChildProcessTracker } from './activeChildProcessTracker'
 import {
   readJson,
   readJsonWithTimeout,
@@ -122,6 +123,7 @@ function coddySpawn(
 // ---------------------------------------------------------------------------
 
 const activeStreams = new Map<string, ChildProcess>()
+const activeRunCommands = new ActiveChildProcessTracker(terminateChild)
 let activeVoiceCapture: ChildProcess | null = null
 let voiceCaptureCancelRequested = false
 const resizeSessions = new Map<
@@ -267,7 +269,7 @@ export function registerIpcHandlers(): void {
     const credentialEnv = await runtimeCredentialEnvironmentForActiveModel(
       credentialStore,
     )
-    return runCoddyCommand(['ask', text], credentialEnv)
+    return runActiveCoddyCommand(['ask', text], credentialEnv)
   })
 
   ipcMain.handle(
@@ -340,7 +342,10 @@ export function registerIpcHandlers(): void {
     const credentialEnv = await runtimeCredentialEnvironmentForActiveModel(
       credentialStore,
     )
-    return runCoddyCommand(['voice', '--transcript', transcript], credentialEnv)
+    return runActiveCoddyCommand(
+      ['voice', '--transcript', transcript],
+      credentialEnv,
+    )
   })
 
   ipcMain.handle('repl:stop-speaking', async () => {
@@ -350,6 +355,7 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle('repl:stop-active-run', async () => {
+    activeRunCommands.terminateActive()
     const child = coddySpawn(['stop-active-run'])
     await readJson(child)
     return { ok: true }
@@ -397,7 +403,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     'repl:capture-and-explain',
     async (_event, mode: ScreenAssistMode, policy: AssessmentPolicy) => {
-      const child = coddySpawn([
+      return runActiveCoddyCommand([
         'screen',
         'explain',
         '--mode',
@@ -405,7 +411,6 @@ export function registerIpcHandlers(): void {
         '--policy',
         toCliAssessmentPolicy(policy),
       ])
-      return runCoddyCommandFromChild(child)
     },
   )
 
@@ -440,6 +445,8 @@ export function cleanupStreams(): void {
   if (activeVoiceCapture && !activeVoiceCapture.killed) {
     terminateChild(activeVoiceCapture)
   }
+  activeRunCommands.terminateActive()
+  activeRunCommands.clear()
   activeVoiceCapture = null
   voiceCaptureCancelRequested = false
   for (const webContentsId of Array.from(resizeSessions.keys())) {
@@ -592,6 +599,22 @@ async function runCoddyCommand(
   env: Record<string, string> = {},
 ): Promise<ReplCommandResult> {
   return runCoddyCommandFromChild(coddySpawn(args, env))
+}
+
+async function runActiveCoddyCommand(
+  args: string[],
+  env: Record<string, string> = {},
+): Promise<ReplCommandResult> {
+  const child = coddySpawn(args, env, { detached: true })
+  return activeRunCommands.track(child, async (trackedChild) => {
+    const result = await runCoddyCommandFromChild(trackedChild)
+    if (result.error && activeRunCommands.wasTerminated(trackedChild)) {
+      return {
+        message: 'Active run cancellation requested.',
+      }
+    }
+    return result
+  })
 }
 
 async function runMultiagentEval(payload: MultiagentEvalPayload): Promise<unknown> {

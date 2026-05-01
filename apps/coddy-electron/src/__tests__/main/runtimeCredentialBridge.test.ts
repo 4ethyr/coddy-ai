@@ -247,4 +247,29 @@ describe('runtimeCredentialBridge', () => {
     expect(gcloudTokenProvider).not.toHaveBeenCalled()
     expect(gcloudProjectProvider).not.toHaveBeenCalled()
   })
+
+  it('forwards stored OpenRouter API keys to the runtime without gcloud metadata', async () => {
+    const store = {
+      get: vi.fn().mockResolvedValue({
+        apiKey: 'sk-or-test',
+      }),
+    }
+    const gcloudTokenProvider = vi.fn().mockResolvedValue('unused-token')
+    const gcloudProjectProvider = vi.fn().mockResolvedValue('coddy-dev')
+
+    const env = await buildRuntimeCredentialEnvironment(
+      { provider: 'openrouter', name: 'anthropic/claude-sonnet-4.5' },
+      store,
+      gcloudTokenProvider,
+      gcloudProjectProvider,
+    )
+
+    expect(store.get).toHaveBeenCalledWith('openrouter')
+    expect(gcloudTokenProvider).not.toHaveBeenCalled()
+    expect(gcloudProjectProvider).not.toHaveBeenCalled()
+    expect(JSON.parse(env[CODDY_EPHEMERAL_MODEL_CREDENTIAL_ENV] ?? '{}')).toEqual({
+      provider: 'openrouter',
+      token: 'sk-or-test',
+    })
+  })
 })

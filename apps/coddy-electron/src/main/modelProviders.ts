@@ -537,9 +537,24 @@ async function fetchJson(
 function requireCredential(request: ModelProviderListPayload): string {
   const value = request.apiKey?.trim()
   if (!value) {
-    throw new Error('Provider credential is required.')
+    throw new Error(`${credentialLabel(request.provider)} is required.`)
   }
   return value
+}
+
+function credentialLabel(provider: ModelProviderId): string {
+  switch (provider) {
+    case 'openai':
+      return 'OpenAI API key'
+    case 'openrouter':
+      return 'OpenRouter API key'
+    case 'azure':
+      return 'Azure OpenAI API key'
+    case 'vertex':
+      return 'Google API key, OAuth token or local gcloud/ADC credential'
+    case 'ollama':
+      return 'Local model credential'
+  }
 }
 
 function normalizeHttpsEndpoint(endpoint: string | undefined): string {

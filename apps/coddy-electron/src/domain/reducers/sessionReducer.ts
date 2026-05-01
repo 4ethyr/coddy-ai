@@ -4,6 +4,7 @@
 
 import type { ReplSession } from '@/domain/types/session'
 import type {
+  AgentRunSummary,
   ReplEvent,
   SubagentHandoffPrepared,
   SubagentLifecycleStatus,
@@ -28,6 +29,7 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
         ...session,
         active_run: run_id,
         status: 'Thinking',
+        agent_run: null,
         streaming_text: '',
         tool_activity: [],
         subagent_activity: [],
@@ -45,6 +47,19 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
 
     case 'IntentDetected':
       return { ...session, status: 'Thinking' }
+
+    case 'AgentRunUpdated': {
+      const { run_id, summary } = (event as {
+        AgentRunUpdated: {
+          run_id: string
+          summary: AgentRunSummary
+        }
+      }).AgentRunUpdated
+      return {
+        ...session,
+        agent_run: { run_id, summary },
+      }
+    }
 
     case 'SearchStarted':
       return { ...session, status: 'Thinking' }

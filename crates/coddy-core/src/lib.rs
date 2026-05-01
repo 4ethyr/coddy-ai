@@ -23,8 +23,9 @@ pub use context::{
     ScreenUnderstandingContext, TerminalBlock,
 };
 pub use event::{
-    ReplEvent, ReplIntent, ShortcutSource, SubagentHandoffPrepared, SubagentLifecycleStatus,
-    SubagentLifecycleUpdate, SubagentRouteRecommendation, ToolStatus,
+    AgentRunPhase, AgentRunStopReason, AgentRunSummary, ReplEvent, ReplIntent, ShortcutSource,
+    SubagentHandoffPrepared, SubagentLifecycleStatus, SubagentLifecycleUpdate,
+    SubagentRouteRecommendation, ToolStatus,
 };
 pub use event_broker::{ReplEventBroker, ReplEventSubscription};
 pub use event_log::{ReplEventEnvelope, ReplEventLog, ReplSessionSnapshot};
@@ -41,7 +42,8 @@ pub use search::{
     SearchExtractionPolicy, SearchProvider, SearchResultContext, SearchResultItem, SourceQuality,
 };
 pub use session::{
-    ContextItem, ReplMessage, ReplMode, ReplSession, SessionStatus, SubagentActivity, VoiceState,
+    AgentRunActivity, ContextItem, ReplMessage, ReplMode, ReplSession, SessionStatus,
+    SubagentActivity, VoiceState,
 };
 pub use shortcut::{ShortcutConflictPolicy, ShortcutDecision};
 pub use tool::{

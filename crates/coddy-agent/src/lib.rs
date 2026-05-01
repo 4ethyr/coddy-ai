@@ -1,3 +1,5 @@
+pub mod agent_loop;
+pub mod agent_run_v2;
 pub mod command_guard;
 pub mod context;
 pub mod eval;
@@ -19,6 +21,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+pub use agent_loop::{
+    model_tool_call_may_run, AgenticLoopConfig, AgenticLoopOutcome, AgenticLoopRequest,
+    AgenticLoopStop, AgenticModelLoop,
+};
+pub use agent_run_v2::{
+    AgentRunAction, AgentRunFailure, AgentRunTransition, AgentRunTransitionError, AgentRunV2,
+};
+pub use coddy_core::{AgentRunPhase, AgentRunStopReason, AgentRunSummary};
 pub use command_guard::{
     BlockedCommandReason, CommandAssessment, CommandDecision, CommandGuard, CommandRisk,
     SHELL_RUN_TOOL,

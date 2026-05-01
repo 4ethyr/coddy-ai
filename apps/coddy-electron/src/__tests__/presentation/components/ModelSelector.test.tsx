@@ -26,6 +26,18 @@ function modelLoader(
               tags: ['api', 'tools'],
             },
           ]
+        : request.provider === 'openrouter'
+          ? [
+              {
+                model: {
+                  provider: 'openrouter',
+                  name: 'anthropic/claude-sonnet-4.5',
+                },
+                label: 'Claude Sonnet 4.5',
+                description: 'OpenRouter routed model.',
+                tags: ['api', 'router'],
+              },
+            ]
         : []
 
   return Promise.resolve({
@@ -219,6 +231,47 @@ describe('ModelSelector', () => {
     expect(onSelect).toHaveBeenCalledWith({
       provider: 'openai',
       name: 'gpt-4.1',
+    })
+  })
+
+  it('connects OpenRouter with an API key and emits selected routed models', async () => {
+    const onLoadModels = vi.fn(modelLoader)
+    const onSelect = vi.fn()
+    render(
+      <ModelSelector
+        model={{ provider: 'ollama', name: 'gemma4-E2B' }}
+        onLoadModels={onLoadModels}
+        onSelect={onSelect}
+      />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Active model ollama/gemma4-E2B' }),
+    )
+
+    const openRouterGroup = providerGroup('OpenRouter')
+    await userEvent.type(
+      within(openRouterGroup).getByPlaceholderText('sk-or-...'),
+      'sk-or-test',
+    )
+    await userEvent.click(
+      within(openRouterGroup).getByRole('button', { name: 'Load' }),
+    )
+
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: 'Select Claude Sonnet 4.5 via OpenRouter',
+      }),
+    )
+
+    expect(onLoadModels).toHaveBeenCalledWith({
+      provider: 'openrouter',
+      apiKey: 'sk-or-test',
+      endpoint: undefined,
+    })
+    expect(onSelect).toHaveBeenCalledWith({
+      provider: 'openrouter',
+      name: 'anthropic/claude-sonnet-4.5',
     })
   })
 
