@@ -35,11 +35,14 @@ pub use command_guard::{
 };
 pub use context::{ContextObservation, ContextPlanItem, ContextSnapshot, ContextTool};
 pub use eval::{
-    default_prompt_battery_cases, run_default_prompt_battery, run_prompt_battery, EvalCase,
-    EvalExpectations, EvalGateReport, EvalGateStatus, EvalQualityGate, EvalReport, EvalRunner,
-    EvalStatus, EvalSuiteReport, MultiagentEvalBaselineComparison, MultiagentEvalBaselineError,
-    MultiagentEvalCase, MultiagentEvalReport, MultiagentEvalRunner, MultiagentEvalSuiteReport,
-    MultiagentExecutionMetrics, PromptBatteryCase, PromptBatteryFailure, PromptBatteryReport,
+    default_prompt_battery_cases, extract_prompt_battery_members, guard_prompt_battery_members,
+    prompt_battery_routing_messages, run_default_prompt_battery, run_live_prompt_battery_cases,
+    run_prompt_battery, EvalCase, EvalExpectations, EvalGateReport, EvalGateStatus,
+    EvalQualityGate, EvalReport, EvalRunner, EvalStatus, EvalSuiteReport,
+    LivePromptBatteryCaseResult, LivePromptBatteryReport, MultiagentEvalBaselineComparison,
+    MultiagentEvalBaselineError, MultiagentEvalCase, MultiagentEvalReport, MultiagentEvalRunner,
+    MultiagentEvalSuiteReport, MultiagentExecutionMetrics, PromptBatteryCase, PromptBatteryFailure,
+    PromptBatteryReport,
 };
 pub use model::{
     ChatFinishReason, ChatMessage, ChatMessageRole, ChatModelClient, ChatModelError,
