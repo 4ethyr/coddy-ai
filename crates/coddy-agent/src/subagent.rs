@@ -263,6 +263,9 @@ impl Default for SubagentRegistry {
                         "entrypoint",
                         "structure",
                         "dependency",
+                        "filesystem",
+                        "workspace",
+                        "list",
                         "risk",
                         "analisar",
                         "mapear",
@@ -374,7 +377,7 @@ impl Default for SubagentRegistry {
                         "prompt injection",
                         "path traversal",
                         "command",
-                        "filesystem",
+                        "filesystem policy",
                         "mcp",
                         "token",
                         "seguranca",
@@ -1199,6 +1202,23 @@ mod tests {
         assert!(!recommendations[0]
             .allowed_tools
             .contains(&APPLY_EDIT_TOOL.to_string()));
+    }
+
+    #[test]
+    fn recommends_explorer_for_workspace_filesystem_inspection() {
+        let registry = SubagentRegistry::default();
+
+        let recommendations = registry.recommend(
+            "use filesystem.list_files para listar a raiz do workspace",
+            None,
+            2,
+        );
+
+        assert_eq!(recommendations[0].name, "explorer");
+        assert!(recommendations[0]
+            .matched_signals
+            .iter()
+            .any(|signal| signal == "filesystem" || signal == "workspace"));
     }
 
     #[test]

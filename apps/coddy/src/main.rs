@@ -30,6 +30,7 @@ use tokio::process::Command as TokioCommand;
 use tracing::{info, warn};
 
 const CODDY_EPHEMERAL_MODEL_CREDENTIAL_ENV: &str = "CODDY_EPHEMERAL_MODEL_CREDENTIAL";
+const CODDY_SKIP_DESKTOP_LAUNCH_ENV: &str = "CODDY_SKIP_DESKTOP_LAUNCH";
 
 #[derive(Debug, Parser)]
 #[command(name = "coddy")]
@@ -348,7 +349,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::Ask { text }) => {
             let text = join_command_text(text);
-            let model_credential = load_ephemeral_model_credential_from_env()?;
+            let model_credential = load_cli_ask_model_credential(&config).await?;
             let result = send_repl_command(
                 &config,
                 ReplCommand::Ask {
@@ -586,6 +587,10 @@ async fn open_desktop_ui_or_send_runtime_command(
 }
 
 fn launch_desktop_app() -> Result<Option<PathBuf>> {
+    if desktop_launcher_launch_disabled(env::var_os(CODDY_SKIP_DESKTOP_LAUNCH_ENV)) {
+        return Ok(None);
+    }
+
     let Some(launcher) = resolve_desktop_launcher() else {
         return Ok(None);
     };
@@ -598,6 +603,16 @@ fn launch_desktop_app() -> Result<Option<PathBuf>> {
         .with_context(|| format!("failed to start Coddy Desktop {}", launcher.display()))?;
 
     Ok(Some(launcher))
+}
+
+fn desktop_launcher_launch_disabled(value: Option<OsString>) -> bool {
+    value
+        .and_then(|value| value.into_string().ok())
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
 }
 
 fn resolve_desktop_launcher() -> Option<PathBuf> {
@@ -1003,20 +1018,51 @@ fn load_eval_model_credential(provider: &str) -> Result<ModelCredential> {
         }
     }
 
-    let token = provider_api_key_names(provider)
-        .and_then(secret_from_env_or_dotenv)
-        .with_context(|| {
-            format!(
-                "No API key found for {provider}. Set a provider API key in the environment, .env, or secure Electron credential store."
-            )
-        })?;
+    load_provider_api_key_credential(provider)?.with_context(|| {
+        format!(
+            "No API key found for {provider}. Set a provider API key in the environment, .env, or secure Electron credential store."
+        )
+    })
+}
 
-    Ok(ModelCredential {
+async fn load_cli_ask_model_credential(
+    config: &CoddyRuntimeConfig,
+) -> Result<Option<ModelCredential>> {
+    if let Some(credential) = load_ephemeral_model_credential_from_env()? {
+        return Ok(Some(credential));
+    }
+
+    let snapshot = coddy_client(config)?.snapshot().await?;
+    load_provider_api_key_credential(&snapshot.session.selected_model.provider)
+}
+
+fn load_provider_api_key_credential(provider: &str) -> Result<Option<ModelCredential>> {
+    let Some(keys) = provider_api_key_names(provider) else {
+        return Ok(None);
+    };
+
+    let token = secret_from_env_or_dotenv(keys);
+
+    Ok(token.map(|token| model_credential_from_provider_token(provider, token)))
+}
+
+#[cfg(test)]
+fn provider_api_key_credential_from_dotenv_file(
+    provider: &str,
+    env_file: &Path,
+) -> Option<ModelCredential> {
+    let keys = provider_api_key_names(provider)?;
+    let token = secret_from_dotenv_file(env_file, keys)?;
+    Some(model_credential_from_provider_token(provider, token))
+}
+
+fn model_credential_from_provider_token(provider: &str, token: String) -> ModelCredential {
+    ModelCredential {
         provider: provider.to_string(),
         token,
         endpoint: None,
         metadata: Default::default(),
-    })
+    }
 }
 
 fn provider_api_key_names(provider: &str) -> Option<&'static [&'static str]> {
@@ -1522,6 +1568,39 @@ mod tests {
     }
 
     #[test]
+    fn provider_dotenv_credential_builds_request_scoped_redacted_credential() {
+        let root = std::env::temp_dir().join(format!("coddy-dotenv-{}", uuid::Uuid::new_v4()));
+        let env_file = root.join(".env");
+        std::fs::create_dir_all(&root).expect("create temp dotenv dir");
+        std::fs::write(&env_file, "OPEN_ROUTER_API_KEY='openrouter-secret'\n")
+            .expect("write temp dotenv");
+
+        let credential = provider_api_key_credential_from_dotenv_file("openrouter", &env_file)
+            .expect("openrouter credential");
+
+        assert_eq!(credential.provider, "openrouter");
+        assert_eq!(credential.token, "openrouter-secret");
+        let debug = format!("{credential:?}");
+        assert!(debug.contains("provider: \"openrouter\""));
+        assert!(!debug.contains("openrouter-secret"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn provider_dotenv_credential_ignores_unsupported_local_providers() {
+        let root = std::env::temp_dir().join(format!("coddy-dotenv-{}", uuid::Uuid::new_v4()));
+        let env_file = root.join(".env");
+        std::fs::create_dir_all(&root).expect("create temp dotenv dir");
+        std::fs::write(&env_file, "OPEN_ROUTER_API_KEY='openrouter-secret'\n")
+            .expect("write temp dotenv");
+
+        let credential = provider_api_key_credential_from_dotenv_file("ollama", &env_file);
+
+        assert!(credential.is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn runtime_socket_preparation_creates_parent_and_removes_stale_socket() {
         let root = std::env::temp_dir().join(format!("coddy-runtime-cli-{}", uuid::Uuid::new_v4()));
         let socket_path = root.join("nested").join("coddy.sock");
@@ -1626,6 +1705,16 @@ mod tests {
             resolved,
             Some(PathBuf::from("/home/demo/.local/bin/coddy-desktop"))
         );
+    }
+
+    #[test]
+    fn desktop_launcher_skip_flag_disables_launch() {
+        assert!(desktop_launcher_launch_disabled(Some(OsString::from("1"))));
+        assert!(desktop_launcher_launch_disabled(Some(OsString::from(
+            "true"
+        ))));
+        assert!(!desktop_launcher_launch_disabled(Some(OsString::from("0"))));
+        assert!(!desktop_launcher_launch_disabled(None));
     }
 
     #[test]

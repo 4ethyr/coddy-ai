@@ -1,8 +1,21 @@
 // presentation/components/InputBar.tsx
 // Terminal-style textarea input: Enter sends, Shift+Enter newlines, auto-resize.
 
-import { useState, useRef, useCallback, type KeyboardEvent, type ChangeEvent } from 'react'
+import {
+  useState,
+  useRef,
+  useCallback,
+  useMemo,
+  useEffect,
+  useLayoutEffect,
+  type KeyboardEvent,
+  type ChangeEvent,
+} from 'react'
 import { Icon } from './Icon'
+import {
+  listUiSlashCommandSuggestions,
+  type UiSlashCommandSuggestion,
+} from '@/presentation/commands/slashCommands'
 
 interface Props {
   onSend: (text: string) => void
@@ -18,13 +31,45 @@ export function InputBar({
   placeholder = 'Enter command or prompt...',
 }: Props) {
   const [value, setValue] = useState('')
+  const [dismissedSuggestionsFor, setDismissedSuggestionsFor] = useState<
+    string | null
+  >(null)
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const pendingCaretPositionRef = useRef<number | null>(null)
+  const slashSuggestions = useMemo(() => {
+    if (disabled || dismissedSuggestionsFor === value) return []
+    return listUiSlashCommandSuggestions(value)
+  }, [disabled, dismissedSuggestionsFor, value])
+
+  useEffect(() => {
+    setActiveSuggestionIndex((current) =>
+      slashSuggestions.length > 0
+        ? Math.min(current, slashSuggestions.length - 1)
+        : 0,
+    )
+  }, [slashSuggestions.length])
+
+  useLayoutEffect(() => {
+    const caret = pendingCaretPositionRef.current
+    if (caret === null) return
+
+    pendingCaretPositionRef.current = null
+
+    const textarea = textareaRef.current
+    if (!textarea) return
+
+    textarea.focus()
+    textarea.setSelectionRange(caret, caret)
+    resizeTextarea(textarea)
+  }, [value])
 
   const submit = useCallback(() => {
     const text = value.trim()
     if (!text || disabled) return
     onSend(text)
     setValue('')
+    setDismissedSuggestionsFor(null)
     // Reset textarea height
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
@@ -58,6 +103,16 @@ export function InputBar({
     [value],
   )
 
+  const selectSlashSuggestion = useCallback(
+    (suggestion: UiSlashCommandSuggestion) => {
+      const next = suggestion.insertText
+      pendingCaretPositionRef.current = next.length
+      setValue(next)
+      setDismissedSuggestionsFor(next)
+    },
+    [],
+  )
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
       if (isPasteShortcut(e)) {
@@ -66,16 +121,90 @@ export function InputBar({
         return
       }
 
+      if (slashSuggestions.length > 0) {
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          setDismissedSuggestionsFor(value)
+          return
+        }
+
+        if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          setActiveSuggestionIndex((current) =>
+            (current + 1) % slashSuggestions.length,
+          )
+          return
+        }
+
+        if (e.key === 'ArrowUp') {
+          e.preventDefault()
+          setActiveSuggestionIndex((current) =>
+            (current - 1 + slashSuggestions.length) % slashSuggestions.length,
+          )
+          return
+        }
+
+        if ((e.key === 'Enter' && !e.shiftKey) || e.key === 'Tab') {
+          e.preventDefault()
+          const activeSuggestion = slashSuggestions[activeSuggestionIndex]
+          if (activeSuggestion) {
+            selectSlashSuggestion(activeSuggestion)
+          }
+          return
+        }
+      }
+
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         submit()
       }
     },
-    [pasteClipboardText, submit],
+    [
+      activeSuggestionIndex,
+      pasteClipboardText,
+      selectSlashSuggestion,
+      slashSuggestions,
+      submit,
+      value,
+    ],
   )
 
   return (
     <div className="terminal-input relative flex items-start rounded-full border border-outline-variant/80 bg-surface-container/70 px-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+      {slashSuggestions.length > 0 && (
+        <div
+          role="listbox"
+          aria-label="Slash commands"
+          className="absolute bottom-full left-2 right-2 z-40 mb-2 overflow-hidden rounded-lg border border-primary/20 bg-surface-container-high/95 p-1 shadow-2xl backdrop-blur-xl"
+        >
+          {slashSuggestions.map((suggestion, index) => (
+            <button
+              key={suggestion.command}
+              type="button"
+              role="option"
+              aria-selected={index === activeSuggestionIndex}
+              aria-label={`${suggestion.command} ${suggestion.title}`}
+              onMouseDown={(event) => {
+                event.preventDefault()
+              }}
+              onClick={() => selectSlashSuggestion(suggestion)}
+              className={`flex w-full min-w-0 flex-col rounded-md px-3 py-2 text-left transition-colors ${
+                index === activeSuggestionIndex
+                  ? 'bg-primary/15 text-on-surface'
+                  : 'text-on-surface-variant hover:bg-white/5 hover:text-on-surface'
+              }`}
+            >
+              <span className="flex min-w-0 items-center gap-2 font-mono text-xs">
+                <span className="text-primary">{suggestion.command}</span>
+                <span className="truncate">{suggestion.title}</span>
+              </span>
+              <span className="mt-0.5 truncate text-[11px] text-on-surface-muted">
+                {suggestion.description}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
       <span className="select-none pl-4 pt-3 font-mono text-sm leading-5 text-primary drop-shadow-[0_0_8px_rgba(0,219,233,0.65)]">
         &gt;
       </span>

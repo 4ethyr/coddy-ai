@@ -8,8 +8,21 @@ pub enum ReplShellInput {
     Config,
     Tools,
     Exit,
+    Workflow {
+        kind: CodingWorkflowKind,
+        goal: String,
+    },
     Ask(String),
-    UnknownSlash { command: String },
+    UnknownSlash {
+        command: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CodingWorkflowKind {
+    Plan,
+    Review,
+    Test,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -49,6 +62,10 @@ pub fn parse_repl_shell_input(input: &str) -> ReplShellInput {
         .next()
         .unwrap_or(trimmed)
         .to_ascii_lowercase();
+    let goal = trimmed
+        .split_once(char::is_whitespace)
+        .map(|(_, goal)| goal.trim().to_string())
+        .unwrap_or_default();
 
     match command.as_str() {
         "/help" | "/?" => ReplShellInput::Help,
@@ -56,6 +73,18 @@ pub fn parse_repl_shell_input(input: &str) -> ReplShellInput {
         "/config" => ReplShellInput::Config,
         "/tools" => ReplShellInput::Tools,
         "/exit" | "/quit" => ReplShellInput::Exit,
+        "/plan" => ReplShellInput::Workflow {
+            kind: CodingWorkflowKind::Plan,
+            goal,
+        },
+        "/review" => ReplShellInput::Workflow {
+            kind: CodingWorkflowKind::Review,
+            goal,
+        },
+        "/test" | "/tests" => ReplShellInput::Workflow {
+            kind: CodingWorkflowKind::Test,
+            goal,
+        },
         _ => ReplShellInput::UnknownSlash { command },
     }
 }
@@ -68,6 +97,16 @@ pub fn handle_repl_shell_input(input: &str, context: &ReplShellContext) -> ReplS
         ReplShellInput::Config => ReplShellAction::Render(config_response(context)),
         ReplShellInput::Tools => ReplShellAction::Render(tools_response(context)),
         ReplShellInput::Exit => ReplShellAction::Exit,
+        ReplShellInput::Workflow { kind, goal } => {
+            if goal.is_empty() {
+                return ReplShellAction::Render(workflow_usage_response(kind));
+            }
+            ReplShellAction::SendCommand(crate::ReplCommand::Ask {
+                text: coding_workflow_prompt(kind, &goal),
+                context_policy: crate::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            })
+        }
         ReplShellInput::Ask(text) => ReplShellAction::SendCommand(crate::ReplCommand::Ask {
             text,
             context_policy: crate::ContextPolicy::WorkspaceOnly,
@@ -86,6 +125,9 @@ fn help_response() -> ReplShellResponse {
             "/help    Show available REPL commands.".to_string(),
             "/status  Show the current session and model.".to_string(),
             "/tools   Show registered local tools.".to_string(),
+            "/plan    Build an evidence-based implementation plan.".to_string(),
+            "/review  Review code, diffs or architecture risks.".to_string(),
+            "/test    Design or run focused validation for a change.".to_string(),
             "/config  Show active configuration source.".to_string(),
             "/exit    Leave the REPL.".to_string(),
         ],
@@ -146,6 +188,36 @@ fn unknown_command_response(command: &str) -> ReplShellResponse {
     }
 }
 
+fn workflow_usage_response(kind: CodingWorkflowKind) -> ReplShellResponse {
+    let command = match kind {
+        CodingWorkflowKind::Plan => "/plan",
+        CodingWorkflowKind::Review => "/review",
+        CodingWorkflowKind::Test => "/test",
+    };
+    ReplShellResponse {
+        title: "Coding Workflow".to_string(),
+        lines: vec![
+            format!("Usage: {command} <goal or scope>"),
+            "Provide a concrete task so Coddy can inspect, reason and validate with a bounded workflow.".to_string(),
+        ],
+    }
+}
+
+pub fn coding_workflow_prompt(kind: CodingWorkflowKind, goal: &str) -> String {
+    let goal = goal.trim();
+    match kind {
+        CodingWorkflowKind::Plan => format!(
+            "Plan-only coding workflow.\n\nGoal: {goal}\n\nInstructions:\n- Inspect safe read-only workspace context before making code claims when tools are available.\n- Do not edit files or run mutating commands in this workflow.\n- Return objective, assumptions, relevant files to inspect, ordered steps, risks, validation plan and approval needs.\n- If evidence is missing, state exactly which read-only inspection is needed."
+        ),
+        CodingWorkflowKind::Review => format!(
+            "Code review workflow.\n\nScope: {goal}\n\nInstructions:\n- Inspect the relevant diff, files or workspace context before making claims when tools are available.\n- Prioritize correctness bugs, regressions, security risks and missing tests.\n- Report findings first with concrete file/function evidence; keep summaries secondary.\n- Do not edit files unless the user explicitly asks for fixes."
+        ),
+        CodingWorkflowKind::Test => format!(
+            "Focused validation workflow.\n\nGoal: {goal}\n\nInstructions:\n- Identify the smallest useful test, lint, type-check or build command for this goal.\n- Inspect project scripts and relevant files before recommending commands when tools are available.\n- Run safe validation when permitted; otherwise explain the exact command and why it was not run.\n- Report pass/fail status, failure cause and next corrective step."
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,6 +243,27 @@ mod tests {
         assert_eq!(parse_repl_shell_input("/tools"), ReplShellInput::Tools);
         assert_eq!(parse_repl_shell_input("/exit"), ReplShellInput::Exit);
         assert_eq!(parse_repl_shell_input("/quit"), ReplShellInput::Exit);
+        assert_eq!(
+            parse_repl_shell_input("/plan implement workspace support"),
+            ReplShellInput::Workflow {
+                kind: CodingWorkflowKind::Plan,
+                goal: "implement workspace support".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_repl_shell_input("/review recent changes"),
+            ReplShellInput::Workflow {
+                kind: CodingWorkflowKind::Review,
+                goal: "recent changes".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_repl_shell_input("/tests cancellation flow"),
+            ReplShellInput::Workflow {
+                kind: CodingWorkflowKind::Test,
+                goal: "cancellation flow".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -228,6 +321,50 @@ mod tests {
                 context_policy: crate::ContextPolicy::WorkspaceOnly,
                 model_credential: None,
             }) if text == "explain this error"
+        ));
+    }
+
+    #[test]
+    fn workflow_commands_dispatch_coding_guidance_as_ask_commands() {
+        let action = handle_repl_shell_input("/plan add provider fallback", &context());
+
+        assert!(matches!(
+            action,
+            ReplShellAction::SendCommand(crate::ReplCommand::Ask {
+                text,
+                context_policy: crate::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            }) if text.contains("Plan-only coding workflow")
+                && text.contains("Goal: add provider fallback")
+                && text.contains("Do not edit files")
+        ));
+
+        let action = handle_repl_shell_input("/review auth module", &context());
+
+        assert!(matches!(
+            action,
+            ReplShellAction::SendCommand(crate::ReplCommand::Ask { text, .. })
+                if text.contains("Code review workflow")
+                    && text.contains("Report findings first")
+        ));
+
+        let action = handle_repl_shell_input("/test model routing", &context());
+
+        assert!(matches!(
+            action,
+            ReplShellAction::SendCommand(crate::ReplCommand::Ask { text, .. })
+                if text.contains("Focused validation workflow")
+                    && text.contains("smallest useful test")
+        ));
+    }
+
+    #[test]
+    fn workflow_commands_without_goal_render_usage() {
+        assert!(matches!(
+            handle_repl_shell_input("/plan", &context()),
+            ReplShellAction::Render(response)
+                if response.title == "Coding Workflow"
+                    && response.lines.iter().any(|line| line.contains("/plan <goal"))
         ));
     }
 

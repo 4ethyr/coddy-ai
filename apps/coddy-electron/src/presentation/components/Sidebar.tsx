@@ -32,7 +32,7 @@ export function Sidebar({
   onOpenMode,
 }: Props) {
   return (
-    <aside className="desktop-sidebar hidden w-[240px] flex-shrink-0 flex-col border-r border-white/5 bg-zinc-950/40 backdrop-blur-2xl md:flex">
+    <aside className="desktop-sidebar relative z-[230] hidden w-[240px] flex-shrink-0 flex-col border-r border-white/5 bg-zinc-950/40 backdrop-blur-2xl md:flex">
       <div className="border-b border-white/5 px-6 py-6">
         <div className="flex items-center gap-3">
           <span className="flex h-9 w-9 items-center justify-center rounded-full border border-primary/50 bg-primary/10 text-primary shadow-[0_0_22px_rgba(0,219,233,0.18)]">

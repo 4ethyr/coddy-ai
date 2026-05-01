@@ -1170,8 +1170,8 @@ fn openai_compatible_chat_body(request: &ChatRequest) -> Value {
             serde_json::json!({
                 "type": "function",
                 "function": {
-                    "name": openai_compatible_tool_name(&tool.name),
-                    "description": openai_compatible_tool_description(tool),
+                    "name": provider_safe_tool_name(&tool.name),
+                    "description": provider_safe_tool_description(tool),
                     "parameters": tool.input_schema,
                 }
             })
@@ -1196,16 +1196,16 @@ fn openai_compatible_chat_body(request: &ChatRequest) -> Value {
     body
 }
 
-fn openai_compatible_tool_name(name: &str) -> String {
-    if is_openai_compatible_function_name(name) {
+fn provider_safe_tool_name(name: &str) -> String {
+    if is_provider_safe_function_name(name) {
         return name.to_string();
     }
 
     format!("coddy_tool__{}", name.replace('.', "__dot__"))
 }
 
-fn openai_compatible_tool_description(tool: &ChatToolSpec) -> String {
-    let name = openai_compatible_tool_name(&tool.name);
+fn provider_safe_tool_description(tool: &ChatToolSpec) -> String {
+    let name = provider_safe_tool_name(&tool.name);
     if name == tool.name {
         tool.description.clone()
     } else {
@@ -1213,13 +1213,16 @@ fn openai_compatible_tool_description(tool: &ChatToolSpec) -> String {
     }
 }
 
-fn decode_openai_compatible_tool_name(name: &str) -> String {
-    name.strip_prefix("coddy_tool__")
-        .map(|name| name.replace("__dot__", "."))
-        .unwrap_or_else(|| name.to_string())
+fn decode_provider_safe_tool_name(name: &str) -> String {
+    let alias = name.strip_prefix("coddy_tool__").unwrap_or(name);
+    if alias.contains("__dot__") {
+        alias.replace("__dot__", ".")
+    } else {
+        name.to_string()
+    }
 }
 
-fn is_openai_compatible_function_name(name: &str) -> bool {
+fn is_provider_safe_function_name(name: &str) -> bool {
     !name.is_empty()
         && name
             .chars()
@@ -1282,8 +1285,8 @@ fn gemini_api_chat_body(request: &ChatRequest) -> Result<Value, ChatModelError> 
         .iter()
         .map(|tool| {
             serde_json::json!({
-                "name": tool.name,
-                "description": tool.description,
+                "name": provider_safe_tool_name(&tool.name),
+                "description": provider_safe_tool_description(tool),
                 "parameters": gemini_api_tool_parameters(&tool.input_schema),
             })
         })
@@ -1561,8 +1564,8 @@ fn vertex_anthropic_chat_body(request: &ChatRequest) -> Result<Value, ChatModelE
         .iter()
         .map(|tool| {
             serde_json::json!({
-                "name": tool.name,
-                "description": tool.description,
+                "name": provider_safe_tool_name(&tool.name),
+                "description": provider_safe_tool_description(tool),
                 "input_schema": tool.input_schema,
             })
         })
@@ -2304,7 +2307,7 @@ fn parse_openai_compatible_tool_calls(
             })?;
             Ok(ChatToolCall {
                 id: call["id"].as_str().map(ToOwned::to_owned),
-                name: decode_openai_compatible_tool_name(name),
+                name: decode_provider_safe_tool_name(name),
                 arguments: parse_tool_arguments_for_provider(provider, &function["arguments"])?,
             })
         })
@@ -2359,7 +2362,7 @@ fn parse_gemini_api_response(body: &str) -> ChatModelResult {
             })?;
             tool_calls.push(ChatToolCall {
                 id: None,
-                name: name.to_string(),
+                name: decode_provider_safe_tool_name(name),
                 arguments: parse_tool_arguments_for_provider("vertex", &function_call["args"])?,
             });
         }
@@ -2437,7 +2440,7 @@ fn parse_vertex_anthropic_response(body: &str) -> ChatModelResult {
                 })?;
                 tool_calls.push(ChatToolCall {
                     id: item["id"].as_str().map(ToOwned::to_owned),
-                    name: name.to_string(),
+                    name: decode_provider_safe_tool_name(name),
                     arguments: item["input"].clone(),
                 });
             }
@@ -2940,6 +2943,22 @@ mod tests {
     }
 
     #[test]
+    fn provider_safe_tool_name_decoder_accepts_prefixed_and_legacy_aliases() {
+        assert_eq!(
+            decode_provider_safe_tool_name("coddy_tool__filesystem__dot__read_file"),
+            "filesystem.read_file"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem__dot__read_file"),
+            "filesystem.read_file"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem.read_file"),
+            "filesystem.read_file"
+        );
+    }
+
+    #[test]
     fn openai_compatible_endpoint_normalization_requires_https() {
         assert_eq!(
             openai_compatible_chat_url("https://api.openai.com/v1", None)
@@ -3355,7 +3374,11 @@ mod tests {
         );
         assert_eq!(
             body["tools"][0]["functionDeclarations"][0]["name"],
-            "filesystem.list_files"
+            "coddy_tool__filesystem__dot__list_files"
+        );
+        assert_eq!(
+            body["tools"][0]["functionDeclarations"][0]["description"],
+            "Coddy tool `filesystem.list_files`. List files"
         );
         let temperature = body["generationConfig"]["temperature"]
             .as_f64()
@@ -3558,7 +3581,14 @@ mod tests {
             body["messages"][2]["content"],
             "Tool observations:\nfilesystem result"
         );
-        assert_eq!(body["tools"][0]["name"], "filesystem.list_files");
+        assert_eq!(
+            body["tools"][0]["name"],
+            "coddy_tool__filesystem__dot__list_files"
+        );
+        assert_eq!(
+            body["tools"][0]["description"],
+            "Coddy tool `filesystem.list_files`. List files"
+        );
         let temperature = body["temperature"].as_f64().expect("temperature");
         assert!((temperature - 0.2).abs() < 0.000_001);
         assert_eq!(body["max_tokens"], 128);
@@ -3894,7 +3924,7 @@ mod tests {
                         "parts": [
                             {
                                 "functionCall": {
-                                    "name": "filesystem.list_files",
+                                    "name": "coddy_tool__filesystem__dot__list_files",
                                     "args": { "path": "." }
                                 }
                             }
@@ -3952,7 +3982,7 @@ mod tests {
                 {
                     "type": "tool_use",
                     "id": "toolu-test",
-                    "name": "filesystem.list_files",
+                    "name": "coddy_tool__filesystem__dot__list_files",
                     "input": { "path": "." }
                 }
             ],

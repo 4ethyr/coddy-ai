@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  listUiSlashCommandSuggestions,
   loadPersistedDesktopTab,
   persistDesktopTab,
   resolveUiSlashCommand,
@@ -26,9 +27,36 @@ describe('slashCommands', () => {
     })
   })
 
+  it('expands coding workflow commands into guarded agent prompts', () => {
+    expect(resolveUiSlashCommand('/plan add workspace picker')).toMatchObject({
+      kind: 'agent-workflow',
+      prompt: expect.stringContaining('Plan-only coding workflow'),
+    })
+    expect(resolveUiSlashCommand('/review recent diff')).toMatchObject({
+      kind: 'agent-workflow',
+      prompt: expect.stringContaining('Report findings first'),
+    })
+    expect(resolveUiSlashCommand('/tests model routing')).toMatchObject({
+      kind: 'agent-workflow',
+      prompt: expect.stringContaining('Focused validation workflow'),
+    })
+  })
+
   it('does not intercept unknown slash commands', () => {
     expect(resolveUiSlashCommand('/unknown')).toBeNull()
+    expect(resolveUiSlashCommand('/plan')).toBeNull()
     expect(resolveUiSlashCommand('normal prompt')).toBeNull()
+  })
+
+  it('lists slash command suggestions for command discovery', () => {
+    expect(listUiSlashCommandSuggestions('/pl')).toMatchObject([
+      { command: '/plan', insertText: '/plan ', requiresArgument: true },
+    ])
+    expect(listUiSlashCommandSuggestions('/settins')).toMatchObject([
+      { command: '/settings' },
+    ])
+    expect(listUiSlashCommandSuggestions('/workspace')).toEqual([])
+    expect(listUiSlashCommandSuggestions('/plan add tests')).toEqual([])
   })
 
   it('persists the requested desktop tab for mode switches', () => {
