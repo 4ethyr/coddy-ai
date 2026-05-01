@@ -1,3 +1,4 @@
+pub mod agent_run_v2;
 pub mod command_guard;
 pub mod context;
 pub mod eval;
@@ -19,6 +20,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+pub use agent_run_v2::{
+    AgentRunAction, AgentRunFailure, AgentRunPhase, AgentRunStopReason, AgentRunSummary,
+    AgentRunTransition, AgentRunTransitionError, AgentRunV2,
+};
 pub use command_guard::{
     BlockedCommandReason, CommandAssessment, CommandDecision, CommandGuard, CommandRisk,
     SHELL_RUN_TOOL,
