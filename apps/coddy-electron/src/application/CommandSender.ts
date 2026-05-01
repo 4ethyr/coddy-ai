@@ -6,6 +6,7 @@ import type {
   ModelProviderListRequest,
   ModelProviderListResult,
   ModelRole,
+  ModelSelectionOptions,
   MultiagentEvalRequest,
   MultiagentEvalResult,
   PromptBatteryResult,
@@ -69,8 +70,9 @@ export async function selectModel(
   client: ReplIpcClient,
   model: ModelRef,
   role: ModelRole,
+  options?: ModelSelectionOptions,
 ): Promise<ReplCommandResult> {
-  return assertCommandSucceeded(await client.selectModel(model, role))
+  return assertCommandSucceeded(await client.selectModel(model, role, options))
 }
 
 /**

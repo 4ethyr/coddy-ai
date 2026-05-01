@@ -10,13 +10,39 @@ import { WindowResizeHandles } from './components'
 
 /** Inner component that has access to session + mode contexts */
 function AppInner() {
-  const { session, connecting } = useSessionContext()
+  const {
+    session,
+    connecting,
+    cancelRun,
+    cancelSpeech,
+    cancelVoiceCapture,
+  } = useSessionContext()
   const { mode, setMode } = useMode()
 
-  // Keyboard: Escape closes floating terminal
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && mode === 'FloatingTerminal') {
+      if (e.key !== 'Escape') return
+      if (isEditableEscapeTarget(e.target)) return
+
+      if (session.voice.speaking) {
+        e.preventDefault()
+        void cancelSpeech()
+        return
+      }
+
+      if (session.status === 'Listening' || session.status === 'Transcribing') {
+        e.preventDefault()
+        void cancelVoiceCapture()
+        return
+      }
+
+      if (runCanBeCancelled(session)) {
+        e.preventDefault()
+        void cancelRun()
+        return
+      }
+
+      if (mode === 'FloatingTerminal') {
         if (typeof window !== 'undefined' && window.replApi) {
           void window.replApi.invoke('window:close')
         }
@@ -24,7 +50,16 @@ function AppInner() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [mode])
+  }, [
+    cancelRun,
+    cancelSpeech,
+    cancelVoiceCapture,
+    mode,
+    session.active_run,
+    session.status,
+    session.tool_activity,
+    session.voice.speaking,
+  ])
 
   useEffect(() => {
     if (!connecting && session.mode !== mode) {
@@ -49,6 +84,26 @@ function AppInner() {
       {activeMode === 'DesktopApp' ? <DesktopApp /> : <FloatingTerminal />}
     </>
   )
+}
+
+function runCanBeCancelled(session: ReturnType<typeof useSessionContext>['session']): boolean {
+  return (
+    Boolean(session.active_run)
+    || session.status === 'Thinking'
+    || session.status === 'Streaming'
+    || session.status === 'BuildingContext'
+    || session.status === 'CapturingScreen'
+    || session.status === 'AwaitingToolApproval'
+    || session.tool_activity.some((activity) => activity.status === 'Running')
+  )
+}
+
+function isEditableEscapeTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  if (target instanceof HTMLInputElement) return true
+  if (target instanceof HTMLTextAreaElement) return true
+  if (target instanceof HTMLSelectElement) return true
+  return target instanceof HTMLElement && target.isContentEditable
 }
 
 /** Root provider wrapper */

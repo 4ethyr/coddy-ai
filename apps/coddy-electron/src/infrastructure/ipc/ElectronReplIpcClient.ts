@@ -8,6 +8,7 @@ import type {
   ModelProviderListRequest,
   ModelProviderListResult,
   ModelRole,
+  ModelSelectionOptions,
   AssessmentPolicy,
   MultiagentEvalRequest,
   MultiagentEvalResult,
@@ -215,11 +216,13 @@ export class ElectronReplIpcClient implements ReplIpcClient {
   async selectModel(
     model: ModelRef,
     role: ModelRole,
+    options?: ModelSelectionOptions,
   ): Promise<ReplCommandResult> {
     return (await window.replApi.invoke(
       'repl:select-model',
       model,
       role,
+      ...(options ? [options] : []),
     )) as ReplCommandResult
   }
 

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::Path,
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -14,10 +14,11 @@ use uuid::Uuid;
 
 use crate::{
     AgentError, AgentToolRegistry, EditPreview, ReadOnlyToolExecutor, ShellApprovalState,
-    ShellExecutionConfig, ShellExecutor, ShellPlan, ShellPlanRequest, ShellPlanner, SubagentMode,
-    SubagentRegistry, ToolExecution, APPLY_EDIT_TOOL, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL,
-    READ_FILE_TOOL, SEARCH_FILES_TOOL, SHELL_RUN_TOOL, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL,
-    SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
+    ShellExecutionConfig, ShellExecutor, ShellPlan, ShellPlanRequest, ShellPlanner,
+    SubagentExecutionCoordinator, SubagentExecutionSummary, SubagentMode, SubagentRegistry,
+    ToolExecution, APPLY_EDIT_TOOL, LIST_FILES_TOOL, PREVIEW_EDIT_TOOL, READ_FILE_TOOL,
+    SEARCH_FILES_TOOL, SHELL_RUN_TOOL, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL,
+    SUBAGENT_REDUCE_OUTPUTS_TOOL, SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
 };
 
 #[derive(Debug, Clone)]
@@ -35,6 +36,7 @@ pub struct LocalToolRouter {
     shell_executor: ShellExecutor,
     subagents: SubagentRegistry,
     pending_edits: Arc<Mutex<HashMap<Uuid, EditPreview>>>,
+    pending_sensitive_reads: Arc<Mutex<HashMap<Uuid, ToolCall>>>,
     pending_shells: Arc<Mutex<HashMap<Uuid, ShellPlan>>>,
 }
 
@@ -55,6 +57,7 @@ impl LocalToolRouter {
             shell_executor: ShellExecutor::with_config(workspace_root, shell_config)?,
             subagents: SubagentRegistry::default(),
             pending_edits: Arc::new(Mutex::new(HashMap::new())),
+            pending_sensitive_reads: Arc::new(Mutex::new(HashMap::new())),
             pending_shells: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -77,6 +80,13 @@ impl LocalToolRouter {
             .len()
     }
 
+    pub fn pending_sensitive_read_count(&self) -> usize {
+        self.pending_sensitive_reads
+            .lock()
+            .expect("pending sensitive reads mutex poisoned")
+            .len()
+    }
+
     pub fn route(&self, call: &ToolCall) -> LocalToolRouteOutcome {
         let Some(definition) = self.registry.get(&call.tool_name) else {
             return failed_outcome(
@@ -90,9 +100,10 @@ impl LocalToolRouter {
         }
 
         match call.tool_name.as_str() {
-            LIST_FILES_TOOL | READ_FILE_TOOL | SEARCH_FILES_TOOL => {
+            LIST_FILES_TOOL | SEARCH_FILES_TOOL => {
                 LocalToolRouteOutcome::from_execution(self.filesystem.execute_with_events(call))
             }
+            READ_FILE_TOOL => self.plan_or_execute_read_file(call),
             PREVIEW_EDIT_TOOL => self.preview_edit(call),
             APPLY_EDIT_TOOL => self.apply_permission_reply_tool(call),
             SHELL_RUN_TOOL => self.plan_or_execute_shell(call),
@@ -100,6 +111,7 @@ impl LocalToolRouter {
             SUBAGENT_PREPARE_TOOL => self.prepare_subagent(call),
             SUBAGENT_ROUTE_TOOL => self.route_subagent(call),
             SUBAGENT_TEAM_PLAN_TOOL => self.plan_subagent_team(call),
+            SUBAGENT_REDUCE_OUTPUTS_TOOL => self.reduce_subagent_outputs(call),
             other => failed_outcome(
                 call.id,
                 call.tool_name.to_string(),
@@ -122,6 +134,16 @@ impl LocalToolRouter {
             .remove(&request_id)
         {
             let execution = self.filesystem.apply_approved_edit(&preview, reply);
+            return LocalToolRouteOutcome::from_execution_with_prefix(execution, vec![reply_event]);
+        }
+
+        if let Some(call) = self
+            .pending_sensitive_reads
+            .lock()
+            .expect("pending sensitive reads mutex poisoned")
+            .remove(&request_id)
+        {
+            let execution = self.execute_sensitive_read_reply(&call, reply);
             return LocalToolRouteOutcome::from_execution_with_prefix(execution, vec![reply_event]);
         }
 
@@ -154,6 +176,68 @@ impl LocalToolRouter {
                 },
             ],
             permission_request: None,
+        }
+    }
+
+    fn plan_or_execute_read_file(&self, call: &ToolCall) -> LocalToolRouteOutcome {
+        match self.filesystem.sensitive_read_permission_request(call) {
+            Ok(Some(permission_request)) => {
+                self.pending_sensitive_reads
+                    .lock()
+                    .expect("pending sensitive reads mutex poisoned")
+                    .insert(permission_request.id, call.clone());
+                LocalToolRouteOutcome {
+                    result: None,
+                    events: vec![ReplEvent::PermissionRequested {
+                        request: permission_request.clone(),
+                    }],
+                    permission_request: Some(permission_request),
+                }
+            }
+            Ok(None) => {
+                LocalToolRouteOutcome::from_execution(self.filesystem.execute_with_events(call))
+            }
+            Err(error) => {
+                failed_outcome(call.id, READ_FILE_TOOL.to_string(), error.into_tool_error())
+            }
+        }
+    }
+
+    fn execute_sensitive_read_reply(
+        &self,
+        call: &ToolCall,
+        reply: PermissionReply,
+    ) -> ToolExecution {
+        match reply {
+            PermissionReply::Reject => {
+                let path = call.input["path"].as_str().unwrap_or("<unknown>");
+                let started_at = unix_ms_now();
+                let result = ToolResult::denied(
+                    call.id,
+                    ToolError::new(
+                        "permission_rejected",
+                        format!("permission was rejected for sensitive read: {path}"),
+                        false,
+                    ),
+                    started_at,
+                    unix_ms_now(),
+                );
+                ToolExecution {
+                    result,
+                    events: vec![
+                        ReplEvent::ToolStarted {
+                            name: READ_FILE_TOOL.to_string(),
+                        },
+                        ReplEvent::ToolCompleted {
+                            name: READ_FILE_TOOL.to_string(),
+                            status: ToolStatus::Denied,
+                        },
+                    ],
+                }
+            }
+            PermissionReply::Once | PermissionReply::Always => {
+                self.filesystem.execute_with_events(call)
+            }
         }
     }
 
@@ -459,6 +543,84 @@ impl LocalToolRouter {
             ],
         })
     }
+
+    fn reduce_subagent_outputs(&self, call: &ToolCall) -> LocalToolRouteOutcome {
+        let started_at = unix_ms_now();
+        let goal = call.input["goal"].as_str().unwrap_or_default();
+        let max_members = optional_usize_field(&call.input, "max_members").unwrap_or(6);
+        let outputs = match subagent_outputs(&call.input) {
+            Ok(outputs) => outputs,
+            Err(error) => {
+                return failed_outcome(
+                    call.id,
+                    SUBAGENT_REDUCE_OUTPUTS_TOOL.to_string(),
+                    error.into_tool_error(),
+                );
+            }
+        };
+        let approved_subagents = match string_array_field(&call.input, "approved_subagents") {
+            Ok(values) => values.into_iter().collect::<BTreeSet<_>>(),
+            Err(error) => {
+                return failed_outcome(
+                    call.id,
+                    SUBAGENT_REDUCE_OUTPUTS_TOOL.to_string(),
+                    error.into_tool_error(),
+                );
+            }
+        };
+
+        let Some(team) = self.subagents.plan_team(goal, max_members) else {
+            return failed_outcome(
+                call.id,
+                SUBAGENT_REDUCE_OUTPUTS_TOOL.to_string(),
+                AgentError::InvalidInput(
+                    "subagent output reduction requires a non-empty goal".to_string(),
+                )
+                .into_tool_error(),
+            );
+        };
+        let handoffs = team
+            .members
+            .iter()
+            .filter_map(|member| self.subagents.prepare_handoff(&member.name, goal))
+            .collect::<Vec<_>>();
+        let summary = SubagentExecutionCoordinator::default().reduce_handoffs(
+            &handoffs,
+            &outputs,
+            &approved_subagents,
+        );
+        let metadata = json!({
+            "team": team.public_metadata(),
+            "summary": subagent_execution_summary_metadata(&summary),
+        });
+        let text = format!(
+            "Reduced {} subagent outputs: {} accepted, {} rejected, {} missing, {} awaiting approval.",
+            summary.total,
+            summary.accepted_outputs,
+            summary.rejected_outputs,
+            summary.missing_outputs,
+            summary.awaiting_approval,
+        );
+        let output = ToolOutput {
+            text,
+            metadata,
+            truncated: false,
+        };
+        let result = ToolResult::succeeded(call.id, output, started_at, unix_ms_now());
+
+        LocalToolRouteOutcome::from_execution(ToolExecution {
+            result,
+            events: vec![
+                ReplEvent::ToolStarted {
+                    name: SUBAGENT_REDUCE_OUTPUTS_TOOL.to_string(),
+                },
+                ReplEvent::ToolCompleted {
+                    name: SUBAGENT_REDUCE_OUTPUTS_TOOL.to_string(),
+                    status: ToolStatus::Succeeded,
+                },
+            ],
+        })
+    }
 }
 
 impl LocalToolRouteOutcome {
@@ -560,6 +722,81 @@ fn optional_usize_field(input: &Value, field: &str) -> Option<usize> {
         .get(field)
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
+}
+
+fn string_array_field(input: &Value, field: &str) -> Result<Vec<String>, AgentError> {
+    let Some(value) = input.get(field) else {
+        return Ok(Vec::new());
+    };
+    let Some(values) = value.as_array() else {
+        return Err(AgentError::InvalidInput(format!(
+            "{field} must be an array"
+        )));
+    };
+
+    values
+        .iter()
+        .map(|value| {
+            value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                AgentError::InvalidInput(format!("{field} must contain only strings"))
+            })
+        })
+        .collect()
+}
+
+fn subagent_outputs(input: &Value) -> Result<BTreeMap<String, Value>, AgentError> {
+    let Some(outputs) = input.get("outputs").and_then(Value::as_object) else {
+        return Err(AgentError::InvalidInput(
+            "outputs must be an object keyed by subagent name".to_string(),
+        ));
+    };
+
+    outputs
+        .iter()
+        .map(|(name, output)| {
+            if !output.is_object() {
+                return Err(AgentError::InvalidInput(format!(
+                    "outputs.{name} must be an object"
+                )));
+            }
+            Ok((name.clone(), output.clone()))
+        })
+        .collect()
+}
+
+fn subagent_execution_summary_metadata(summary: &SubagentExecutionSummary) -> Value {
+    json!({
+        "total": summary.total,
+        "completed": summary.completed,
+        "failed": summary.failed,
+        "blocked": summary.blocked,
+        "awaitingApproval": summary.awaiting_approval,
+        "acceptedOutputs": summary.accepted_outputs,
+        "rejectedOutputs": summary.rejected_outputs,
+        "missingOutputs": summary.missing_outputs,
+        "unexpectedOutputs": summary.unexpected_outputs,
+        "acceptedOutputNames": summary.accepted_output_values.keys().cloned().collect::<Vec<_>>(),
+        "records": summary.records.iter().map(|record| {
+            json!({
+                "name": record.name,
+                "mode": record.mode,
+                "startStatus": format!("{:?}", record.start_status),
+                "outcomeStatus": record.outcome_status.as_str(),
+                "outputStatus": record.output_status.as_str(),
+                "accepted": record.accepted,
+                "missingFields": record.missing_fields,
+                "unexpectedFields": record.unexpected_fields,
+                "reason": record.reason,
+                "lifecycle": record.lifecycle_updates.iter().map(|update| {
+                    json!({
+                        "status": format!("{:?}", update.status),
+                        "readinessScore": update.readiness_score,
+                        "reason": update.reason,
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        }).collect::<Vec<_>>(),
+    })
 }
 
 fn validate_tool_input(definition: &ToolDefinition, input: &Value) -> Result<(), AgentError> {
@@ -822,6 +1059,64 @@ mod tests {
     }
 
     #[test]
+    fn sensitive_read_requires_permission_then_executes_redacted_on_reply() {
+        let workspace = TempWorkspace::new();
+        workspace.write(".env", "OPENAI_API_KEY=sk-secret-token\nPUBLIC_FLAG=true\n");
+        let router = LocalToolRouter::new(&workspace.path).expect("router");
+        let session_id = Uuid::new_v4();
+
+        let outcome = router.route(&call(session_id, READ_FILE_TOOL, json!({ "path": ".env" })));
+
+        assert!(outcome.result.is_none());
+        let request = outcome.permission_request.expect("permission request");
+        assert_eq!(request.tool_name.as_str(), READ_FILE_TOOL);
+        assert_eq!(
+            request.permission,
+            coddy_core::ToolPermission::ReadWorkspace
+        );
+        assert_eq!(request.patterns, vec![".env"]);
+        assert_eq!(request.risk_level, coddy_core::ToolRiskLevel::High);
+        assert_eq!(request.metadata["reason"], json!("sensitive_file_read"));
+        assert_eq!(router.pending_sensitive_read_count(), 1);
+        assert!(outcome
+            .events
+            .iter()
+            .any(|event| matches!(event, ReplEvent::PermissionRequested { .. })));
+
+        let approved = router.reply_permission(request.id, PermissionReply::Once);
+
+        assert_eq!(approved.status(), Some(ToolResultStatus::Succeeded));
+        let output = approved.result.expect("result").output.expect("output");
+        assert_eq!(output.text, "OPENAI_API_KEY=[REDACTED]\nPUBLIC_FLAG=true");
+        assert_eq!(output.metadata["sensitive"], json!(true));
+        assert_eq!(router.pending_sensitive_read_count(), 0);
+        assert!(matches!(
+            approved.events.first(),
+            Some(ReplEvent::PermissionReplied { request_id, reply })
+                if *request_id == request.id && *reply == PermissionReply::Once
+        ));
+    }
+
+    #[test]
+    fn sensitive_read_rejection_denies_without_reading_file() {
+        let workspace = TempWorkspace::new();
+        workspace.write(".env", "OPENAI_API_KEY=sk-secret-token\n");
+        let router = LocalToolRouter::new(&workspace.path).expect("router");
+        let session_id = Uuid::new_v4();
+
+        let outcome = router.route(&call(session_id, READ_FILE_TOOL, json!({ "path": ".env" })));
+        let request = outcome.permission_request.expect("permission request");
+
+        let rejected = router.reply_permission(request.id, PermissionReply::Reject);
+
+        assert_eq!(rejected.status(), Some(ToolResultStatus::Denied));
+        let error = rejected.result.expect("result").error.expect("error");
+        assert_eq!(error.code, "permission_rejected");
+        assert!(error.message.contains("sensitive read"));
+        assert_eq!(router.pending_sensitive_read_count(), 0);
+    }
+
+    #[test]
     fn rejects_unknown_input_fields_before_tool_execution() {
         let workspace = TempWorkspace::new();
         workspace.write("README.md", "# Coddy\n");
@@ -996,6 +1291,93 @@ mod tests {
             .any(|risk| risk
                 .as_str()
                 .is_some_and(|risk| risk.contains("Workspace-write"))));
+    }
+
+    #[test]
+    fn routes_subagent_reduce_outputs_as_contract_summary() {
+        let workspace = TempWorkspace::new();
+        let router = LocalToolRouter::new(&workspace.path).expect("router");
+
+        let outcome = router.route(&call(
+            Uuid::new_v4(),
+            SUBAGENT_REDUCE_OUTPUTS_TOOL,
+            json!({
+                "goal": "revise seguranca, secrets e sandbox",
+                "max_members": 2,
+                "outputs": {
+                    "security-reviewer": {
+                        "riskLevel": "low",
+                        "findings": [],
+                        "requiredFixes": [],
+                        "recommendations": []
+                    },
+                    "reviewer": {
+                        "approved": true,
+                        "issues": [],
+                        "suggestions": [],
+                        "blockingProblems": [],
+                        "nonBlockingProblems": []
+                    }
+                }
+            }),
+        ));
+
+        assert_eq!(outcome.status(), Some(ToolResultStatus::Succeeded));
+        let output = outcome.result.expect("result").output.expect("output");
+        let summary = &output.metadata["summary"];
+
+        assert!(output.text.contains("2 accepted"));
+        assert_eq!(summary["total"], json!(2));
+        assert_eq!(summary["completed"], json!(2));
+        assert_eq!(summary["acceptedOutputs"], json!(2));
+        assert_eq!(summary["rejectedOutputs"], json!(0));
+        assert_eq!(summary["missingOutputs"], json!(0));
+        assert_eq!(
+            summary["acceptedOutputNames"],
+            json!(["reviewer", "security-reviewer"])
+        );
+        assert_eq!(summary["records"][0]["outputStatus"], json!("accepted"));
+    }
+
+    #[test]
+    fn subagent_reduce_outputs_does_not_accept_write_outputs_without_approval() {
+        let workspace = TempWorkspace::new();
+        let router = LocalToolRouter::new(&workspace.path).expect("router");
+
+        let outcome = router.route(&call(
+            Uuid::new_v4(),
+            SUBAGENT_REDUCE_OUTPUTS_TOOL,
+            json!({
+                "goal": "implementar fix no code com testes",
+                "max_members": 6,
+                "outputs": {
+                    "coder": {
+                        "changedFiles": ["src/lib.rs"],
+                        "summary": "Implemented change.",
+                        "testsAdded": [],
+                        "risks": [],
+                        "nextSteps": []
+                    }
+                }
+            }),
+        ));
+
+        assert_eq!(outcome.status(), Some(ToolResultStatus::Succeeded));
+        let output = outcome.result.expect("result").output.expect("output");
+        let summary = &output.metadata["summary"];
+        let records = summary["records"].as_array().expect("records");
+        let coder = records
+            .iter()
+            .find(|record| record["name"] == json!("coder"))
+            .expect("coder record");
+
+        assert_eq!(summary["acceptedOutputs"], json!(0));
+        assert_eq!(coder["outcomeStatus"], json!("awaiting-approval"));
+        assert_eq!(coder["outputStatus"], json!("not-requested"));
+        assert_eq!(
+            coder["reason"],
+            json!("approval required before running subagent")
+        );
     }
 
     #[test]

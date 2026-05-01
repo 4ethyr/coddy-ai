@@ -14,9 +14,17 @@ export type ProviderConnectionKind =
   | 'azure_resource'
 
 export type RuntimeChatSupport = 'supported' | 'adapter_pending'
+export type RuntimeTtsRoute = 'native' | 'fallback'
+export type LocalModelProviderPreference = 'auto' | 'ollama' | 'hf' | 'vllm'
 
 export interface RuntimeChatCapability {
   status: RuntimeChatSupport
+  label: string
+  description: string
+}
+
+export interface RuntimeTtsCapability {
+  route: RuntimeTtsRoute
   label: string
   description: string
 }
@@ -50,6 +58,10 @@ export interface ModelProviderListResult {
     persisted: boolean
     message: string
   }
+}
+
+export interface ModelSelectionOptions {
+  localProviderPreference?: LocalModelProviderPreference
 }
 
 export interface ModelProviderOption {
@@ -200,6 +212,35 @@ export function getRuntimeChatCapability(
   provider: string,
 ): RuntimeChatCapability {
   return getModelProvider(provider)?.runtimeChat ?? UNKNOWN_RUNTIME_CHAT
+}
+
+export function getRuntimeTtsCapability(
+  model: Pick<ModelRef, 'provider' | 'name'>,
+  tags: readonly string[] = [],
+): RuntimeTtsCapability {
+  const tokens = [model.provider, model.name, ...tags]
+    .join(' ')
+    .toLowerCase()
+  const hasNativeTtsSignal =
+    /\b(tts|speech|audio|realtime|voice)\b/.test(tokens)
+    || /(^|[-_/])tts([-_/]|$)/.test(tokens)
+    || /(^|[-_/])audio([-_/]|$)/.test(tokens)
+
+  if (hasNativeTtsSignal) {
+    return {
+      route: 'native',
+      label: 'native TTS',
+      description:
+        'The selected model advertises audio, speech or TTS capability, so Coddy can route speech through the model provider.',
+    }
+  }
+
+  return {
+    route: 'fallback',
+    label: 'fallback TTS',
+    description:
+      'The selected chat model does not advertise native TTS. Coddy should use the configured local TTS fallback for spoken responses.',
+  }
 }
 
 export function getModelCatalogEntry(

@@ -214,15 +214,107 @@ Build the Rust workspace:
 cargo build
 ```
 
+## Installable Linux Build
+
+Coddy can be packaged as a Linux desktop bundle containing:
+
+- the Rust `coddy` backend CLI;
+- the Electron/React frontend as an AppImage;
+- a `coddy-desktop` launcher;
+- a desktop entry for application menus.
+
+Build the local release bundle:
+
+```bash
+./scripts/package_linux.sh
+```
+
+The script produces:
+
+```text
+dist/coddy-linux-x64.tar.gz
+dist/coddy-linux-x64.tar.gz.sha256
+```
+
+For GitHub releases, upload those two files as release assets. Users can then
+install with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/4ethyr/coddy-ai/main/scripts/install.sh -o /tmp/coddy-install.sh
+sh /tmp/coddy-install.sh
+```
+
+To install a specific release tag:
+
+```bash
+CODDY_VERSION=v0.1.0 sh /tmp/coddy-install.sh
+```
+
+The installer writes only to the user's local prefix by default:
+`~/.local/bin`, `~/.local/share/coddy`, and
+`~/.local/share/applications`.
+
+After installation:
+
+```bash
+coddy-desktop
+```
+
+starts the Electron app and its bundled Rust runtime. On systems without
+`libfuse.so.2`, the launcher automatically uses AppImage extract-and-run mode
+and writes desktop logs to `~/.local/state/coddy/coddy-desktop.log` instead of
+printing the AppImage extraction list in the terminal.
+
+CLI commands such as `coddy repl` and `coddy ui open` launch/focus Coddy Desktop
+when the installed `coddy-desktop` launcher is available. `coddy ask`,
+`coddy session snapshot`, and other runtime commands use the same local runtime
+socket while the desktop app or `coddy runtime serve` is running. For a
+terminal-only REPL, use:
+
+```bash
+coddy repl --terminal
+```
+
+For local/offline validation, point the installer at an existing release
+archive and an isolated prefix:
+
+```bash
+CODDY_ARCHIVE=dist/coddy-linux-x64.tar.gz \
+CODDY_INSTALL_PREFIX=/tmp/coddy-install-test \
+CODDY_DESKTOP_DIR=/tmp/coddy-install-test/share/applications \
+sh scripts/install.sh
+```
+
+The repository also includes a fast installer contract smoke test that creates a
+minimal local archive and verifies the CLI launcher, desktop launcher, checksum
+flow, and desktop entry without network access:
+
+```bash
+./scripts/test_install_local.sh
+```
+
+Release packaging also runs a high-confidence secret guard over tracked and
+staged files. It reports only pattern names and file paths, never the matching
+values:
+
+```bash
+./scripts/guard_no_secrets.sh
+./scripts/test_guard_no_secrets.sh
+```
+
 ## Running the Local Stack
 
 Use separate terminals.
 
-### 1. Start the Coddy runtime
+### 1. Start the Coddy runtime manually
 
 ```bash
 ./target/debug/coddy runtime serve --socket /tmp/coddy-repl-dev.sock
 ```
+
+This manual runtime is useful for backend development. The Electron app also
+starts a bundled runtime automatically; when running both together, use
+`CODDY_DAEMON_SOCKET` to point Electron and CLI commands at the manual socket.
 
 ### 2. Start the Vite renderer
 
@@ -358,6 +450,7 @@ cargo test
 cd apps/coddy-electron
 npm test -- modelProviders ModelSelector
 npm test
+npm run test:e2e
 npm run typecheck
 npm run typecheck:main
 npm run lint
@@ -381,6 +474,7 @@ Electron frontend:
 ```bash
 cd apps/coddy-electron
 npm test
+npm run test:e2e
 npm run typecheck
 npm run typecheck:main
 npm run lint
@@ -442,7 +536,7 @@ Near-term priorities:
 - add MCP client/server registry support;
 - implement subagent orchestration;
 - expand evals for coding-agent behavior and regression detection;
-- add packaged desktop builds and installer workflow.
+- add signed release artifacts and automatic update metadata.
 
 ## License
 

@@ -22,10 +22,10 @@ cargo test -p coddy-ipc -p coddy-agent -p coddy-runtime
 Result:
 
 - `coddy`: 44 passed
-- `coddy-agent`: 141 passed
+- `coddy-agent`: 145 passed
 - `coddy-ipc`: 22 passed
 - repository boundaries: 2 passed
-- `coddy-runtime`: 37 passed
+- `coddy-runtime`: 38 passed
 
 Command:
 
@@ -38,6 +38,7 @@ Result: passed.
 Frontend validation:
 
 - `npm test` in `apps/coddy-electron`: 25 files passed, 207 tests passed.
+- `npm run test:e2e` in `apps/coddy-electron`: 1 file passed, 1 smoke test passed.
 - `npm run typecheck` in `apps/coddy-electron`: passed.
 - `npm run build` in `apps/coddy-electron`: passed.
 
@@ -429,6 +430,87 @@ Validation:
 - `npm test -- WorkspacePanel`: 8 tests passed.
 - `npm run typecheck`: passed.
 
+### Battery 18: Runtime Subagent Output Reduction Tool
+
+Goal: let the model/runtime validate structured subagent outputs through the local tool system
+before claiming a multiagent result.
+
+Implemented result:
+
+- Added the low-risk auto-approved `subagent.reduce_outputs` tool.
+- The tool builds the deterministic team plan for a goal, prepares handoff contracts, applies
+  approval gates, and runs `SubagentExecutionCoordinator` against caller-provided JSON outputs.
+- The tool returns safe summary metadata: totals, completed, failed, blocked, awaiting approval,
+  accepted/rejected/missing counts, accepted output names, unexpected output names and per-subagent
+  validation records.
+- The tool intentionally does not echo accepted output values in metadata, reducing the chance of
+  propagating sensitive or verbose subagent payloads through the UI.
+- Runtime coverage verifies that a model-requested `subagent.reduce_outputs` call is executed as a
+  safe local tool, appears in tool observations, emits tool lifecycle events and does not create a
+  pending permission.
+
+Validation:
+
+- `cargo test -p coddy-agent subagent_reduce_outputs`: 2 tests passed.
+- `cargo test -p coddy-agent agent_registry_defines_local_contracts_without_execution`: passed.
+- `cargo test -p coddy-runtime tools_request_returns_sorted_rich_catalog_from_agent_registry`: passed.
+- `cargo test -p coddy-runtime ask_command_executes_model_subagent_output_reducer_tool`: passed.
+- `cargo test -p coddy -p coddy-agent -p coddy-runtime -p coddy-ipc`: passed.
+
+### Battery 19: Electron Agent Flow E2E Smoke
+
+Goal: add a frontend E2E smoke that exercises the real React app and the Electron IPC client
+contract without requiring a graphical Electron process or live provider credentials.
+
+Implemented result:
+
+- Added `npm run test:e2e` with a dedicated `vitest.e2e.config.ts`.
+- Added an App-level smoke under `src/__tests__/e2e`.
+- The smoke renders the real `App`, `SessionProvider`, `ElectronReplIpcClient` and desktop UI
+  against a simulated `window.replApi` backend.
+- The flow loads OpenAI models with a request-scoped API key, selects `openai/gpt-4.1`, sends a
+  user message, receives a `shell.run` approval request, approves it once, renders successful tool
+  activity, renders valid subagent lifecycle activity and shows the final assistant message.
+- The simulated backend clones snapshots before returning them and emits valid subagent lifecycle
+  transitions: `Prepared -> Approved -> Running -> Completed`.
+
+Validation:
+
+- `npm run test:e2e`: 1 file passed, 1 test passed.
+- `npm test`: 25 files passed, 207 tests passed.
+- `npm run typecheck`: passed.
+- `npm run typecheck:main`: passed.
+- `npm run lint`: passed.
+- `npm run build`: passed.
+- `cargo test -p coddy-agent -p coddy-runtime`: passed.
+
+### Battery 20: Sensitive Read Approval Gate
+
+Goal: prevent model-initiated reads of sensitive workspace files from opening the file before the
+user explicitly approves the access.
+
+Implemented result:
+
+- `LocalToolRouter` now intercepts `filesystem.read_file` calls targeting sensitive paths such as
+  `.env` before delegating to the filesystem executor.
+- Sensitive reads create a `PermissionRequested` event with `ReadWorkspace`, `High` risk,
+  `sensitive_file_read` metadata and the exact workspace-relative pattern.
+- Pending sensitive reads are stored separately from edit and shell approvals.
+- `Once` and `Always` execute the original read through the existing filesystem executor, preserving
+  redaction and read tracking.
+- `Reject` returns a denied tool result and does not read the file.
+- The runtime now stops the model tool loop when a sensitive read approval is pending instead of
+  sending a fake observation back to the model.
+- After approval, the runtime publishes the safe context item for the redacted read output.
+
+Validation:
+
+- `cargo test -p coddy-agent sensitive_read`: 2 tests passed.
+- `cargo test -p coddy-runtime sensitive_file`: 1 test passed.
+- `cargo test -p coddy-runtime`: 38 tests passed.
+- `cargo test -p coddy -p coddy-agent -p coddy-runtime -p coddy-ipc`: passed.
+- `cargo clippy -p coddy -p coddy-agent -p coddy-runtime -p coddy-ipc --all-targets -- -D warnings`: passed.
+
 ## Current Assessment
 
 The multiagent harness is now measurable before execution. It can compose a team plan, expose
@@ -439,14 +521,20 @@ Both harnesses are now callable from the Electron workspace with typed IPC contr
 layer now has a strict reducer for consolidating contract-valid subagent outputs, but that reducer
 is not yet connected to a real isolated subagent runtime. The default multiagent eval suite now
 checks the reducer contract as a first-class CI case, and the workspace UI renders those reducer
-metrics when present.
+metrics when present. The runtime now also exposes a safe `subagent.reduce_outputs` tool, so model
+turns can validate declared subagent outputs through the same reducer before responding. The
+Electron frontend now also has a dedicated E2E smoke for the model-selection, message, tool
+approval and subagent-activity path, using the production React app and IPC client contract against
+a simulated backend. Sensitive workspace reads now require approval before file access, then still
+pass through source-level redaction after approval.
 
 Remaining gaps:
 
 - no real isolated subagent executor yet;
-- sensitive path reads should be guarded before tool execution, not only redacted after observation;
-- multiagent output consolidation exists as a deterministic reducer, but runtime execution still
-  needs to feed it real subagent outputs.
+- multiagent output consolidation exists as a deterministic reducer and local validation tool, but
+  isolated subagent sessions still need to feed it real generated outputs automatically.
+- the E2E smoke validates renderer behavior and IPC contracts, but not a spawned Electron window
+  with the real binary process attached.
 - broad prompts can still consume the full bounded tool budget; the runtime now reports evidence,
   but the next improvement should add adaptive tool budgeting and observation compaction.
 - live model answer quality still needs a sampled harness on top of the deterministic routing

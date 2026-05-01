@@ -6,10 +6,16 @@ import { useCallback, useState, type ComponentProps } from 'react'
 import type {
   EvalHarnessSettings,
   FloatingAppearanceSettings,
+  LocalModelSettings,
   ModelThinkingSettings,
 } from '@/application'
-import { loadSettings, normalizeEvalHarness, saveSettings } from '@/application'
-import { getRuntimeChatCapability } from '@/domain'
+import {
+  loadSettings,
+  normalizeEvalHarness,
+  normalizeLocalModelSettings,
+  saveSettings,
+} from '@/application'
+import { getRuntimeChatCapability, getRuntimeTtsCapability } from '@/domain'
 import { useSessionContext } from '@/presentation/hooks'
 import { Sidebar, type DesktopTab } from '@/presentation/components/Sidebar'
 import { ConversationPanel } from '@/presentation/components/ConversationPanel'
@@ -17,6 +23,7 @@ import { WorkspacePanel } from '@/presentation/components/WorkspacePanel'
 import { ModelSelector } from '@/presentation/components/ModelSelector'
 import { StatusIndicator } from '@/presentation/components/StatusIndicator'
 import { FloatingSettingsModal } from '@/presentation/components/FloatingSettingsModal'
+import { VoiceButton } from '@/presentation/components/VoiceButton'
 import { Icon } from '@/presentation/components/Icon'
 
 export function DesktopApp() {
@@ -34,6 +41,8 @@ export function DesktopApp() {
     ask,
     selectModel,
     listProviderModels,
+    captureVoice,
+    cancelVoiceCapture,
     runMultiagentEval,
     runPromptBatteryEval,
     openUi,
@@ -46,6 +55,9 @@ export function DesktopApp() {
   )
   const [modelThinking, setModelThinking] = useState<ModelThinkingSettings>(
     () => loadSettings().modelThinking,
+  )
+  const [localModel, setLocalModel] = useState<LocalModelSettings>(
+    () => loadSettings().localModel,
   )
   const [evalHarness, setEvalHarness] = useState<EvalHarnessSettings>(
     () => loadSettings().evalHarness,
@@ -85,6 +97,12 @@ export function DesktopApp() {
     [],
   )
 
+  const handleLocalModelChange = useCallback((next: LocalModelSettings) => {
+    const normalized = normalizeLocalModelSettings(next)
+    setLocalModel(normalized)
+    saveSettings({ localModel: normalized })
+  }, [])
+
   const handleEvalHarnessChange = useCallback((next: EvalHarnessSettings) => {
     const normalized = normalizeEvalHarness(next)
     setEvalHarness(normalized)
@@ -120,6 +138,11 @@ export function DesktopApp() {
 
           <div className="flex items-center gap-3">
             <StatusIndicator status={session.status} />
+            <VoiceButton
+              onCapture={captureVoice}
+              onCancel={cancelVoiceCapture}
+              disabled={connecting}
+            />
             <button
               type="button"
               onClick={() => setActiveTab('settings')}
@@ -221,8 +244,10 @@ export function DesktopApp() {
             <SettingsTab
               appearance={appearance}
               modelThinking={modelThinking}
+              localModel={localModel}
               onOpenAppearance={() => setSettingsOpen(true)}
               onModelThinkingChange={handleModelThinkingChange}
+              onLocalModelChange={handleLocalModelChange}
             />
           )}
         </div>
@@ -279,6 +304,7 @@ function ModelsTab({
   onSelect: (model: { provider: string; name: string }) => void
 }) {
   const runtimeChat = getRuntimeChatCapability(model.provider)
+  const runtimeTts = getRuntimeTtsCapability(model)
   const runtimeTone =
     runtimeChat.status === 'supported' ? 'text-primary' : 'text-yellow-200'
   const pipelineValue =
@@ -311,7 +337,7 @@ function ModelsTab({
         <div className="grid gap-4 md:grid-cols-3">
           <MetricCard label="CPU CORE" value="Nominal" icon="cpu" tone="primary" />
           <MetricCard label="PIPELINE" value={pipelineValue} icon="sensors" tone="secondary" />
-          <MetricCard label="BACKEND" value={model.provider} icon="cloud" tone="neutral" />
+          <MetricCard label="TTS ROUTE" value={runtimeTts.route} icon="cloud" tone="neutral" />
         </div>
 
         <section className="desktop-glass-panel overflow-hidden rounded-xl">
@@ -322,6 +348,9 @@ function ModelsTab({
               </h2>
               <p className="mt-1 font-mono text-xs text-on-surface-variant/70">
                 {runtimeChat.description}
+              </p>
+              <p className="mt-2 font-mono text-xs text-on-surface-variant/70">
+                {runtimeTts.description}
               </p>
             </div>
             <span
@@ -344,7 +373,7 @@ function ModelsTab({
                 </div>
               </div>
               <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-primary">
-                active
+                {runtimeTts.label}
               </span>
             </div>
           </div>
@@ -357,16 +386,23 @@ function ModelsTab({
 function SettingsTab({
   appearance,
   modelThinking,
+  localModel,
   onOpenAppearance,
   onModelThinkingChange,
+  onLocalModelChange,
 }: {
   appearance: FloatingAppearanceSettings
   modelThinking: ModelThinkingSettings
+  localModel: LocalModelSettings
   onOpenAppearance: () => void
   onModelThinkingChange: (next: ModelThinkingSettings) => void
+  onLocalModelChange: (next: LocalModelSettings) => void
 }) {
   const setThinking = (patch: Partial<ModelThinkingSettings>) => {
     onModelThinkingChange({ ...modelThinking, ...patch })
+  }
+  const setLocalModel = (patch: Partial<LocalModelSettings>) => {
+    onLocalModelChange(normalizeLocalModelSettings({ ...localModel, ...patch }))
   }
 
   return (
@@ -393,6 +429,9 @@ function SettingsTab({
                 <span>blur={appearance.blurPx}px</span>
                 <span>opacity={Math.round(appearance.transparency * 100)}%</span>
                 <span>glass={Math.round(appearance.glassIntensity * 100)}%</span>
+                <span>font={appearance.fontFamily}</span>
+                <span>size={appearance.fontSizePx}px</span>
+                <span>bold={appearance.boldTextColor}</span>
                 <span>accent={appearance.accentColor}</span>
               </div>
             </div>
@@ -469,6 +508,28 @@ function SettingsTab({
             </div>
           </div>
         </section>
+
+        <section className="desktop-glass-panel mt-4 rounded-xl p-5">
+          <div className="flex flex-col gap-5">
+            <div>
+              <h2 className="font-display text-lg text-on-surface">
+                Local model provider
+              </h2>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-on-surface-variant">
+                Escolha qual ferramenta local o Coddy deve preferir ao preparar
+                modelos na maquina. Auto detecta Ollama, vLLM e hf nessa ordem.
+              </p>
+            </div>
+            <SegmentedControl
+              label="Provider"
+              value={localModel.providerPreference}
+              options={['auto', 'ollama', 'hf', 'vllm']}
+              onChange={(providerPreference) =>
+                setLocalModel({ providerPreference })
+              }
+            />
+          </div>
+        </section>
       </div>
     </div>
   )
@@ -495,6 +556,7 @@ function SegmentedControl<TValue extends string>({
           <button
             key={option}
             type="button"
+            aria-pressed={option === value}
             onClick={() => onChange(option)}
             className={`rounded-full border px-3 py-1 font-mono text-xs capitalize transition-colors ${
               option === value

@@ -8,16 +8,19 @@ import type { ScreenAssistMode } from '@/domain'
 import type { FloatingAppearanceSettings } from '@/application'
 import { loadSettings, saveSettings } from '@/application'
 import { useSessionContext } from '@/presentation/hooks'
-import { MessageBubble } from '@/presentation/components/MessageBubble'
+import {
+  MarkdownContent,
+  MessageBubble,
+} from '@/presentation/components/MessageBubble'
 import { StatusIndicator } from '@/presentation/components/StatusIndicator'
 import { InputBar } from '@/presentation/components/InputBar'
 import { ModelSelector } from '@/presentation/components/ModelSelector'
 import { VoiceButton } from '@/presentation/components/VoiceButton'
-import { StreamingText } from '@/presentation/components/StreamingText'
 import { ThinkingIndicator } from '@/presentation/components/ThinkingIndicator'
 import { ToolApprovalPanel } from '@/presentation/components/ToolApprovalPanel'
 import { AssessmentConfirmModal } from '@/presentation/components/AssessmentConfirmModal'
 import { FloatingSettingsModal } from '@/presentation/components/FloatingSettingsModal'
+import { SelectionCopyRegion } from '@/presentation/components/SelectionCopyRegion'
 import { Icon } from '@/presentation/components/Icon'
 
 export function FloatingTerminal() {
@@ -96,8 +99,24 @@ export function FloatingTerminal() {
   const terminalStyle = {
     '--coddy-terminal-opacity': String(appearance.transparency),
     '--coddy-terminal-blur': `${appearance.blurPx}px`,
-    '--coddy-terminal-glass': String(appearance.glassIntensity),
+    '--coddy-terminal-glass-primary': hexToRgba(
+      appearance.glassPrimaryColor,
+      appearance.glassIntensity,
+    ),
+    '--coddy-terminal-glass-secondary': hexToRgba(
+      appearance.glassSecondaryColor,
+      appearance.glassIntensity,
+    ),
+    '--coddy-terminal-glass-secondary-soft': hexToRgba(
+      appearance.glassSecondaryColor,
+      appearance.glassIntensity * 0.6,
+    ),
+    '--coddy-terminal-font-family': floatingFontFamilyCss(
+      appearance.fontFamily,
+    ),
+    '--coddy-terminal-font-size': `${appearance.fontSizePx}px`,
     '--coddy-terminal-text': appearance.textColor,
+    '--coddy-terminal-bold': appearance.boldTextColor,
     '--coddy-terminal-accent': appearance.accentColor,
   } as CSSProperties
 
@@ -207,9 +226,9 @@ export function FloatingTerminal() {
         </div>
       </header>
 
-      <div
+      <SelectionCopyRegion
         data-testid="floating-terminal-canvas"
-        className="terminal-canvas flex-1 overflow-y-auto px-8 py-7"
+        className="terminal-canvas flex-1 select-text overflow-y-auto px-8 py-7"
       >
         <div className="flex flex-col gap-7">
           <SystemLine text="system.initialize(context='coddy_floating');" />
@@ -323,9 +342,10 @@ export function FloatingTerminal() {
                 <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.22em] text-primary/80">
                   streaming_response
                 </div>
-                <p className="whitespace-pre-wrap break-words font-mono text-sm leading-6 text-on-surface">
-                  <StreamingText text={session.streaming_text} />
-                  <span className="streaming-cursor" />
+                <MarkdownContent text={session.streaming_text} />
+                <span className="streaming-cursor mt-2 inline-block" />
+                <p className="mt-3 text-[11px] text-on-surface-muted">
+                  Pressione (Esc) para parar.
                 </p>
               </div>
             </div>
@@ -342,7 +362,7 @@ export function FloatingTerminal() {
 
           <div ref={messagesEndRef} />
         </div>
-      </div>
+      </SelectionCopyRegion>
 
       <div className="floating-terminal-input-row flex flex-shrink-0 items-center gap-3 border-t border-primary/15 bg-surface-dim/70 px-8 py-4 backdrop-blur-md">
         <div className="flex-1">
@@ -411,4 +431,26 @@ function SystemLine({ text }: { text: string }) {
       <span>{text}</span>
     </div>
   )
+}
+
+function floatingFontFamilyCss(fontFamily: FloatingAppearanceSettings['fontFamily']): string {
+  switch (fontFamily) {
+    case 'mono':
+      return 'JetBrains Mono, Fira Code, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+    case 'serif':
+      return 'Georgia, Cambria, "Times New Roman", Times, serif'
+    case 'display':
+      return 'Manrope, Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+    case 'system':
+      return 'Inter, Manrope, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+  }
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const normalized = hex.replace('#', '')
+  const red = Number.parseInt(normalized.slice(0, 2), 16)
+  const green = Number.parseInt(normalized.slice(2, 4), 16)
+  const blue = Number.parseInt(normalized.slice(4, 6), 16)
+  const opacity = Math.max(0, Math.min(1, alpha))
+  return `rgba(${red}, ${green}, ${blue}, ${opacity})`
 }

@@ -104,6 +104,7 @@ describe('ElectronReplIpcClient', () => {
     await client.selectModel(
       { provider: 'ollama', name: 'qwen2.5:0.5b' },
       'Chat',
+      { localProviderPreference: 'vllm' },
     )
     await client.getToolCatalog()
     await client.runMultiagentEval({
@@ -125,6 +126,7 @@ describe('ElectronReplIpcClient', () => {
       'repl:select-model',
       { provider: 'ollama', name: 'qwen2.5:0.5b' },
       'Chat',
+      { localProviderPreference: 'vllm' },
     )
     expect(invoke).toHaveBeenCalledWith('repl:tools')
     expect(invoke).toHaveBeenCalledWith('repl:eval-multiagent', {

@@ -159,7 +159,7 @@ interface MarkdownSegment {
  */
 export function parseMarkdown(text: string): MarkdownSegment[] {
   const segments: MarkdownSegment[] = []
-  const regex = /```(\w+)?\s*\n([\s\S]*?)```/g
+  const regex = /```([\w+-]+)?\s*\n([\s\S]*?)```/g
   let lastIndex = 0
   let match: RegExpExecArray | null
 

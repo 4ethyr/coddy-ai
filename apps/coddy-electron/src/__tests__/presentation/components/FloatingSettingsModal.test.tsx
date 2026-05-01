@@ -9,8 +9,13 @@ const VALUE: FloatingAppearanceSettings = {
   blurPx: 24,
   transparency: 0.58,
   glassIntensity: 0.14,
+  fontFamily: 'system',
+  fontSizePx: 14,
   textColor: '#e5e2e1',
+  boldTextColor: '#ffffff',
   accentColor: '#00dbe9',
+  glassPrimaryColor: '#00dbe9',
+  glassSecondaryColor: '#b600f8',
 }
 
 describe('FloatingSettingsModal', () => {
@@ -29,8 +34,13 @@ describe('FloatingSettingsModal', () => {
     expect(screen.getByLabelText('Blur')).toBeInTheDocument()
     expect(screen.getByLabelText('Transparency')).toBeInTheDocument()
     expect(screen.getByLabelText('Glass effect')).toBeInTheDocument()
+    expect(screen.getByLabelText('Font size')).toBeInTheDocument()
+    expect(screen.getByText('Font family')).toBeInTheDocument()
     expect(screen.getByLabelText('Text color')).toBeInTheDocument()
+    expect(screen.getByLabelText('Bold text color')).toBeInTheDocument()
     expect(screen.getByLabelText('Accent color')).toBeInTheDocument()
+    expect(screen.getByLabelText('Glass primary')).toBeInTheDocument()
+    expect(screen.getByLabelText('Glass secondary')).toBeInTheDocument()
   })
 
   it('emits normalized appearance changes', () => {
@@ -47,9 +57,13 @@ describe('FloatingSettingsModal', () => {
     fireEvent.change(screen.getByLabelText('Text color'), {
       target: { value: '#ffffff' },
     })
+    fireEvent.change(screen.getByLabelText('Font size'), {
+      target: { value: '16' },
+    })
 
     expect(onChange).toHaveBeenCalledWith({ ...VALUE, blurPx: 36 })
     expect(onChange).toHaveBeenCalledWith({ ...VALUE, textColor: '#ffffff' })
+    expect(onChange).toHaveBeenCalledWith({ ...VALUE, fontSizePx: 16 })
   })
 
   it('resets to default appearance and closes on demand', async () => {

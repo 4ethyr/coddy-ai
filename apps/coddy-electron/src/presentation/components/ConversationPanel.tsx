@@ -2,10 +2,13 @@
 
 import { useRef, useEffect } from 'react'
 import type { ReplSession } from '@/domain'
-import { MessageBubble } from '@/presentation/components/MessageBubble'
+import {
+  MarkdownContent,
+  MessageBubble,
+} from '@/presentation/components/MessageBubble'
 import { InputBar } from '@/presentation/components/InputBar'
-import { StreamingText } from '@/presentation/components/StreamingText'
 import { ToolApprovalPanel } from '@/presentation/components/ToolApprovalPanel'
+import { SelectionCopyRegion } from '@/presentation/components/SelectionCopyRegion'
 import {
   ThinkingIndicator,
   type ThinkingAnimation,
@@ -34,7 +37,7 @@ export function ConversationPanel({
 
   return (
     <div className="relative flex h-full flex-1 flex-col overflow-hidden">
-      <div className="desktop-canvas flex-1 overflow-y-auto px-4 py-6 sm:px-8">
+      <SelectionCopyRegion className="desktop-canvas flex-1 overflow-y-auto px-4 py-6 sm:px-8">
         <div className="mx-auto flex max-w-5xl flex-col gap-7 pb-28">
           <div className="flex justify-center">
             <div className="rounded border border-white/5 bg-surface-container/40 px-4 py-2 text-center backdrop-blur-md">
@@ -63,9 +66,10 @@ export function ConversationPanel({
                 <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.22em] text-primary/80">
                   coddy_agent
                 </div>
-                <p className="whitespace-pre-wrap break-words text-sm leading-6 text-on-surface">
-                  <StreamingText text={session.streaming_text} />
-                  <span className="streaming-cursor" />
+                <MarkdownContent text={session.streaming_text} />
+                <span className="streaming-cursor mt-2 inline-block" />
+                <p className="mt-3 text-[11px] text-on-surface-muted">
+                  Pressione (Esc) para parar.
                 </p>
               </div>
             </div>
@@ -80,7 +84,7 @@ export function ConversationPanel({
 
           <div ref={messagesEndRef} />
         </div>
-      </div>
+      </SelectionCopyRegion>
 
       <div className="pointer-events-none absolute bottom-5 left-0 right-0 z-20 flex justify-center px-4">
         <div className="pointer-events-auto w-full max-w-3xl rounded-full border border-white/15 bg-surface-container/90 p-2 backdrop-blur-2xl">

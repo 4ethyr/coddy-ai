@@ -217,7 +217,13 @@ impl CoddyClient {
                 },
                 "Coddy daemon request",
             )
-            .await?;
+            .await
+            .with_context(|| {
+                format!(
+                    "Coddy runtime at {} did not return a valid response. Start Coddy Desktop or run `coddy runtime serve`, then retry",
+                    self.socket_path.display()
+                )
+            })?;
         response.ensure_compatible()?;
         let result = response.result;
         ensure_response_request_id(expected_request_id, result.request_id())?;
@@ -232,14 +238,14 @@ impl CoddyClient {
         .await
         .map_err(|_| {
             anyhow!(
-                "timed out connecting to daemon socket {} after {} ms",
+                "timed out connecting to Coddy runtime socket {} after {} ms. Start Coddy Desktop or run `coddy runtime serve`, then retry",
                 self.socket_path.display(),
                 self.options.connect_timeout.as_millis()
             )
         })?
         .with_context(|| {
             format!(
-                "failed to connect to daemon socket {}",
+                "failed to connect to Coddy runtime socket {}. Start Coddy Desktop or run `coddy runtime serve`, then retry",
                 self.socket_path.display()
             )
         })
@@ -472,6 +478,29 @@ mod tests {
             tools,
             vec!["shell.run".to_string(), "filesystem.read_file".to_string()]
         );
+        server.await.expect("server task");
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    #[tokio::test]
+    async fn client_reports_actionable_error_when_runtime_closes_connection() {
+        let socket_path = test_socket_path("closed-connection");
+        let listener = UnixListener::bind(&socket_path).expect("bind test socket");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept client");
+            let _: CoddyWireRequest = read_frame(&mut stream).await.expect("read request");
+        });
+
+        let client = CoddyClient::new(&socket_path);
+        let error = client
+            .send_command(ReplCommand::StopSpeaking, false)
+            .await
+            .expect_err("closed connection");
+        let rendered = format!("{error:#}");
+
+        assert!(rendered.contains("Coddy runtime at"));
+        assert!(rendered.contains("coddy runtime serve"));
+        assert!(rendered.contains(&socket_path.display().to_string()));
         server.await.expect("server task");
         let _ = std::fs::remove_file(socket_path);
     }
@@ -929,7 +958,7 @@ mod tests {
             .await
             .expect_err("timeout error");
 
-        assert!(error.to_string().contains("timed out"));
+        assert!(format!("{error:#}").contains("timed out"));
         server.await.expect("server task");
         let _ = std::fs::remove_file(socket_path);
     }

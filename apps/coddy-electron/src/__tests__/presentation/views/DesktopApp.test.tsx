@@ -83,6 +83,50 @@ describe('DesktopApp', () => {
     expect(screen.getByText('2048 tokens')).toBeInTheDocument()
   })
 
+  it('lets the user choose the preferred local model provider in settings', async () => {
+    render(<DesktopApp />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open config' }))
+    await userEvent.click(screen.getByRole('button', { name: 'vllm' }))
+
+    expect(screen.getByRole('button', { name: 'vllm' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(window.localStorage.getItem('coddy:settings')).toContain(
+      '"providerPreference":"vllm"',
+    )
+  })
+
+  it('renders voice command control in desktop mode', async () => {
+    sessionContext.captureVoice.mockResolvedValue({ text: 'voice command' })
+
+    render(<DesktopApp />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Voice input' }))
+
+    expect(sessionContext.captureVoice).toHaveBeenCalledOnce()
+  })
+
+  it('renders streaming responses with markdown formatting in desktop mode', () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      status: 'Streaming',
+      active_run: 'run-1',
+      streaming_text:
+        '### Principais funcionalidades:\n\n1. **Deteccao:** encontra problemas.\n\nUse *pipeline* de CI.',
+    }
+
+    const { container } = render(<DesktopApp />)
+
+    expect(screen.getByText('Principais funcionalidades:')).toBeInTheDocument()
+    expect(screen.getByText('Deteccao:')).toBeInTheDocument()
+    expect(screen.getByText('pipeline')).toBeInTheDocument()
+    expect(container.textContent).not.toContain('###')
+    expect(container.textContent).not.toContain('**Deteccao:**')
+    expect(container.textContent).not.toContain('*pipeline*')
+  })
+
   it('renders subagent lifecycle readiness in the desktop activity panel', () => {
     sessionContext.session = {
       ...sessionContext.session,

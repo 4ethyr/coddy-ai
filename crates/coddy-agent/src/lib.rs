@@ -53,8 +53,8 @@ pub use shell_plan::{
 pub use subagent::{
     SubagentDefinition, SubagentHandoffPlan, SubagentMode, SubagentRecommendation,
     SubagentRegistry, SubagentTeamGateStatus, SubagentTeamMember, SubagentTeamMetrics,
-    SubagentTeamPlan, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
-    SUBAGENT_TEAM_PLAN_TOOL,
+    SubagentTeamPlan, SUBAGENT_LIST_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_REDUCE_OUTPUTS_TOOL,
+    SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
 };
 pub use subagent_executor::{
     SubagentExecutionCompletionPlan, SubagentExecutionCoordinator, SubagentExecutionGate,
@@ -629,6 +629,57 @@ impl Default for AgentToolRegistry {
                 timeout_ms: 2_000,
                 approval_policy: ApprovalPolicy::AutoApprove,
             }),
+            local_tool_definition(LocalToolDefinitionSpec {
+                name: SUBAGENT_REDUCE_OUTPUTS_TOOL,
+                description: "Validate and consolidate structured subagent outputs against prepared handoff contracts without executing subagents",
+                category: ToolCategory::Subagent,
+                input_schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["goal", "outputs"],
+                    "properties": {
+                        "goal": { "type": "string" },
+                        "max_members": { "type": "integer", "minimum": 1 },
+                        "approved_subagents": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
+                        "outputs": {
+                            "type": "object",
+                            "additionalProperties": { "type": "object" }
+                        }
+                    }
+                }),
+                output_schema: json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "team": { "type": "object" },
+                        "summary": {
+                            "type": "object",
+                            "properties": {
+                                "total": { "type": "integer" },
+                                "completed": { "type": "integer" },
+                                "failed": { "type": "integer" },
+                                "blocked": { "type": "integer" },
+                                "awaitingApproval": { "type": "integer" },
+                                "acceptedOutputs": { "type": "integer" },
+                                "rejectedOutputs": { "type": "integer" },
+                                "missingOutputs": { "type": "integer" },
+                                "unexpectedOutputs": {
+                                    "type": "array",
+                                    "items": { "type": "string" }
+                                },
+                                "records": { "type": "array" }
+                            }
+                        }
+                    }
+                }),
+                risk_level: ToolRiskLevel::Low,
+                permissions: vec![ToolPermission::DelegateSubagent],
+                timeout_ms: 2_000,
+                approval_policy: ApprovalPolicy::AutoApprove,
+            }),
         ]);
 
         Self { definitions }
@@ -759,6 +810,40 @@ impl ReadOnlyToolExecutor {
                 ToolResult::failed(call.id, error.into_tool_error(), started_at, completed_at)
             }
         }
+    }
+
+    pub fn sensitive_read_permission_request(
+        &self,
+        call: &ToolCall,
+    ) -> Result<Option<PermissionRequest>, AgentError> {
+        let path = required_string_field(&call.input, "path")?;
+        let file_path = self.workspace.resolve_existing(path)?;
+        if !file_path.is_file() {
+            return Err(AgentError::NotFile(
+                self.workspace.relative_display(&file_path),
+            ));
+        }
+        let relative_path = self.workspace.relative_display(&file_path);
+        if !path_looks_sensitive(&relative_path) {
+            return Ok(None);
+        }
+
+        PermissionRequest::new(
+            call.session_id,
+            call.run_id,
+            Some(call.id),
+            ToolName::new(READ_FILE_TOOL).expect("built-in tool name is valid"),
+            ToolPermission::ReadWorkspace,
+            vec![relative_path.clone()],
+            ToolRiskLevel::High,
+            json!({
+                "path": relative_path,
+                "reason": "sensitive_file_read",
+            }),
+            call.requested_at_unix_ms,
+        )
+        .map(Some)
+        .map_err(|error| AgentError::PermissionContract(error.to_string()))
     }
 
     pub fn execute_with_events(&self, call: &ToolCall) -> ToolExecution {
@@ -1161,10 +1246,21 @@ fn path_looks_sensitive(path: &str) -> bool {
     normalized == ".env"
         || normalized.ends_with("/.env")
         || normalized.contains(".env.")
+        || normalized == ".npmrc"
+        || normalized.ends_with("/.npmrc")
+        || normalized == ".netrc"
+        || normalized.ends_with("/.netrc")
+        || normalized == ".pypirc"
+        || normalized.ends_with("/.pypirc")
+        || normalized.ends_with("/.aws/credentials")
+        || normalized.ends_with("/.ssh/config")
+        || normalized.contains("/.ssh/")
+        || normalized.contains("/.gnupg/")
         || normalized.contains("credential")
         || normalized.contains("secret")
         || normalized.contains("token")
         || normalized.ends_with(".pem")
+        || normalized.ends_with(".key")
         || normalized.ends_with(".p12")
         || normalized.ends_with(".pfx")
         || normalized.ends_with("id_rsa")
@@ -1465,7 +1561,7 @@ mod tests {
     fn agent_registry_defines_local_contracts_without_execution() {
         let registry = AgentToolRegistry::default();
 
-        assert_eq!(registry.definitions().len(), 10);
+        assert_eq!(registry.definitions().len(), 11);
         assert!(registry
             .get(&ToolName::new(LIST_FILES_TOOL).expect("tool name"))
             .is_some());
@@ -1531,6 +1627,20 @@ mod tests {
         );
         assert_eq!(
             subagent_team_plan.permissions,
+            vec![ToolPermission::DelegateSubagent]
+        );
+
+        let subagent_reduce_outputs = registry
+            .get(&ToolName::new(SUBAGENT_REDUCE_OUTPUTS_TOOL).expect("tool name"))
+            .expect("subagent reduce outputs definition");
+        assert_eq!(subagent_reduce_outputs.category, ToolCategory::Subagent);
+        assert_eq!(subagent_reduce_outputs.risk_level, ToolRiskLevel::Low);
+        assert_eq!(
+            subagent_reduce_outputs.approval_policy,
+            ApprovalPolicy::AutoApprove
+        );
+        assert_eq!(
+            subagent_reduce_outputs.permissions,
             vec![ToolPermission::DelegateSubagent]
         );
     }
@@ -1633,6 +1743,24 @@ mod tests {
         assert_eq!(output.metadata["path"], ".env");
         assert_eq!(output.metadata["sensitive"], json!(true));
         assert!(!output.text.contains("super-secret-token"));
+    }
+
+    #[test]
+    fn read_file_redacts_common_credential_files() {
+        let workspace = TempWorkspace::new();
+        workspace.write(
+            ".npmrc",
+            "//registry.npmjs.org/:_authToken=npm-secret-token\n",
+        );
+        let executor = ReadOnlyToolExecutor::new(&workspace.path).expect("executor");
+
+        let result = executor.execute(&call(READ_FILE_TOOL, json!({ "path": ".npmrc" })));
+
+        assert_eq!(result.status, ToolResultStatus::Succeeded);
+        let output = result.output.expect("tool output");
+        assert_eq!(output.text, "//registry.npmjs.org/:_authToken=[REDACTED]");
+        assert_eq!(output.metadata["sensitive"], json!(true));
+        assert!(!output.text.contains("npm-secret-token"));
     }
 
     #[test]

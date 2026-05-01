@@ -1,4 +1,7 @@
-import type { FloatingAppearanceSettings } from '@/application'
+import type {
+  FloatingAppearanceSettings,
+  FloatingFontFamily,
+} from '@/application'
 import {
   DEFAULT_FLOATING_APPEARANCE,
   normalizeFloatingAppearance,
@@ -80,6 +83,20 @@ export function FloatingSettingsModal({ value, onChange, onClose }: Props) {
             formatter={(current) => `${Math.round(current * 100)}%`}
             onChange={(glassIntensity) => update({ glassIntensity })}
           />
+          <RangeField
+            label="Font size"
+            value={value.fontSizePx}
+            min={12}
+            max={18}
+            step={1}
+            suffix="px"
+            onChange={(fontSizePx) => update({ fontSizePx })}
+          />
+
+          <FontField
+            value={value.fontFamily}
+            onChange={(fontFamily) => update({ fontFamily })}
+          />
 
           <div className="grid gap-4 sm:grid-cols-2">
             <ColorField
@@ -88,9 +105,24 @@ export function FloatingSettingsModal({ value, onChange, onClose }: Props) {
               onChange={(textColor) => update({ textColor })}
             />
             <ColorField
+              label="Bold text color"
+              value={value.boldTextColor}
+              onChange={(boldTextColor) => update({ boldTextColor })}
+            />
+            <ColorField
               label="Accent color"
               value={value.accentColor}
               onChange={(accentColor) => update({ accentColor })}
+            />
+            <ColorField
+              label="Glass primary"
+              value={value.glassPrimaryColor}
+              onChange={(glassPrimaryColor) => update({ glassPrimaryColor })}
+            />
+            <ColorField
+              label="Glass secondary"
+              value={value.glassSecondaryColor}
+              onChange={(glassSecondaryColor) => update({ glassSecondaryColor })}
             />
           </div>
         </div>
@@ -113,6 +145,45 @@ export function FloatingSettingsModal({ value, onChange, onClose }: Props) {
         </footer>
       </section>
     </div>
+  )
+}
+
+function FontField({
+  value,
+  onChange,
+}: {
+  value: FloatingFontFamily
+  onChange: (value: FloatingFontFamily) => void
+}) {
+  const options: { value: FloatingFontFamily; label: string }[] = [
+    { value: 'system', label: 'System' },
+    { value: 'mono', label: 'Mono' },
+    { value: 'display', label: 'Display' },
+    { value: 'serif', label: 'Serif' },
+  ]
+
+  return (
+    <fieldset className="rounded-xl border border-outline-variant/50 bg-surface-container/30 p-3">
+      <legend className="mb-3 font-mono text-xs uppercase tracking-[0.16em] text-on-surface-variant">
+        Font family
+      </legend>
+      <div className="flex flex-wrap gap-2">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            className={`rounded-full border px-3 py-1.5 font-mono text-xs transition-colors ${
+              option.value === value
+                ? 'border-primary/50 bg-primary/10 text-primary'
+                : 'border-outline-variant/70 bg-surface-container-high/40 text-on-surface-variant hover:text-on-surface'
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </fieldset>
   )
 }
 

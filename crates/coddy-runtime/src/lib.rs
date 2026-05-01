@@ -65,6 +65,7 @@ struct ModelResponseContext<'a> {
 struct ToolRoundOutcome {
     response: AssistantResponse,
     executed_tool_calls: usize,
+    pending_permission: bool,
 }
 
 impl CoddyRuntime {
@@ -296,9 +297,24 @@ impl CoddyRuntime {
         for event in outcome.events {
             self.publish_event_with_run_now(event, run_id);
         }
+        let result = outcome.result;
+        if let Some(result) = result.as_ref() {
+            if result.status == ToolResultStatus::Succeeded {
+                if let Some(output) = result.output.as_ref() {
+                    if let Some(item) =
+                        context_item_from_tool_output(&permission_request.tool_name, output)
+                    {
+                        self.publish_event_with_run_now(
+                            ReplEvent::ContextItemAdded { item },
+                            run_id,
+                        );
+                    }
+                }
+            }
+        }
         self.publish_event_with_run_now(ReplEvent::RunCompleted { run_id }, run_id);
 
-        match outcome.result {
+        match result {
             Some(result) => match result.status {
                 ToolResultStatus::Succeeded => CoddyResult::ActionStatus {
                     request_id,
@@ -584,6 +600,9 @@ impl CoddyRuntime {
             if round.executed_tool_calls == 0 {
                 return round.response;
             }
+            if round.pending_permission {
+                return round.response;
+            }
             last_tool_observations = Some(round.response.text.clone());
 
             if !response.text.trim().is_empty() {
@@ -798,6 +817,7 @@ impl CoddyRuntime {
     ) -> ToolRoundOutcome {
         let mut observations = Vec::new();
         let mut executed_tool_calls = 0_usize;
+        let mut pending_permission = false;
 
         for tool_call in response.tool_calls.iter().take(3) {
             let tool_name = match ToolName::new(&tool_call.name) {
@@ -841,6 +861,20 @@ impl CoddyRuntime {
             executed_tool_calls += 1;
             for event in outcome.events {
                 self.publish_event_with_run_now(event, context.run_id);
+            }
+
+            if outcome.permission_request.is_some() && outcome.result.is_none() {
+                pending_permission = true;
+                let patterns = outcome
+                    .permission_request
+                    .as_ref()
+                    .map(|request| request.patterns.join(", "))
+                    .filter(|patterns| !patterns.is_empty())
+                    .unwrap_or_else(|| "requested target".to_string());
+                observations.push(format!(
+                    "- `{tool_name}` requires approval before accessing sensitive workspace content: {patterns}."
+                ));
+                continue;
             }
 
             let Some(result) = outcome.result else {
@@ -903,6 +937,7 @@ impl CoddyRuntime {
         ToolRoundOutcome {
             response: AssistantResponse::from_text(text),
             executed_tool_calls,
+            pending_permission,
         }
     }
 
@@ -1944,12 +1979,13 @@ fn default_workspace_root() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use coddy_agent::{
-        PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL,
+        PREVIEW_EDIT_TOOL, READ_FILE_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_REDUCE_OUTPUTS_TOOL,
+        SUBAGENT_ROUTE_TOOL,
     };
     use coddy_client::CoddyClient;
     use coddy_core::{
         ApprovalPolicy, ModelRef, ModelRole, PermissionReply, ReplEvent, ToolCategory,
-        ToolPermission, ToolRiskLevel,
+        ToolPermission, ToolRiskLevel, ToolStatus,
     };
     use coddy_ipc::{
         ReplCommandJob, ReplEventStreamJob, ReplEventsJob, ReplSessionSnapshotJob, ReplToolsJob,
@@ -2081,6 +2117,7 @@ mod tests {
                 "shell.run",
                 "subagent.list",
                 "subagent.prepare",
+                "subagent.reduce_outputs",
                 "subagent.route",
                 "subagent.team_plan",
             ]
@@ -2154,6 +2191,21 @@ mod tests {
         );
         assert_eq!(
             subagent_team_plan.approval_policy,
+            ApprovalPolicy::AutoApprove
+        );
+
+        let subagent_reduce_outputs = tools
+            .iter()
+            .find(|tool| tool.name == "subagent.reduce_outputs")
+            .expect("subagent reduce outputs tool");
+        assert_eq!(subagent_reduce_outputs.category, ToolCategory::Subagent);
+        assert_eq!(subagent_reduce_outputs.risk_level, ToolRiskLevel::Low);
+        assert_eq!(
+            subagent_reduce_outputs.permissions,
+            vec![ToolPermission::DelegateSubagent]
+        );
+        assert_eq!(
+            subagent_reduce_outputs.approval_policy,
             ApprovalPolicy::AutoApprove
         );
     }
@@ -3010,23 +3062,20 @@ mod tests {
     }
 
     #[test]
-    fn ask_command_redacts_secret_like_tool_observations_before_model_followup() {
+    fn ask_command_requires_approval_before_sensitive_file_tool_observation() {
         let request_id = Uuid::new_v4();
         let workspace = TempWorkspace::new();
         workspace.write(".env", "OPENAI_API_KEY=sk-secret-token\n");
-        let (chat_client, requests) = QueuedChatClient::new(vec![
-            ChatResponse {
-                text: "I will inspect the requested file.".to_string(),
-                deltas: vec!["I will inspect the requested file.".to_string()],
-                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
-                tool_calls: vec![ChatToolCall {
-                    id: Some("call-1".to_string()),
-                    name: READ_FILE_TOOL.to_string(),
-                    arguments: json!({ "path": ".env", "max_bytes": 120 }),
-                }],
-            },
-            ChatResponse::from_text("The file contains a redacted API key setting."),
-        ]);
+        let (chat_client, requests) = QueuedChatClient::new(vec![ChatResponse {
+            text: "I will inspect the requested file.".to_string(),
+            deltas: vec!["I will inspect the requested file.".to_string()],
+            finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+            tool_calls: vec![ChatToolCall {
+                id: Some("call-1".to_string()),
+                name: READ_FILE_TOOL.to_string(),
+                arguments: json!({ "path": ".env", "max_bytes": 120 }),
+            }],
+        }]);
         let runtime = CoddyRuntime::with_workspace_and_chat_client(
             AgentToolRegistry::default(),
             &workspace.path,
@@ -3055,17 +3104,115 @@ mod tests {
             speak: false,
         }));
 
-        assert!(matches!(result, CoddyResult::Text { .. }));
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
         let captured_requests = requests.lock().expect("requests mutex poisoned");
-        assert_eq!(captured_requests.len(), 2);
+        let snapshot = runtime.snapshot();
+        let pending = snapshot
+            .session
+            .pending_permission
+            .as_ref()
+            .expect("pending sensitive read permission");
+
+        assert_eq!(captured_requests.len(), 1);
+        assert!(text.contains("requires approval before accessing sensitive workspace content"));
+        assert!(text.contains(".env"));
+        assert!(!text.contains("sk-secret-token"));
+        assert_eq!(pending.tool_name.as_str(), READ_FILE_TOOL);
+        assert_eq!(pending.patterns, vec![".env"]);
+        assert_eq!(pending.risk_level, ToolRiskLevel::High);
+    }
+
+    #[test]
+    fn ask_command_executes_model_subagent_output_reducer_tool() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        let (chat_client, requests) = QueuedChatClient::new(vec![
+            ChatResponse {
+                text: "I will validate the subagent outputs before summarizing.".to_string(),
+                deltas: vec!["I will validate the subagent outputs before summarizing.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-reduce".to_string()),
+                    name: SUBAGENT_REDUCE_OUTPUTS_TOOL.to_string(),
+                    arguments: json!({
+                        "goal": "revise seguranca, secrets e sandbox",
+                        "max_members": 2,
+                        "outputs": {
+                            "security-reviewer": {
+                                "riskLevel": "low",
+                                "findings": [],
+                                "requiredFixes": [],
+                                "recommendations": []
+                            },
+                            "reviewer": {
+                                "approved": true,
+                                "issues": [],
+                                "suggestions": [],
+                                "blockingProblems": [],
+                                "nonBlockingProblems": []
+                            }
+                        }
+                    }),
+                }],
+            },
+            ChatResponse::from_text("The subagent outputs passed reducer validation."),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "validate multiagent security review outputs".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
         let tool_message = captured_requests[1]
             .messages
             .iter()
             .find(|message| message.role == coddy_agent::ChatMessageRole::Tool)
             .expect("tool observation message");
+        let events = runtime.events_after(0).0;
 
-        assert!(tool_message.content.contains("OPENAI_API_KEY=[REDACTED]"));
-        assert!(!tool_message.content.contains("sk-secret-token"));
+        assert_eq!(text, "The subagent outputs passed reducer validation.");
+        assert_eq!(captured_requests.len(), 2);
+        assert!(tool_message.content.contains("subagent.reduce_outputs"));
+        assert!(tool_message.content.contains("2 accepted"));
+        assert!(tool_message.content.contains("0 rejected"));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolStarted { name } if name == SUBAGENT_REDUCE_OUTPUTS_TOOL
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolCompleted { name, status }
+                if name == SUBAGENT_REDUCE_OUTPUTS_TOOL && *status == ToolStatus::Succeeded
+        )));
+        assert!(runtime.snapshot().session.pending_permission.is_none());
     }
 
     #[test]
@@ -3073,19 +3220,16 @@ mod tests {
         let request_id = Uuid::new_v4();
         let workspace = TempWorkspace::new();
         workspace.write(".env", "OPENAI_API_KEY=sk-secret-token\n");
-        let (chat_client, _requests) = QueuedChatClient::new(vec![
-            ChatResponse {
-                text: "I will inspect the requested file.".to_string(),
-                deltas: vec!["I will inspect the requested file.".to_string()],
-                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
-                tool_calls: vec![ChatToolCall {
-                    id: Some("call-1".to_string()),
-                    name: READ_FILE_TOOL.to_string(),
-                    arguments: json!({ "path": ".env", "max_bytes": 120 }),
-                }],
-            },
-            ChatResponse::from_text("The env file was inspected safely."),
-        ]);
+        let (chat_client, _requests) = QueuedChatClient::new(vec![ChatResponse {
+            text: "I will inspect the requested file.".to_string(),
+            deltas: vec!["I will inspect the requested file.".to_string()],
+            finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+            tool_calls: vec![ChatToolCall {
+                id: Some("call-1".to_string()),
+                name: READ_FILE_TOOL.to_string(),
+                arguments: json!({ "path": ".env", "max_bytes": 120 }),
+            }],
+        }]);
         let runtime = CoddyRuntime::with_workspace_and_chat_client(
             AgentToolRegistry::default(),
             &workspace.path,
@@ -3115,6 +3259,22 @@ mod tests {
         }));
 
         assert!(matches!(result, CoddyResult::Text { .. }));
+        let pending_request_id = runtime
+            .snapshot()
+            .session
+            .pending_permission
+            .as_ref()
+            .map(|request| request.id)
+            .expect("pending sensitive read");
+        let reply = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id: Uuid::new_v4(),
+            command: ReplCommand::ReplyPermission {
+                request_id: pending_request_id,
+                reply: PermissionReply::Once,
+            },
+            speak: false,
+        }));
+        assert!(matches!(reply, CoddyResult::ActionStatus { .. }));
         let snapshot = runtime.snapshot();
         let context_item = snapshot
             .session

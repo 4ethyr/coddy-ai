@@ -4,8 +4,14 @@
 import { app, BrowserWindow } from 'electron'
 import * as path from 'path'
 import { registerIpcHandlers, cleanupStreams } from './ipcBridge'
+import { startCoddyRuntimeProcess, stopCoddyRuntimeProcess } from './runtimeProcess'
 
 let mainWindow: BrowserWindow | null = null
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+
+if (!hasSingleInstanceLock) {
+  app.quit()
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -36,6 +42,16 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return
+
+  const electronProcess = process as NodeJS.Process & {
+    resourcesPath?: string
+  }
+  startCoddyRuntimeProcess({
+    appPath: app.getAppPath(),
+    env: process.env,
+    resourcesPath: electronProcess.resourcesPath,
+  })
   registerIpcHandlers()
   createWindow()
 
@@ -46,8 +62,16 @@ app.whenReady().then(() => {
   })
 })
 
+app.on('second-instance', () => {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+})
+
 app.on('window-all-closed', () => {
   cleanupStreams()
+  stopCoddyRuntimeProcess()
   if (process.platform !== 'darwin') {
     app.quit()
   }
@@ -55,4 +79,5 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   cleanupStreams()
+  stopCoddyRuntimeProcess()
 })

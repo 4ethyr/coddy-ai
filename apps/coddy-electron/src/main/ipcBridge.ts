@@ -6,6 +6,7 @@ import { createInterface } from 'readline'
 import * as path from 'path'
 import { app, ipcMain, BrowserWindow, screen, safeStorage } from 'electron'
 import type { Rectangle } from 'electron'
+import { resolveCoddyBinaryPath } from './coddyBinary'
 import {
   listProviderModels,
   type ModelProviderListPayload,
@@ -18,8 +19,15 @@ import {
 } from './secureCredentialStore'
 import { buildRuntimeCredentialEnvironment } from './runtimeCredentialBridge'
 import { redactSensitiveLogText } from './sensitiveLogRedaction'
-
-const CODDY_BIN = process.env.CODDY_BIN || 'coddy'
+import {
+  ensureLocalModelReady,
+  type LocalModelProviderPreference,
+} from './localModelManager'
+import {
+  readJson,
+  readJsonWithTimeout,
+  terminateChild,
+} from './childProcessJson'
 
 type ModelRef = {
   provider: string
@@ -27,6 +35,9 @@ type ModelRef = {
 }
 
 type ModelRole = 'Chat' | 'Ocr' | 'Asr' | 'Tts' | 'Embedding'
+type ModelSelectionOptions = {
+  localProviderPreference?: LocalModelProviderPreference
+}
 type ReplMode = 'FloatingTerminal' | 'DesktopApp'
 type ScreenAssistMode =
   | 'ExplainVisibleScreen'
@@ -70,12 +81,26 @@ type MultiagentEvalPayload = {
   writeBaseline?: string
 }
 
+const VOICE_CAPTURE_TIMEOUT_MS = 120_000
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function coddySpawn(args: string[], env: Record<string, string> = {}): ChildProcess {
-  const child = spawn(CODDY_BIN, args, {
+function coddySpawn(
+  args: string[],
+  env: Record<string, string> = {},
+  options: { detached?: boolean } = {},
+): ChildProcess {
+  const electronProcess = process as NodeJS.Process & {
+    resourcesPath?: string
+  }
+  const child = spawn(resolveCoddyBinaryPath({
+    appPath: app.getAppPath(),
+    env: process.env,
+    resourcesPath: electronProcess.resourcesPath,
+  }), args, {
+    detached: options.detached ?? false,
     env: {
       ...process.env,
       ...env,
@@ -90,32 +115,6 @@ function coddySpawn(args: string[], env: Record<string, string> = {}): ChildProc
   })
 
   return child
-}
-
-async function readJson(child: ChildProcess): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    let stdout = ''
-    let stderr = ''
-    child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
-    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
-
-    child.on('close', (code) => {
-      if (code !== 0) {
-        const detail = stderr.trim()
-        reject(new Error(
-          detail ? `coddy exited ${code}: ${detail}` : `coddy exited ${code}`,
-        ))
-        return
-      }
-      try {
-        resolve(JSON.parse(stdout.trim()))
-      } catch {
-        resolve(stdout.trim())
-      }
-    })
-
-    child.on('error', reject)
-  })
 }
 
 // ---------------------------------------------------------------------------
@@ -293,12 +292,23 @@ export function registerIpcHandlers(): void {
       }
     }
 
-    const child = coddySpawn(['voice', '--overlay'])
+    const credentialEnv = await runtimeCredentialEnvironmentForActiveModel(
+      credentialStore,
+    )
+    const child = coddySpawn(
+      ['voice', '--overlay'],
+      credentialEnv,
+      { detached: true },
+    )
     activeVoiceCapture = child
     voiceCaptureCancelRequested = false
 
     try {
-      const raw = await readJson(child)
+      const raw = await readJsonWithTimeout(
+        child,
+        VOICE_CAPTURE_TIMEOUT_MS,
+        'voice capture timed out',
+      )
       return normalizeCommandResult(raw)
     } catch (err) {
       if (voiceCaptureCancelRequested) {
@@ -321,13 +331,16 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('voice:capture-cancel', async () => {
     if (activeVoiceCapture && !activeVoiceCapture.killed) {
       voiceCaptureCancelRequested = true
-      activeVoiceCapture.kill()
+      terminateChild(activeVoiceCapture)
     }
     return { ok: true }
   })
 
   ipcMain.handle('repl:voice-turn', async (_event, transcript: string) => {
-    return runCoddyCommand(['voice', '--transcript', transcript])
+    const credentialEnv = await runtimeCredentialEnvironmentForActiveModel(
+      credentialStore,
+    )
+    return runCoddyCommand(['voice', '--transcript', transcript], credentialEnv)
   })
 
   ipcMain.handle('repl:stop-speaking', async () => {
@@ -344,7 +357,25 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(
     'repl:select-model',
-    async (_event, model: ModelRef, role: ModelRole) => {
+    async (
+      _event,
+      model: ModelRef,
+      role: ModelRole,
+      options?: ModelSelectionOptions,
+    ) => {
+      const localModelReady = await ensureLocalModelReady(model, {
+        preferredProvider: normalizeLocalProviderPreference(
+          options?.localProviderPreference,
+        ),
+      })
+      if (localModelReady.status === 'error') {
+        return {
+          error: {
+            code: localModelReady.code ?? 'LOCAL_MODEL_PRELOAD_FAILED',
+            message: localModelReady.message,
+          },
+        }
+      }
       const child = coddySpawn([
         'model',
         'select',
@@ -407,7 +438,7 @@ export function cleanupStreams(): void {
   }
   activeStreams.clear()
   if (activeVoiceCapture && !activeVoiceCapture.killed) {
-    activeVoiceCapture.kill()
+    terminateChild(activeVoiceCapture)
   }
   activeVoiceCapture = null
   voiceCaptureCancelRequested = false
@@ -585,6 +616,14 @@ function normalizeOptionalPath(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
+}
+
+function normalizeLocalProviderPreference(
+  value: unknown,
+): LocalModelProviderPreference {
+  return value === 'ollama' || value === 'hf' || value === 'vllm'
+    ? value
+    : 'auto'
 }
 
 async function runtimeCredentialEnvironmentForActiveModel(

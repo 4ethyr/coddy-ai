@@ -490,6 +490,31 @@ export interface ReplSession {
 
 **Verification:** `npx playwright test`
 
+### Cross-Cutting Backlog: UX and Runtime Reliability
+
+These tasks were added after reviewing the current FloatingTerminal, Desktop
+model selector, runtime credential bridge, provider adapters and active-run
+controls.
+
+| ID | Test (RED first) | Implementation | Files |
+|---|---|---|---|
+| T8.1 | Select one word/line in FloatingTerminal transcript → only selected range is highlighted | Fix transcript selection boundaries and avoid parent-level full-message selection | `presentation/views/FloatingTerminal/`, `MessageBubble.tsx`, CSS |
+| T8.2 | Select transcript text → contextual Copy action copies exactly the selected text | Selection toolbar/context action with clipboard API fallback | `presentation/components/`, `FloatingTerminal` |
+| T8.3 | Press `Ctrl+Shift+C` with selected transcript text → clipboard receives the selected text | Global shortcut scoped to transcript selection; do not steal focus from inputs/menus/modals | `App.tsx`, `FloatingTerminal`, tests |
+| T8.4 | Paste with `Ctrl+V` and `Ctrl+Shift+V` in the input → text is inserted at the caret | Input paste handling for both shortcuts, including disabled/active states | `InputBar.tsx` |
+| T8.5 | Press `Esc` during Thinking/Streaming → active run is cancelled and the window remains open | Prioritize `cancelRun` over `window:close`; close only when idle | `App.tsx`, `useSession.ts`, `ipcBridge.ts` |
+| T8.6 | Press `Esc` while voice capture or TTS is active → the active process stops cleanly | Route Escape to `cancelVoiceCapture`/`cancelSpeech`; emit stable cancelled state | `VoiceButton.tsx`, `useSession.ts`, main IPC |
+| T8.7 | Thinking/loading UI renders one loading bar plus `Pressione (Esc) para parar.` | Unify thinking/loading states and remove multi-bar animation | `ThinkingIndicator.tsx`, `ConversationPanel.tsx`, `FloatingTerminal.tsx` |
+| T8.8 | Select an absent Ollama model → Coddy runs pull/preload with visible progress and cancellation | Local model manager for `ollama list`, `ollama pull`, health check and warmup | `main/`, `application/`, `ModelSelector.tsx` |
+| T8.9 | Select a Hugging Face local model → Coddy detects `hf`, downloads/caches or reports missing CLI | Local model manager for `hf` CLI without installing dependencies automatically | `main/`, `application/`, model manager tests |
+| T8.10 | Select a vLLM model → Coddy reuses existing endpoint or starts `vllm serve` with logs and timeout | vLLM process manager with structured args, endpoint config, cancellation and health check | `main/`, `application/`, model manager tests |
+| T8.11 | Loading Vertex Gemini models via gcloud/ADC then sending a prompt does not ask for a Gemini API key | Split Gemini Developer API and Vertex AI Gemini runtime routes | `runtimeCredentialBridge.ts`, `modelProviders.ts`, Rust model adapter |
+| T8.12 | A Gemini API key model still uses `x-goog-api-key` and the Developer API endpoint | Preserve Gemini API-key route separately from Vertex AI OAuth route | `modelProviders.ts`, Rust model adapter |
+| T8.13 | A Vertex Gemini model uses project, region and OAuth/ADC/gcloud token against Vertex AI `generateContent` | Add Vertex AI Gemini adapter and metadata propagation | `runtimeCredentialBridge.ts`, `crates/coddy-agent/src/model.rs` |
+| T8.14 | Selecting a Live API/audio-only/preview model in chat shows a friendly unsupported-runtime message | Filter or gate models that do not support `generateContent`/`streamGenerateContent` | `modelProviders.ts`, `ModelSelector.tsx`, error mapper |
+| T8.15 | Provider 404/credential/model errors render friendly message with retry/reload/settings action | Normalize errors with code, details, recoverability and safe diagnostics | `CommandSender.ts`, `useSession.ts`, error UI |
+| T8.16 | Runtime and model errors never expose secrets in UI, logs or copied diagnostics | Redaction tests for provider errors, IPC errors and command stdout/stderr | main tests, Rust model tests |
+
 ---
 
 ## 5. Backend Integration Pattern

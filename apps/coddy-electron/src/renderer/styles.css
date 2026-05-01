@@ -33,17 +33,36 @@ body.window-resizing * {
 .floating-terminal-shell {
   --coddy-terminal-opacity: 0.58;
   --coddy-terminal-blur: 24px;
-  --coddy-terminal-glass: 0.14;
+  --coddy-terminal-glass-primary: rgba(0, 219, 233, 0.07);
+  --coddy-terminal-glass-secondary: rgba(182, 0, 248, 0.14);
+  --coddy-terminal-glass-secondary-soft: rgba(182, 0, 248, 0.08);
+  --coddy-terminal-font-family: Inter, Manrope, ui-sans-serif, system-ui, sans-serif;
+  --coddy-terminal-font-size: 14px;
   --coddy-terminal-text: #e5e2e1;
+  --coddy-terminal-bold: #ffffff;
   --coddy-terminal-accent: #00dbe9;
   background:
-    radial-gradient(circle at 92% 92%, rgba(182, 0, 248, var(--coddy-terminal-glass)), transparent 36%),
-    radial-gradient(circle at 8% 18%, rgba(0, 219, 233, calc(var(--coddy-terminal-glass) * 0.5)), transparent 30%),
+    radial-gradient(circle at 92% 92%, var(--coddy-terminal-glass-secondary), transparent 36%),
+    radial-gradient(circle at 8% 18%, var(--coddy-terminal-glass-primary), transparent 30%),
     rgba(19, 19, 19, var(--coddy-terminal-opacity));
   color: var(--coddy-terminal-text);
+  font-family: var(--coddy-terminal-font-family);
+  font-size: var(--coddy-terminal-font-size);
   box-shadow: none;
   backdrop-filter: blur(var(--coddy-terminal-blur));
   -webkit-backdrop-filter: blur(var(--coddy-terminal-blur));
+}
+
+.floating-terminal-shell .font-mono,
+.floating-terminal-shell textarea,
+.floating-terminal-shell input,
+.floating-terminal-shell button {
+  font-family: var(--coddy-terminal-font-family);
+}
+
+.floating-terminal-shell .text-sm,
+.floating-terminal-shell textarea {
+  font-size: var(--coddy-terminal-font-size);
 }
 
 .floating-terminal-shell header {
@@ -82,6 +101,19 @@ body.window-resizing * {
   background-color: var(--coddy-terminal-accent);
 }
 
+.floating-terminal-shell .coddy-markdown strong,
+.floating-terminal-shell .coddy-markdown-strong {
+  color: var(--coddy-terminal-bold);
+}
+
+.floating-terminal-shell .terminal-canvas,
+.floating-terminal-shell .desktop-canvas,
+.floating-terminal-shell .coddy-markdown,
+.floating-terminal-shell .coddy-message-content {
+  cursor: text;
+  user-select: text;
+}
+
 .aurora-gradient {
   position: relative;
 }
@@ -91,7 +123,7 @@ body.window-resizing * {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(135deg, rgba(0, 219, 233, 0.04), transparent 45%, rgba(182, 0, 248, 0.08));
+  background: linear-gradient(135deg, var(--coddy-terminal-glass-primary), transparent 45%, var(--coddy-terminal-glass-secondary-soft));
 }
 
 .aurora-gradient > * {
@@ -107,7 +139,7 @@ body.window-resizing * {
   z-index: 10;
   background:
     linear-gradient(90deg, rgba(0, 219, 233, 0.03), transparent 22%),
-    radial-gradient(circle at 78% 44%, rgba(182, 0, 248, 0.08), transparent 36%);
+    radial-gradient(circle at 78% 44%, var(--coddy-terminal-glass-secondary-soft), transparent 36%);
 }
 
 .floating-terminal-input-row {
@@ -225,6 +257,25 @@ body.window-resizing * {
 .thinking-scan {
   animation: thinking-scan 1.2s ease-in-out infinite;
   transform-origin: center;
+}
+
+.thinking-loading-bar {
+  animation: thinking-loading-bar 1.15s ease-in-out infinite;
+}
+
+@keyframes thinking-loading-bar {
+  0% {
+    opacity: 0.35;
+    transform: translateX(-80%) scaleX(0.45);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(110%) scaleX(1);
+  }
+  100% {
+    opacity: 0.35;
+    transform: translateX(260%) scaleX(0.45);
+  }
 }
 
 @keyframes thinking-scan {

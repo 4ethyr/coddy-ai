@@ -2,6 +2,8 @@ use coddy_core::{PermissionRequest, ToolName, ToolPermission, ToolRiskLevel};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::path_looks_sensitive;
+
 pub const SHELL_RUN_TOOL: &str = "shell.run";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +34,11 @@ pub enum BlockedCommandReason {
     NetworkPipeToShell,
     RecursivePermissionChange,
     DeploymentOrPublish,
+    DangerousDeviceOrFormat,
+    DangerousShellBuiltin,
+    ForkBomb,
+    DestructiveContainer,
+    DatabaseDestruction,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,7 +90,7 @@ impl CommandGuard {
             };
         }
 
-        if is_read_only_command(&normalized) {
+        if is_read_only_command(&normalized) && !read_only_requires_approval(&normalized) {
             return CommandAssessment {
                 command,
                 normalized,
@@ -138,6 +145,18 @@ fn blocked_reason(normalized: &str) -> Option<BlockedCommandReason> {
         return Some(BlockedCommandReason::NetworkPipeToShell);
     }
 
+    if has_fork_bomb(&lower) {
+        return Some(BlockedCommandReason::ForkBomb);
+    }
+
+    if has_dangerous_shell_builtin(&tokens) {
+        return Some(BlockedCommandReason::DangerousShellBuiltin);
+    }
+
+    if has_device_or_format_command(&tokens) {
+        return Some(BlockedCommandReason::DangerousDeviceOrFormat);
+    }
+
     if has_command_with_recursive_flag(&tokens, "chmod")
         || has_command_with_recursive_flag(&tokens, "chown")
     {
@@ -148,8 +167,16 @@ fn blocked_reason(normalized: &str) -> Option<BlockedCommandReason> {
         return Some(BlockedCommandReason::DestructiveFilesystem);
     }
 
-    if has_git_reset_hard(&tokens) || has_git_clean_force(&tokens) {
+    if has_git_reset_hard(&tokens) || has_git_clean_force(&tokens) || has_git_push_force(&tokens) {
         return Some(BlockedCommandReason::DestructiveGit);
+    }
+
+    if has_docker_system_prune(&tokens) {
+        return Some(BlockedCommandReason::DestructiveContainer);
+    }
+
+    if has_database_drop_command(&tokens) {
+        return Some(BlockedCommandReason::DatabaseDestruction);
     }
 
     if tokens.windows(2).any(|window| {
@@ -161,9 +188,8 @@ fn blocked_reason(normalized: &str) -> Option<BlockedCommandReason> {
                 | ("cargo", "publish")
                 | ("terraform", "apply")
         )
-    }) || tokens
-        .windows(3)
-        .any(|window| window[0] == "kubectl" && window[1] == "delete")
+    }) || has_kubectl_delete(&tokens)
+        || has_deploy_command(&tokens)
     {
         return Some(BlockedCommandReason::DeploymentOrPublish);
     }
@@ -175,7 +201,15 @@ fn classify_risk(normalized: &str) -> CommandRisk {
     let lower = normalized.to_ascii_lowercase();
     let tokens = shellish_tokens(&lower);
 
+    if references_sensitive_workspace_path(&tokens) {
+        return CommandRisk::Critical;
+    }
+
     if has_shell_control_syntax(&lower) {
+        return CommandRisk::High;
+    }
+
+    if references_external_filesystem_path(&tokens) {
         return CommandRisk::High;
     }
 
@@ -191,6 +225,29 @@ fn classify_risk(normalized: &str) -> CommandRisk {
     if tokens.iter().any(|token| {
         matches!(
             token.as_str(),
+            "curl"
+                | "wget"
+                | "ssh"
+                | "scp"
+                | "rsync"
+                | "nc"
+                | "ncat"
+                | "telnet"
+                | "ftp"
+                | "sftp"
+                | "sh"
+                | "bash"
+                | "zsh"
+                | "fish"
+                | "dash"
+        )
+    }) {
+        return CommandRisk::High;
+    }
+
+    if tokens.iter().any(|token| {
+        matches!(
+            token.as_str(),
             "npm" | "pnpm" | "yarn" | "cargo" | "git" | "make" | "pip" | "python" | "node"
         )
     }) {
@@ -198,6 +255,13 @@ fn classify_risk(normalized: &str) -> CommandRisk {
     }
 
     CommandRisk::Medium
+}
+
+fn read_only_requires_approval(normalized: &str) -> bool {
+    let lower = normalized.to_ascii_lowercase();
+    let tokens = shellish_tokens(&lower);
+
+    references_sensitive_workspace_path(&tokens) || references_external_filesystem_path(&tokens)
 }
 
 fn is_read_only_command(normalized: &str) -> bool {
@@ -320,7 +384,7 @@ fn has_command_with_recursive_flag(tokens: &[String], command: &str) -> bool {
                 .iter()
                 .skip(index + 1)
                 .take_while(|next| !is_likely_command_boundary(next))
-                .any(|next| next == "-r" || next == "-R" || next == "--recursive")
+                .any(|next| is_recursive_flag(next))
     })
 }
 
@@ -331,43 +395,177 @@ fn has_rm_rf(tokens: &[String]) -> bool {
                 .iter()
                 .skip(index + 1)
                 .take_while(|next| !is_likely_command_boundary(next))
-                .any(|next| {
-                    next == "-rf"
-                        || next == "-fr"
-                        || next == "-r"
-                        || next == "-R"
-                        || next == "--recursive"
-                })
+                .any(|next| is_recursive_flag(next))
     })
 }
 
 fn has_git_reset_hard(tokens: &[String]) -> bool {
-    tokens
-        .windows(3)
-        .any(|window| window[0] == "git" && window[1] == "reset" && window[2] == "--hard")
+    has_git_subcommand_with_flag(tokens, "reset", |token| token == "--hard")
 }
 
 fn has_git_clean_force(tokens: &[String]) -> bool {
+    has_git_subcommand_with_flag(tokens, "clean", is_force_flag)
+}
+
+fn has_git_push_force(tokens: &[String]) -> bool {
+    has_git_subcommand_with_flag(tokens, "push", is_force_flag)
+}
+
+fn has_git_subcommand_with_flag(
+    tokens: &[String],
+    subcommand: &str,
+    flag: impl Fn(&str) -> bool,
+) -> bool {
     tokens.iter().enumerate().any(|(index, token)| {
         token == "git"
-            && tokens.get(index + 1).is_some_and(|next| next == "clean")
             && tokens
                 .iter()
-                .skip(index + 2)
+                .skip(index + 1)
                 .take_while(|next| !is_likely_command_boundary(next))
-                .any(|next| {
-                    next == "-f"
-                        || next == "-fd"
-                        || next == "-df"
-                        || next == "-xfd"
-                        || next == "-xdf"
-                        || next == "--force"
+                .try_fold(false, |seen_subcommand, next| {
+                    if next == subcommand {
+                        Some(true)
+                    } else if seen_subcommand && flag(next) {
+                        None
+                    } else {
+                        Some(seen_subcommand)
+                    }
                 })
+                .is_none()
     })
 }
 
 fn is_likely_command_boundary(token: &str) -> bool {
     matches!(token, "&&" | "||" | ";")
+}
+
+fn is_recursive_flag(token: &str) -> bool {
+    token == "--recursive"
+        || (token.starts_with('-') && !token.starts_with("--") && token.contains('r'))
+}
+
+fn is_force_flag(token: &str) -> bool {
+    token == "--force"
+        || token == "--force-with-lease"
+        || (token.starts_with('-') && !token.starts_with("--") && token.contains('f'))
+}
+
+fn has_dangerous_shell_builtin(tokens: &[String]) -> bool {
+    tokens
+        .first()
+        .is_some_and(|token| matches!(token.as_str(), "eval" | "exec"))
+}
+
+fn has_device_or_format_command(tokens: &[String]) -> bool {
+    tokens
+        .iter()
+        .any(|token| token == "dd" || token == "mkfs" || token.starts_with("mkfs."))
+}
+
+fn has_fork_bomb(lower: &str) -> bool {
+    let compact = lower.split_whitespace().collect::<String>();
+    compact.contains(":(){") && compact.contains(":|:&")
+}
+
+fn has_docker_system_prune(tokens: &[String]) -> bool {
+    tokens
+        .windows(3)
+        .any(|window| window[0] == "docker" && window[1] == "system" && window[2] == "prune")
+}
+
+fn has_database_drop_command(tokens: &[String]) -> bool {
+    let uses_database_client = tokens.iter().any(|token| {
+        matches!(
+            token.as_str(),
+            "psql" | "mysql" | "mariadb" | "sqlite3" | "duckdb" | "clickhouse-client"
+        )
+    });
+
+    uses_database_client
+        && tokens
+            .windows(2)
+            .any(|window| window[0] == "drop" && window[1] == "database")
+}
+
+fn has_kubectl_delete(tokens: &[String]) -> bool {
+    tokens
+        .windows(2)
+        .any(|window| window[0] == "kubectl" && window[1] == "delete")
+}
+
+fn has_deploy_command(tokens: &[String]) -> bool {
+    tokens.first().is_some_and(|token| token == "deploy")
+        || tokens.windows(3).any(|window| {
+            matches!(
+                (window[0].as_str(), window[1].as_str(), window[2].as_str()),
+                ("npm", "run", "deploy") | ("pnpm", "run", "deploy") | ("yarn", "run", "deploy")
+            )
+        })
+        || tokens.windows(2).any(|window| {
+            matches!(
+                (window[0].as_str(), window[1].as_str()),
+                ("yarn", "deploy") | ("make", "deploy")
+            )
+        })
+}
+
+fn references_sensitive_workspace_path(tokens: &[String]) -> bool {
+    tokens
+        .iter()
+        .flat_map(|token| sensitive_path_candidates(token))
+        .any(|candidate| {
+            path_like_for_sensitive_check(candidate) && path_looks_sensitive(candidate)
+        })
+}
+
+fn references_external_filesystem_path(tokens: &[String]) -> bool {
+    tokens
+        .iter()
+        .flat_map(|token| command_path_candidates(token))
+        .any(|candidate| {
+            candidate == ".."
+                || candidate.starts_with("../")
+                || candidate.starts_with("~/")
+                || candidate == "~"
+                || candidate.starts_with('/')
+                || candidate.contains("/../")
+                || candidate.ends_with("/..")
+        })
+}
+
+fn command_path_candidates(token: &str) -> impl Iterator<Item = &str> {
+    token
+        .split(['=', ','])
+        .map(|candidate| {
+            candidate.trim_matches(|character: char| {
+                matches!(character, '[' | ']' | '{' | '}' | ':' | '\n' | '\r' | '\t')
+            })
+        })
+        .filter(|candidate| !candidate.is_empty() && !candidate.starts_with('-'))
+}
+
+fn sensitive_path_candidates(token: &str) -> impl Iterator<Item = &str> {
+    token
+        .split(['=', ',', ':'])
+        .map(|candidate| {
+            candidate.trim_matches(|character: char| {
+                matches!(character, '[' | ']' | '{' | '}' | '\n' | '\r' | '\t')
+            })
+        })
+        .filter(|candidate| !candidate.is_empty() && !candidate.starts_with('-'))
+}
+
+fn path_like_for_sensitive_check(candidate: &str) -> bool {
+    candidate.starts_with('.')
+        || candidate.starts_with('/')
+        || candidate.starts_with('~')
+        || candidate.contains('/')
+        || candidate.ends_with(".pem")
+        || candidate.ends_with(".key")
+        || candidate.ends_with(".p12")
+        || candidate.ends_with(".pfx")
+        || candidate.ends_with("id_rsa")
+        || candidate.ends_with("id_ed25519")
 }
 
 #[cfg(test)]
@@ -441,11 +639,55 @@ mod tests {
             CommandDecision::Blocked(BlockedCommandReason::RecursivePermissionChange)
         );
         assert_eq!(
+            assess("chown -Rf user:group config").decision,
+            CommandDecision::Blocked(BlockedCommandReason::RecursivePermissionChange)
+        );
+        assert_eq!(
             assess("npm publish").decision,
             CommandDecision::Blocked(BlockedCommandReason::DeploymentOrPublish)
         );
         assert_eq!(
             assess("terraform apply").decision,
+            CommandDecision::Blocked(BlockedCommandReason::DeploymentOrPublish)
+        );
+    }
+
+    #[test]
+    fn blocks_security_policy_critical_commands() {
+        assert_eq!(
+            assess("mkfs.ext4 /dev/sdb1").decision,
+            CommandDecision::Blocked(BlockedCommandReason::DangerousDeviceOrFormat)
+        );
+        assert_eq!(
+            assess("dd if=/dev/zero of=disk.img bs=1M").decision,
+            CommandDecision::Blocked(BlockedCommandReason::DangerousDeviceOrFormat)
+        );
+        assert_eq!(
+            assess("eval \"$UNKNOWN_SCRIPT\"").decision,
+            CommandDecision::Blocked(BlockedCommandReason::DangerousShellBuiltin)
+        );
+        assert!(matches!(
+            assess("npm exec tsc -- --version").decision,
+            CommandDecision::RequiresApproval(_)
+        ));
+        assert_eq!(
+            assess(":(){ :|:& };:").decision,
+            CommandDecision::Blocked(BlockedCommandReason::ForkBomb)
+        );
+        assert_eq!(
+            assess("docker system prune -af").decision,
+            CommandDecision::Blocked(BlockedCommandReason::DestructiveContainer)
+        );
+        assert_eq!(
+            assess("git -C repo push --force").decision,
+            CommandDecision::Blocked(BlockedCommandReason::DestructiveGit)
+        );
+        assert_eq!(
+            assess("psql -c 'DROP DATABASE coddy'").decision,
+            CommandDecision::Blocked(BlockedCommandReason::DatabaseDestruction)
+        );
+        assert_eq!(
+            assess("npm run deploy").decision,
             CommandDecision::Blocked(BlockedCommandReason::DeploymentOrPublish)
         );
     }
@@ -467,6 +709,36 @@ mod tests {
         );
         assert_eq!(
             assess("cargo fmt --check").decision,
+            CommandDecision::AllowReadOnly
+        );
+    }
+
+    #[test]
+    fn requires_approval_for_read_only_commands_that_escape_workspace_or_touch_sensitive_paths() {
+        let sensitive = assess("cat .env");
+        assert_eq!(sensitive.risk, CommandRisk::Critical);
+        let CommandDecision::RequiresApproval(request) = sensitive.decision else {
+            panic!("expected approval request");
+        };
+        assert_eq!(request.risk_level, ToolRiskLevel::Critical);
+        assert_eq!(request.patterns, vec!["cat .env"]);
+
+        let git_object_path = assess("git show HEAD:.env");
+        assert_eq!(git_object_path.risk, CommandRisk::Critical);
+        assert!(matches!(
+            git_object_path.decision,
+            CommandDecision::RequiresApproval(_)
+        ));
+
+        let external = assess("ls /tmp");
+        assert_eq!(external.risk, CommandRisk::High);
+        assert!(matches!(
+            external.decision,
+            CommandDecision::RequiresApproval(_)
+        ));
+
+        assert_eq!(
+            assess("rg 'DROP DATABASE' migrations").decision,
             CommandDecision::AllowReadOnly
         );
     }

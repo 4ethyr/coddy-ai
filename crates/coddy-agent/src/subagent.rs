@@ -9,6 +9,7 @@ pub const SUBAGENT_LIST_TOOL: &str = "subagent.list";
 pub const SUBAGENT_PREPARE_TOOL: &str = "subagent.prepare";
 pub const SUBAGENT_ROUTE_TOOL: &str = "subagent.route";
 pub const SUBAGENT_TEAM_PLAN_TOOL: &str = "subagent.team_plan";
+pub const SUBAGENT_REDUCE_OUTPUTS_TOOL: &str = "subagent.reduce_outputs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubagentMode {

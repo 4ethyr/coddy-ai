@@ -113,6 +113,7 @@ pub struct DefaultChatModelClient {
     openai: OpenAiCompatibleChatModelClient,
     openrouter: OpenAiCompatibleChatModelClient,
     gemini_api: GeminiApiChatModelClient,
+    vertex_gemini: VertexGeminiChatModelClient,
     vertex_anthropic: VertexAnthropicChatModelClient,
     azure_openai: AzureOpenAiChatModelClient,
     unavailable: UnavailableChatModelClient,
@@ -167,6 +168,25 @@ struct HttpGeminiApiTransport {
 }
 
 trait GeminiApiTransport: std::fmt::Debug + Send + Sync {
+    fn generate_content(
+        &self,
+        endpoint: &str,
+        credential: &ModelCredential,
+        body: &Value,
+    ) -> ChatModelResult;
+}
+
+#[derive(Debug, Clone)]
+pub struct VertexGeminiChatModelClient {
+    transport: Arc<dyn VertexGeminiTransport>,
+}
+
+#[derive(Debug, Clone)]
+struct HttpVertexGeminiTransport {
+    timeout: Duration,
+}
+
+trait VertexGeminiTransport: std::fmt::Debug + Send + Sync {
     fn generate_content(
         &self,
         endpoint: &str,
@@ -343,6 +363,7 @@ impl Default for DefaultChatModelClient {
             openai: OpenAiCompatibleChatModelClient::openai(),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
             gemini_api: GeminiApiChatModelClient::default(),
+            vertex_gemini: VertexGeminiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::default(),
             azure_openai: AzureOpenAiChatModelClient::default(),
             unavailable: UnavailableChatModelClient,
@@ -456,6 +477,33 @@ impl HttpGeminiApiTransport {
     }
 }
 
+impl Default for VertexGeminiChatModelClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VertexGeminiChatModelClient {
+    pub fn new() -> Self {
+        Self {
+            transport: Arc::new(HttpVertexGeminiTransport::new()),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_transport(transport: Arc<dyn VertexGeminiTransport>) -> Self {
+        Self { transport }
+    }
+}
+
+impl HttpVertexGeminiTransport {
+    fn new() -> Self {
+        Self {
+            timeout: Duration::from_secs(120),
+        }
+    }
+}
+
 impl Default for VertexAnthropicChatModelClient {
     fn default() -> Self {
         Self::new()
@@ -518,6 +566,13 @@ impl ChatModelClient for DefaultChatModelClient {
             "openrouter" => self.openrouter.complete(request),
             "vertex" if is_vertex_anthropic_model(&request.model.name) => {
                 self.vertex_anthropic.complete(request)
+            }
+            "vertex"
+                if request.model_credential.as_ref().is_some_and(|credential| {
+                    looks_like_google_oauth_token(credential.token.trim())
+                }) =>
+            {
+                self.vertex_gemini.complete(request)
             }
             "vertex" => self.gemini_api.complete(request),
             "azure" => self.azure_openai.complete(request),
@@ -592,6 +647,7 @@ impl ChatModelClient for GeminiApiChatModelClient {
                 model: request.model.name,
             });
         }
+        reject_unsupported_gemini_chat_model(&request.model.name)?;
 
         let credential = request.model_credential.as_ref().ok_or_else(|| {
             ChatModelError::InvalidRequest(
@@ -606,7 +662,7 @@ impl ChatModelClient for GeminiApiChatModelClient {
         }
         if looks_like_google_oauth_token(token) {
             return Err(ChatModelError::InvalidRequest(
-                "Gemini API chat execution requires a Google API key; OAuth/ADC credentials are only wired for Vertex Claude".to_string(),
+                "Gemini API chat execution requires a Google API key; OAuth/ADC credentials must use the Vertex AI runtime route".to_string(),
             ));
         }
 
@@ -615,6 +671,40 @@ impl ChatModelClient for GeminiApiChatModelClient {
             credential.endpoint.as_deref(),
             &request.model.name,
         )?;
+        self.transport
+            .generate_content(&endpoint, credential, &gemini_api_chat_body(&request)?)
+    }
+}
+
+impl ChatModelClient for VertexGeminiChatModelClient {
+    fn complete(&self, request: ChatRequest) -> ChatModelResult {
+        if request.model.provider != "vertex" || is_vertex_anthropic_model(&request.model.name) {
+            return Err(ChatModelError::UnsupportedModel {
+                provider: request.model.provider,
+                model: request.model.name,
+            });
+        }
+        reject_unsupported_gemini_chat_model(&request.model.name)?;
+
+        let credential = request.model_credential.as_ref().ok_or_else(|| {
+            ChatModelError::InvalidRequest(
+                "Vertex Gemini chat execution requires a Google OAuth credential".to_string(),
+            )
+        })?;
+        let token = credential.token.trim();
+        if token.is_empty() {
+            return Err(ChatModelError::InvalidRequest(
+                "Vertex Gemini chat execution requires a non-empty Google OAuth credential"
+                    .to_string(),
+            ));
+        }
+        if !looks_like_google_oauth_token(token) {
+            return Err(ChatModelError::InvalidRequest(
+                "Vertex Gemini chat execution requires Google OAuth, ADC or gcloud credentials; Google API keys use the Gemini API route".to_string(),
+            ));
+        }
+
+        let endpoint = vertex_gemini_generate_content_url(&request.model.name, credential)?;
         self.transport
             .generate_content(&endpoint, credential, &gemini_api_chat_body(&request)?)
     }
@@ -796,6 +886,54 @@ impl GeminiApiTransport for HttpGeminiApiTransport {
                 Err(ChatModelError::ProviderError {
                     provider: "vertex".to_string(),
                     message: gemini_api_provider_error_message(&body, status),
+                    retryable: status == 429 || status >= 500,
+                })
+            }
+            Err(ureq::Error::Transport(error)) => Err(ChatModelError::Transport {
+                provider: "vertex".to_string(),
+                message: error.to_string(),
+                retryable: true,
+            }),
+        }
+    }
+}
+
+impl VertexGeminiTransport for HttpVertexGeminiTransport {
+    fn generate_content(
+        &self,
+        endpoint: &str,
+        credential: &ModelCredential,
+        body: &Value,
+    ) -> ChatModelResult {
+        let body = serde_json::to_string(body).map_err(|error| {
+            ChatModelError::InvalidRequest(format!(
+                "failed to encode Vertex Gemini request: {error}"
+            ))
+        })?;
+        let authorization = format!("Bearer {}", credential.token.trim());
+        let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
+        let mut request = agent
+            .post(endpoint)
+            .set("Accept", "application/json")
+            .set("Authorization", &authorization)
+            .set("Content-Type", "application/json; charset=utf-8");
+        if let Some(quota_project_id) = vertex_quota_project_id(credential) {
+            request = request.set("x-goog-user-project", quota_project_id);
+        }
+        let response = request.send_string(&body);
+
+        match response {
+            Ok(response) => {
+                let body = response
+                    .into_string()
+                    .map_err(vertex_gemini_transport_error)?;
+                parse_gemini_api_response(&body)
+            }
+            Err(ureq::Error::Status(status, response)) => {
+                let body = response.into_string().unwrap_or_default();
+                Err(ChatModelError::ProviderError {
+                    provider: "vertex".to_string(),
+                    message: vertex_gemini_provider_error_message(&body, status),
                     retryable: status == 429 || status >= 500,
                 })
             }
@@ -1293,6 +1431,22 @@ fn validate_gemini_model_name(model: &str) -> Result<(), ChatModelError> {
     Ok(())
 }
 
+fn reject_unsupported_gemini_chat_model(model: &str) -> Result<(), ChatModelError> {
+    if is_gemini_live_api_model(model) {
+        return Err(ChatModelError::InvalidRequest(format!(
+            "The selected Gemini model `{model}` does not support the standard text chat runtime. Reload models and choose a Gemini model that supports generateContent, or use a Live API/audio runtime when Coddy supports it."
+        )));
+    }
+    Ok(())
+}
+
+fn is_gemini_live_api_model(model: &str) -> bool {
+    model
+        .trim()
+        .split(['-', '_', '/'])
+        .any(|segment| segment.eq_ignore_ascii_case("live"))
+}
+
 fn looks_like_google_oauth_token(token: &str) -> bool {
     token.starts_with("ya29.") || token.to_ascii_lowercase().starts_with("bearer ")
 }
@@ -1494,6 +1648,42 @@ fn vertex_anthropic_raw_predict_url(
     ))
 }
 
+fn vertex_gemini_generate_content_url(
+    model: &str,
+    credential: &ModelCredential,
+) -> Result<String, ChatModelError> {
+    let project_id = credential
+        .metadata
+        .get("project_id")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ChatModelError::InvalidRequest(
+                "Vertex Gemini chat execution requires metadata.project_id from gcloud config"
+                    .to_string(),
+            )
+        })?;
+    validate_vertex_path_segment("project id", project_id)?;
+
+    let region = credential
+        .metadata
+        .get("region")
+        .map(String::as_str)
+        .or_else(|| vertex_region_from_endpoint(credential.endpoint.as_deref()))
+        .unwrap_or("global")
+        .trim();
+    validate_vertex_path_segment("region", region)?;
+
+    let model = model.trim().strip_prefix("models/").unwrap_or(model.trim());
+    validate_vertex_path_segment("model", model)?;
+
+    let base_url = vertex_base_url(region, credential.endpoint.as_deref())?;
+    Ok(format!(
+        "{base_url}/v1/projects/{project_id}/locations/{region}/publishers/google/models/{model}:generateContent"
+    ))
+}
+
 fn vertex_base_url(
     region: &str,
     endpoint_override: Option<&str>,
@@ -1679,7 +1869,7 @@ fn gemini_api_transport_error(error: std::io::Error) -> ChatModelError {
 }
 
 fn gemini_api_provider_error_message(body: &str, status: u16) -> String {
-    serde_json::from_str::<Value>(body)
+    let message = serde_json::from_str::<Value>(body)
         .ok()
         .and_then(|value| {
             value["error"]["message"]
@@ -1687,7 +1877,42 @@ fn gemini_api_provider_error_message(body: &str, status: u16) -> String {
                 .or_else(|| value["error"].as_str())
                 .map(ToOwned::to_owned)
         })
-        .unwrap_or_else(|| format!("Gemini API returned HTTP {status}"))
+        .unwrap_or_else(|| format!("Gemini API returned HTTP {status}"));
+    model_unavailable_hint(message, status)
+}
+
+fn vertex_gemini_transport_error(error: std::io::Error) -> ChatModelError {
+    ChatModelError::Transport {
+        provider: "vertex".to_string(),
+        message: error.to_string(),
+        retryable: true,
+    }
+}
+
+fn vertex_gemini_provider_error_message(body: &str, status: u16) -> String {
+    let message = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value["error"]["message"]
+                .as_str()
+                .or_else(|| value["error"].as_str())
+                .map(ToOwned::to_owned)
+        })
+        .unwrap_or_else(|| format!("Vertex Gemini returned HTTP {status}"));
+    model_unavailable_hint(message, status)
+}
+
+fn model_unavailable_hint(message: String, status: u16) -> String {
+    if status == 404
+        || message.contains("is not found")
+        || message.contains("not supported for generateContent")
+    {
+        format!(
+            "{message}. The selected model may be unavailable in this region, retired, or incompatible with the standard generateContent chat method. Reload models and choose a model that advertises generateContent or streamGenerateContent."
+        )
+    } else {
+        message
+    }
 }
 
 fn vertex_anthropic_transport_error(error: std::io::Error) -> ChatModelError {
@@ -2168,6 +2393,30 @@ mod tests {
     }
 
     #[derive(Debug)]
+    struct StaticVertexGeminiTransport {
+        endpoint: String,
+        token: String,
+        body: Value,
+        response: ChatModelResult,
+    }
+
+    impl VertexGeminiTransport for StaticVertexGeminiTransport {
+        fn generate_content(
+            &self,
+            endpoint: &str,
+            credential: &ModelCredential,
+            body: &Value,
+        ) -> ChatModelResult {
+            assert_eq!(endpoint, self.endpoint);
+            assert_eq!(credential.token, self.token);
+            assert_eq!(body, &self.body);
+            assert!(!body.to_string().contains(&self.token));
+            assert!(!endpoint.contains(&self.token));
+            self.response.clone()
+        }
+    }
+
+    #[derive(Debug)]
     struct StaticVertexAnthropicTransport {
         endpoint: String,
         token: String,
@@ -2368,6 +2617,7 @@ mod tests {
             ),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
             gemini_api: GeminiApiChatModelClient::default(),
+            vertex_gemini: VertexGeminiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::default(),
             azure_openai: AzureOpenAiChatModelClient::default(),
             unavailable: UnavailableChatModelClient,
@@ -2495,6 +2745,7 @@ mod tests {
             openai: OpenAiCompatibleChatModelClient::openai(),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
             gemini_api: GeminiApiChatModelClient::default(),
+            vertex_gemini: VertexGeminiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::default(),
             azure_openai: AzureOpenAiChatModelClient::with_transport(Arc::new(
                 StaticAzureOpenAiTransport {
@@ -2672,6 +2923,7 @@ mod tests {
                     response: Ok(ChatResponse::from_text("hi from gemini")),
                 }),
             ),
+            vertex_gemini: VertexGeminiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::default(),
             azure_openai: AzureOpenAiChatModelClient::default(),
             unavailable: UnavailableChatModelClient,
@@ -2699,6 +2951,111 @@ mod tests {
     }
 
     #[test]
+    fn default_client_routes_vertex_gemini_oauth_requests_to_vertex_ai_adapter() {
+        let expected_body = serde_json::json!({
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        { "text": "hello" }
+                    ]
+                }
+            ],
+            "systemInstruction": {
+                "parts": [
+                    { "text": "system" }
+                ]
+            }
+        });
+        let client = DefaultChatModelClient {
+            ollama: OllamaChatModelClient::default(),
+            openai: OpenAiCompatibleChatModelClient::openai(),
+            openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            gemini_api: GeminiApiChatModelClient::default(),
+            vertex_gemini: VertexGeminiChatModelClient::with_transport(Arc::new(
+                StaticVertexGeminiTransport {
+                    endpoint: "https://us-central1-aiplatform.googleapis.com/v1/projects/coddy-dev/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent".to_string(),
+                    token: "ya29.vertex-token".to_string(),
+                    body: expected_body,
+                    response: Ok(ChatResponse::from_text("hi from vertex gemini")),
+                },
+            )),
+            vertex_anthropic: VertexAnthropicChatModelClient::default(),
+            azure_openai: AzureOpenAiChatModelClient::default(),
+            unavailable: UnavailableChatModelClient,
+        };
+        let request = ChatRequest::new(
+            ModelRef {
+                provider: "vertex".to_string(),
+                name: "gemini-2.5-flash".to_string(),
+            },
+            vec![ChatMessage::system("system"), ChatMessage::user("hello")],
+        )
+        .expect("request")
+        .with_model_credential(Some(ModelCredential {
+            provider: "vertex".to_string(),
+            token: "ya29.vertex-token".to_string(),
+            endpoint: Some("us-central1".to_string()),
+            metadata: [("project_id".to_string(), "coddy-dev".to_string())]
+                .into_iter()
+                .collect(),
+        }))
+        .expect("credential");
+
+        assert_eq!(
+            client.complete(request),
+            Ok(ChatResponse::from_text("hi from vertex gemini"))
+        );
+    }
+
+    #[test]
+    fn gemini_live_api_model_returns_friendly_chat_runtime_error() {
+        let client = GeminiApiChatModelClient::with_transport(
+            "https://generativelanguage.googleapis.com/v1beta",
+            Arc::new(StaticGeminiApiTransport {
+                endpoint: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-live-preview:generateContent".to_string(),
+                token: "AIza-gemini-key".to_string(),
+                body: serde_json::json!({}),
+                response: Ok(ChatResponse::from_text("unexpected")),
+            }),
+        );
+        let request = ChatRequest::new(
+            ModelRef {
+                provider: "vertex".to_string(),
+                name: "gemini-3.1-flash-live-preview".to_string(),
+            },
+            vec![ChatMessage::user("hello")],
+        )
+        .expect("request")
+        .with_model_credential(Some(ModelCredential {
+            provider: "vertex".to_string(),
+            token: "AIza-gemini-key".to_string(),
+            endpoint: None,
+            metadata: Default::default(),
+        }))
+        .expect("credential");
+
+        let error = client.complete(request).expect_err("live model is gated");
+
+        assert_eq!(error.code(), "invalid_request");
+        assert!(error
+            .to_string()
+            .contains("does not support the standard text chat runtime"));
+    }
+
+    #[test]
+    fn gemini_provider_404_message_adds_reload_and_method_hint() {
+        let message = gemini_api_provider_error_message(
+            r#"{"error":{"message":"models/gemini-live is not found for API version v1beta, or is not supported for generateContent"}}"#,
+            404,
+        );
+
+        assert!(message.contains("Reload models"));
+        assert!(message.contains("generateContent"));
+        assert!(message.contains("streamGenerateContent"));
+    }
+
+    #[test]
     fn gemini_api_rejects_oauth_credentials() {
         let client = GeminiApiChatModelClient::default();
         let request = ChatRequest::new(
@@ -2720,6 +3077,7 @@ mod tests {
         let error = client.complete(request).expect_err("api key required");
 
         assert_eq!(error.code(), "invalid_request");
+        assert!(error.to_string().contains("Vertex AI runtime route"));
     }
 
     #[test]
@@ -2870,6 +3228,7 @@ mod tests {
             openai: OpenAiCompatibleChatModelClient::openai(),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
             gemini_api: GeminiApiChatModelClient::default(),
+            vertex_gemini: VertexGeminiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::with_transport(Arc::new(
                 StaticVertexAnthropicTransport {
                     endpoint: "https://us-east5-aiplatform.googleapis.com/v1/projects/coddy-dev/locations/us-east5/publishers/anthropic/models/claude-sonnet-4-5@20250929:rawPredict".to_string(),

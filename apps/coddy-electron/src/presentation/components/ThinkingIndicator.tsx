@@ -5,11 +5,13 @@ export type ThinkingAnimation = 'pulse' | 'scan' | 'orbit'
 interface Props {
   animation?: ThinkingAnimation
   label?: string
+  showCancelHint?: boolean
 }
 
 export function ThinkingIndicator({
   animation = 'scan',
   label = 'coddy_thinking',
+  showCancelHint = true,
 }: Props) {
   const motionClass =
     animation === 'orbit'
@@ -27,19 +29,20 @@ export function ThinkingIndicator({
         <div className="mb-3 font-mono text-[10px] uppercase tracking-[0.22em] text-primary/80">
           {label}
         </div>
-        <div className="flex gap-2">
-          {[0, 1, 2].map((index) => (
-            <span
-              key={index}
-              className="h-2 flex-1 rounded-full bg-primary/20"
-            >
-              <span
-                className={`block h-full rounded-full bg-primary/70 ${motionClass}`}
-                style={{ animationDelay: `${index * 120}ms` }}
-              />
-            </span>
-          ))}
+        <div className="h-2 overflow-hidden rounded-full bg-primary/20">
+          <span
+            className={`block h-full rounded-full bg-primary/70 ${
+              animation === 'pulse'
+                ? 'w-full animate-pulse'
+                : 'w-1/3 thinking-loading-bar'
+            }`}
+          />
         </div>
+        {showCancelHint && (
+          <p className="mt-3 font-mono text-[11px] text-on-surface-variant/70">
+            Pressione (Esc) para parar.
+          </p>
+        )}
       </div>
     </div>
   )

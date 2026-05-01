@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReplSession } from '@/domain'
 import { FloatingTerminal } from '@/presentation/views/FloatingTerminal/FloatingTerminal'
@@ -84,6 +84,9 @@ describe('FloatingTerminal', () => {
     expect(screen.getByTestId('floating-terminal-canvas')).toHaveClass(
       'terminal-canvas',
     )
+    expect(screen.getByTestId('floating-terminal-canvas')).toHaveClass(
+      'select-text',
+    )
   })
 
   it('renders subagent lifecycle readiness in the activity area', () => {
@@ -136,5 +139,122 @@ describe('FloatingTerminal', () => {
 
     expect(sessionContext.replyPermission).toHaveBeenCalledWith('perm-1', 'Once')
     expect(screen.getByPlaceholderText('Tool approval required')).toBeDisabled()
+  })
+
+  it('offers copy selection from the right-click/two-finger context menu', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, {
+      clipboard: { writeText },
+    })
+    const selection = {
+      toString: () => 'selected snippet',
+      rangeCount: 1,
+      anchorNode: null,
+    }
+    vi.spyOn(window, 'getSelection').mockReturnValue(selection as unknown as Selection)
+
+    sessionContext.session = {
+      ...sessionContext.session,
+      messages: [
+        {
+          id: 'assistant-1',
+          role: 'assistant',
+          text: 'selected snippet with more text',
+        },
+      ],
+    }
+
+    render(<FloatingTerminal />)
+
+    fireEvent.contextMenu(screen.getByText(/selected snippet with more text/i), {
+      clientX: 80,
+      clientY: 96,
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Copy selection' }))
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith('selected snippet')
+    })
+  })
+
+  it('copies selected transcript text with Ctrl+Shift+C', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, {
+      clipboard: { writeText },
+    })
+    const selection = {
+      toString: () => 'shortcut selection',
+      rangeCount: 1,
+      anchorNode: null,
+    }
+    vi.spyOn(window, 'getSelection').mockReturnValue(selection as unknown as Selection)
+
+    sessionContext.session = {
+      ...sessionContext.session,
+      messages: [
+        {
+          id: 'assistant-2',
+          role: 'assistant',
+          text: 'shortcut selection text',
+        },
+      ],
+    }
+
+    render(<FloatingTerminal />)
+
+    fireEvent.keyDown(window, {
+      key: 'c',
+      code: 'KeyC',
+      ctrlKey: true,
+      shiftKey: true,
+    })
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith('shortcut selection')
+    })
+  })
+
+  it('shows the Escape cancel hint while thinking', () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      status: 'Thinking',
+      active_run: 'run-1',
+    }
+
+    render(<FloatingTerminal />)
+
+    expect(screen.getByText('Pressione (Esc) para parar.')).toBeInTheDocument()
+  })
+
+  it('shows the Escape cancel hint while streaming', () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      status: 'Streaming',
+      active_run: 'run-1',
+      streaming_text: 'Partial response',
+    }
+
+    render(<FloatingTerminal />)
+
+    expect(screen.getByText('Pressione (Esc) para parar.')).toBeInTheDocument()
+  })
+
+  it('renders streaming responses with markdown formatting', () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      status: 'Streaming',
+      active_run: 'run-1',
+      streaming_text:
+        '### Principais funcionalidades:\n\n1. **Deteccao:** encontra problemas.\n\nUse *pipeline* de CI.',
+    }
+
+    const { container } = render(<FloatingTerminal />)
+
+    expect(screen.getByText('Principais funcionalidades:')).toBeInTheDocument()
+    expect(screen.getByText('Deteccao:')).toBeInTheDocument()
+    expect(screen.getByText('pipeline')).toBeInTheDocument()
+    expect(container.textContent).not.toContain('###')
+    expect(container.textContent).not.toContain('**Deteccao:**')
+    expect(container.textContent).not.toContain('*pipeline*')
   })
 })

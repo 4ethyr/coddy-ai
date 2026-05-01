@@ -112,7 +112,7 @@ fn coddy_data_dir() -> Result<PathBuf> {
 }
 
 fn socket_path_from_runtime_dir(runtime_dir: PathBuf) -> Result<PathBuf> {
-    let socket_dir = runtime_dir.join("visionclip");
+    let socket_dir = runtime_dir.join("coddy");
     fs::create_dir_all(&socket_dir)
         .with_context(|| format!("failed to create socket dir {}", socket_dir.display()))?;
     Ok(socket_dir.join("daemon.sock"))
@@ -164,15 +164,12 @@ mod tests {
     }
 
     #[test]
-    fn socket_path_uses_visionclip_daemon_location() {
+    fn socket_path_uses_coddy_daemon_location() {
         let runtime_dir = unique_runtime_dir();
         let socket_path = socket_path_from_runtime_dir(runtime_dir.clone()).expect("socket path");
 
-        assert_eq!(
-            socket_path,
-            runtime_dir.join("visionclip").join("daemon.sock")
-        );
-        assert!(runtime_dir.join("visionclip").exists());
+        assert_eq!(socket_path, runtime_dir.join("coddy").join("daemon.sock"));
+        assert!(runtime_dir.join("coddy").exists());
 
         let _ = fs::remove_dir_all(runtime_dir);
     }

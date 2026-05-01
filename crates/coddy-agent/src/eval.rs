@@ -235,7 +235,7 @@ pub struct PromptBatteryReport {
     pub failures: Vec<PromptBatteryFailure>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MultiagentEvalRunner {
     registry: SubagentRegistry,
 }
@@ -513,14 +513,6 @@ impl MultiagentEvalCase {
     pub fn validate_execution_reducer(mut self) -> Self {
         self.validate_execution_reducer = true;
         self
-    }
-}
-
-impl Default for MultiagentEvalRunner {
-    fn default() -> Self {
-        Self {
-            registry: SubagentRegistry::default(),
-        }
     }
 }
 

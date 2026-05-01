@@ -6,6 +6,7 @@ import type {
   ModelProviderListRequest,
   ModelProviderListResult,
   ModelRole,
+  ModelSelectionOptions,
   MultiagentEvalRequest,
   MultiagentEvalResult,
   PromptBatteryResult,
@@ -81,7 +82,11 @@ export interface ReplIpcClient {
   stopSpeaking(): Promise<void>
 
   /** Select a model for a specific REPL role */
-  selectModel(model: ModelRef, role: ModelRole): Promise<ReplCommandResult>
+  selectModel(
+    model: ModelRef,
+    role: ModelRole,
+    options?: ModelSelectionOptions,
+  ): Promise<ReplCommandResult>
 
   /** Ask the backend to open/switch the REPL UI mode */
   openUi(mode: ReplMode): Promise<ReplCommandResult>
