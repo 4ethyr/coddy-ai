@@ -30,6 +30,7 @@ import {
   persistDesktopTab,
   resolveUiSlashCommand,
 } from '@/presentation/commands/slashCommands'
+import { captureVoiceWithOptionalSpeech } from '@/presentation/services/voiceSpeech'
 
 export function DesktopApp() {
   const {
@@ -219,7 +220,7 @@ export function DesktopApp() {
   )
 
   const handleCaptureVoice = useCallback(
-    () => captureVoice({ speakResponse: speakVoiceResponses }),
+    () => captureVoiceWithOptionalSpeech(captureVoice, speakVoiceResponses),
     [captureVoice, speakVoiceResponses],
   )
 

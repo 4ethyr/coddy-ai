@@ -59,6 +59,8 @@ describe('FloatingTerminal', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     window.localStorage.clear()
+    Reflect.deleteProperty(window, 'speechSynthesis')
+    Reflect.deleteProperty(window, 'SpeechSynthesisUtterance')
     sessionContext.session = {
       ...sessionContext.session,
       status: 'Idle',
@@ -427,6 +429,17 @@ describe('FloatingTerminal', () => {
 
   it('persists /speak preference and passes it to voice capture', async () => {
     sessionContext.captureVoice.mockResolvedValue({ text: 'voice command' })
+    const speak = vi.fn()
+    Object.defineProperty(window, 'speechSynthesis', {
+      configurable: true,
+      value: { cancel: vi.fn(), speak },
+    })
+    Object.defineProperty(window, 'SpeechSynthesisUtterance', {
+      configurable: true,
+      value: class {
+        constructor(public text: string) {}
+      },
+    })
     render(<FloatingTerminal />)
 
     await userEvent.type(
@@ -443,5 +456,9 @@ describe('FloatingTerminal', () => {
     expect(sessionContext.captureVoice).toHaveBeenCalledWith({
       speakResponse: true,
     })
+    expect(speak).toHaveBeenCalledOnce()
+    expect(speak).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'voice command' }),
+    )
   })
 })

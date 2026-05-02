@@ -29,6 +29,7 @@ import {
   persistDesktopTab,
   resolveUiSlashCommand,
 } from '@/presentation/commands/slashCommands'
+import { captureVoiceWithOptionalSpeech } from '@/presentation/services/voiceSpeech'
 
 export function FloatingTerminal() {
   const {
@@ -197,7 +198,7 @@ export function FloatingTerminal() {
   )
 
   const handleCaptureVoice = useCallback(
-    () => captureVoice({ speakResponse: speakVoiceResponses }),
+    () => captureVoiceWithOptionalSpeech(captureVoice, speakVoiceResponses),
     [captureVoice, speakVoiceResponses],
   )
 

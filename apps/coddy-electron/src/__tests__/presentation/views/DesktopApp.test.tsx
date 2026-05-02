@@ -59,6 +59,8 @@ describe('DesktopApp', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     window.localStorage.clear()
+    Reflect.deleteProperty(window, 'speechSynthesis')
+    Reflect.deleteProperty(window, 'SpeechSynthesisUtterance')
     sessionContext.session = {
       ...sessionContext.session,
       status: 'Idle',
@@ -199,6 +201,36 @@ describe('DesktopApp', () => {
     )
     expect(window.localStorage.getItem('coddy:settings')).toContain(
       '"speakVoiceResponses":true',
+    )
+  })
+
+  it('uses browser speech fallback for spoken desktop voice responses', async () => {
+    sessionContext.captureVoice.mockResolvedValue({ text: 'desktop voice answer' })
+    const speak = vi.fn()
+    Object.defineProperty(window, 'speechSynthesis', {
+      configurable: true,
+      value: { cancel: vi.fn(), speak },
+    })
+    Object.defineProperty(window, 'SpeechSynthesisUtterance', {
+      configurable: true,
+      value: class {
+        constructor(public text: string) {}
+      },
+    })
+    render(<DesktopApp />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open config' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Spoken responses off' }),
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Voice input' }))
+
+    expect(sessionContext.captureVoice).toHaveBeenCalledWith({
+      speakResponse: true,
+    })
+    expect(speak).toHaveBeenCalledOnce()
+    expect(speak).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'desktop voice answer' }),
     )
   })
 
