@@ -4,11 +4,31 @@ Data da revisao: 2026-05-02.
 
 ## Resumo
 
-O Coddy ja possui uma base forte para cenarios de codificacao: loop agentic
-com tools, runtime Rust, frontend Electron, workspace, historico, subagents,
-prompt battery, guardrails de shell e fluxo de approval. A principal diferenca
-em relacao a agentes top-tier esta menos no modelo isolado e mais no harness:
-contexto, plano, ferramentas, permissoes, validacao e registro de evidencias.
+O Coddy ja possui uma base forte para cenarios de codificacao assistida: loop
+agentic com tools, runtime Rust, frontend Electron, workspace, historico,
+subagents deterministas, prompt battery, guardrails de shell, fluxo de approval
+e evals locais. A principal diferenca em relacao a agentes top-tier esta menos
+no modelo isolado e mais no harness: contexto, plano, ferramentas, permissoes,
+validacao, isolamento de execucao, memoria, MCP e registro de evidencias.
+
+Conclusao atual: Coddy esta apto para ajudar na analise de codebases, revisoes,
+planejamento e tarefas de implementacao com revisao humana. Ainda nao deve ser
+tratado como agente autonomo de merge/release em producao, porque execucao
+isolada de subagents, MCP runtime, compaction adaptativa e PR automation ainda
+estao incompletos.
+
+## Scorecard atual
+
+| Dimensao | Score | Avaliacao |
+| --- | ---: | --- |
+| Analise local de codebase | 8.0/10 | Workspace, filesystem/search tools, historico e comandos `/workspace`, `/tools`, `/status` e `/capabilities` estao integrados. |
+| Fluxo de codificacao | 8.0/10 | `/code`, `/plan`, `/review` e `/test` reforcam explorar, planejar, editar incrementalmente, validar e reportar evidencias. |
+| Tools e seguranca | 8.0/10 | Registry, risk level, permission primitives, shell guard, redacao de secrets e guardrails de comandos estao presentes. |
+| Subagents | 7.0/10 | Registro, roteamento, preparo, team plan e reducer contracts sao testados; falta runtime isolado executavel por subagent. |
+| Pesquisa e contexto externo | 6.5/10 | O produto ainda depende mais de contexto local/modelo do que de conectores MCP e web/documentacao live integrados ao runtime. |
+| Evals e MLOps | 8.0/10 | Multiagent eval, quality eval e prompt battery existem com JSON e comparacao baseline; falta matriz continua multi-provider. |
+| Autonomia de producao | 6.5/10 | Bom para assistencia supervisionada; ainda falta worker isolado, branch/PR automation e politicas de rede/MCP maduras. |
+| Qualidade geral do coding agent | 7.6/10 | Forte base local, com lacunas claras e mensuraveis para chegar ao nivel de agentes cloud/CLI top-tier. |
 
 Nesta rodada foram aplicadas melhorias incrementais para aproximar o Coddy de
 um harness de coding agent mais previsivel:
@@ -28,6 +48,23 @@ um harness de coding agent mais previsivel:
 - Bateria live com OpenRouter/DeepSeek V4 Flash validada sem expor a chave:
   o score subiu de 86 para 94 e a taxa de erro de provider caiu de 14% para 6%
   em amostra de 50 prompts.
+- README atualizado para refletir o estado real de readiness, comandos slash,
+  validacoes, limitacoes conhecidas e fluxos de workspace/historico.
+
+## Metodo de analise
+
+A avaliacao combinou:
+
+- leitura da arquitetura local e dos docs `.agent/*`;
+- revisao dos comandos CLI e slash commands reais;
+- resultados das suites Rust/TypeScript/Electron ja executadas nesta branch;
+- prompt battery live segura contra OpenRouter/DeepSeek V4 Flash;
+- comparacao com referencias oficiais e benchmarks publicos de agentes de
+  codificacao.
+
+As comparacoes abaixo sao inferencias de engenharia a partir das fontes
+oficiais listadas no fim deste documento. Elas nao afirmam que Coddy possui a
+mesma performance dos modelos citados; medem o harness do produto e seus gaps.
 
 ## Comparacao com agentes e modelos top-tier
 
@@ -35,18 +72,18 @@ um harness de coding agent mais previsivel:
 
 Pontos fortes observados:
 
-- Agent loop explicito com prompt, tools, observacoes e novas inferencias.
-- Uso de instrucoes por projeto e contexto de ambiente.
-- Tool schema para shell, plano, web e MCP.
-- Modos de approval/sandbox para controlar leitura, escrita e execucao.
-- Modelos Codex atuais sao otimizados para tarefas agentic coding longas.
+- Agent loop explicito: prompt, chamada de tool, observacao e nova inferencia.
+- Instrucoes por projeto e contexto de ambiente influenciam execucao.
+- Ferramentas estruturadas, inclusive shell, plano, web e MCP.
+- Controles de sandbox/approval reduzem risco em escrita e execucao.
+- Modelos Codex atuais sao ajustados para tarefas longas de agentic coding.
 
 Implicacao para Coddy:
 
 - Manter o loop Coddy como harness independente do modelo.
 - Fortalecer instrucoes do sistema e workflows para reduzir variancia entre
   providers.
-- Evoluir MCP e permissao por tool, sem depender de prompt apenas.
+- Evoluir MCP, permissoes por tool e compaction, sem depender apenas de prompt.
 
 ### Claude Code / Claude Opus e Sonnet
 
@@ -54,9 +91,10 @@ Pontos fortes observados:
 
 - Workflow recomendado: explorar, planejar, implementar, validar e commitar.
 - Forte enfase em dar ao agente uma forma de verificar o proprio trabalho.
-- Gestao agressiva de contexto, memorias, subagents, hooks e permissoes.
-- Claude Code usa checkpoints, subagents e automacao de sessoes como parte do
-  fluxo de engenharia.
+- Gestao explicita de contexto, memoria, subagents, hooks e permissoes.
+- Subagents especializados podem ter contexto, prompts, tools e permissoes
+  proprias.
+- Checkpoints, hooks e automacao de sessoes apoiam fluxos reais de engenharia.
 
 Implicacao para Coddy:
 
@@ -70,11 +108,13 @@ Implicacao para Coddy:
 
 Pontos fortes observados:
 
-- CLI open source com loop ReAct.
+- CLI open source com loop agentic/ReAct.
 - Built-in tools para filesystem, shell, grep, web e MCP.
 - Grande janela de contexto em modelos Gemini 3 Pro.
 - Integracao com Code Assist e comandos como `/memory`, `/stats`, `/tools` e
   `/mcp`.
+- Sistema de extensoes empacota comandos customizados, servidores MCP e contexto
+  reutilizavel.
 
 Implicacao para Coddy:
 
@@ -92,6 +132,8 @@ Pontos fortes observados:
 - Possui protecoes integradas: CodeQL, secret scanning, dependency scanning,
   branches restritas e revisao humana.
 - Pode ser customizado com instrucoes, MCP, custom agents, hooks e skills.
+- O fluxo cloud-agent combina investigacao do repo, alteracao em branch propria,
+  execucao de testes/linters e abertura de PR para revisao humana.
 
 Implicacao para Coddy:
 
@@ -99,16 +141,79 @@ Implicacao para Coddy:
 - Associar tarefas de codificacao a validacoes e resultados rastreaveis.
 - Continuar tratando secrets, rede e shell como superficies sensiveis.
 
+### Benchmarks publicos: SWE-bench Verified e Terminal-Bench
+
+Pontos fortes observados:
+
+- SWE-bench Verified mede resolucao de issues reais de repositorios Python com
+  500 problemas revisados por humanos, sendo uma referencia util para patches
+  reais.
+- Terminal-Bench mede agentes em ambientes de terminal, incluindo uso de shell,
+  arquivos, instalacao e validacao sob restricoes.
+- Ambos reforcam que bons resultados dependem do sistema completo: modelo,
+  contexto, ferramenta, isolamento, tempo, feedback de testes e politica de
+  execucao.
+
+Implicacao para Coddy:
+
+- Criar uma matriz interna parecida, com tarefas pequenas de bug fix, refactor,
+  frontend visual, seguranca, docs e testes.
+- Medir sucesso por evidencia objetiva: patch correto, checks passados, secrets
+  preservados, uso correto de tools e qualidade da resposta final.
+- Separar falhas de modelo, falhas de provider, falhas de tool e falhas de
+  planejamento para melhorar o harness sem mascarar problemas.
+
 ## Lacunas atuais prioritarias
 
-1. Status/checklist visual do workflow de codificacao.
-2. Export de relatorio de sessao com arquivos alterados, tools, checks e erros.
-3. Context budget por run, incluindo resumo de tool outputs grandes.
-4. MCP adapter com permission bridge e catalogo unificado de tools.
-5. Evals especificos para tarefas reais de patch: bug fix, refactor, test
+1. Runtime isolado executavel para subagents com timeout, tools limitadas,
+   contexto proprio e reducer final.
+2. Status/checklist visual do workflow de codificacao no Desktop e
+   FloatingTerminal.
+3. Export de relatorio de sessao com arquivos alterados, tools, checks e erros.
+4. Context budget por run, incluindo resumo de tool outputs grandes e ranking
+   de relevancia.
+5. MCP adapter com permission bridge e catalogo unificado de tools.
+6. Evals especificos para tarefas reais de patch: bug fix, refactor, test
    writing, security fix e frontend visual validation.
-6. Memoria persistente segura para convencoes do projeto e comandos de teste.
-7. Melhor separacao entre plan-only, code, review e validation no runtime.
+7. Memoria persistente segura para convencoes do projeto e comandos de teste.
+8. Melhor separacao entre plan-only, code, review e validation no runtime.
+9. Matriz live multi-provider com OpenRouter, OpenAI-compatible, Ollama, Gemini
+   API, Azure e Vertex, sempre sem expor credenciais.
+10. Worker local para branch/commit/PR assistido com auditoria e rollback claro.
+
+## Recomendacoes objetivas
+
+### P0: Confiabilidade do harness de coding
+
+- Transformar `/code` em estado de runtime observavel: `Inspecting`, `Planning`,
+  `Editing`, `Validating`, `Summarizing`, `Blocked`, `Cancelled`.
+- Persistir evidencias de cada run: arquivos lidos, tools chamadas, checks
+  executados, status e erros normalizados.
+- Adicionar teste de regressao para prompts que pedem analise de codebase e
+  garantem que tools registradas usam nomes locais validos.
+
+### P1: Subagents reais
+
+- Criar sessao isolada por subagent com prompt, contexto, permissao e toolset
+  proprios.
+- Exigir output estruturado por role e consolidar por reducer deterministico.
+- Adicionar eval que falha se subagent read-only tentar escrever ou executar
+  shell mutavel.
+
+### P1: Contexto e pesquisa
+
+- Adicionar resumo automatico de tool outputs longos.
+- Criar ranking simples por workspace: manifestos, docs, arquivos recentemente
+  tocados, testes relacionados e resultados de busca.
+- Integrar MCP como fonte externa permissionada, preservando redacao de secrets
+  e politica de rede.
+
+### P2: Benchmark continuo
+
+- Manter baseline local de prompt battery e multiagent eval.
+- Rodar bateria pequena em PR e bateria maior sob demanda.
+- Registrar `modelErrorRate`, `toolErrorRate`, `validationPassRate`,
+  `secretLeakCount`, `cancelRecoveryRate` e `averageRunLatencyMs`.
 
 ## Estado validado em 2026-05-02
 
@@ -159,7 +264,10 @@ de observacoes.
 - OpenAI, Codex agent loop: https://openai.com/index/unrolling-the-codex-agent-loop/
 - OpenAI, GPT-5.3-Codex model: https://developers.openai.com/api/docs/models/gpt-5.3-codex
 - Anthropic, Claude Code best practices: https://code.claude.com/docs/en/best-practices
+- Anthropic, Claude Code subagents: https://docs.anthropic.com/en/docs/claude-code/sub-agents
 - Anthropic, Claude Opus 4.5: https://www.anthropic.com/news/claude-opus-4-5
 - Google, Gemini CLI: https://cloud.google.com/gemini/docs/codeassist/gemini-cli
+- Google, Gemini CLI extensions: https://google-gemini.github.io/gemini-cli/docs/extensions/
 - Google, Gemini models: https://ai.google.dev/models/gemini
 - GitHub, Copilot coding agent: https://docs.github.com/en/copilot/concepts/agents/cloud-agent/about-cloud-agent
+- GitHub, assigning tasks to Copilot: https://docs.github.com/en/copilot/using-github-copilot/coding-agent/about-assigning-tasks-to-copilot
