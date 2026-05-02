@@ -1,10 +1,11 @@
 use coddy_agent::{
-    model_tool_call_may_run as agent_model_tool_call_may_run, AgentRunAction, AgentRunStopReason,
-    AgentRunSummary, AgentRunV2, AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError,
-    ChatModelResult, ChatRequest, ChatResponse, ChatToolCall, ChatToolSpec, DefaultChatModelClient,
-    LocalAgentRuntime, SubagentExecutionGate, SubagentExecutionHandoff, SubagentExecutionStartPlan,
-    SubagentExecutionStartStatus, SubagentOutputContract, LIST_FILES_TOOL, READ_FILE_TOOL,
-    SEARCH_FILES_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
+    decode_provider_safe_tool_name, model_tool_call_may_run as agent_model_tool_call_may_run,
+    AgentRunAction, AgentRunStopReason, AgentRunSummary, AgentRunV2, AgentToolRegistry,
+    ChatMessage, ChatModelClient, ChatModelError, ChatModelResult, ChatRequest, ChatResponse,
+    ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, SubagentExecutionGate,
+    SubagentExecutionHandoff, SubagentExecutionStartPlan, SubagentExecutionStartStatus,
+    SubagentOutputContract, LIST_FILES_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL,
+    SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
 };
 use coddy_core::{
     ContextItem, ContextPolicy, ConversationRecord, ModelCredential, ModelRef, ModelRole,
@@ -1047,9 +1048,8 @@ impl CoddyRuntime {
         let mut pending_permission = false;
 
         for tool_call in response.tool_calls.iter().take(3) {
-            let decoded_alias = decode_model_tool_name_alias(&tool_call.name);
-            let requested_tool_name = decoded_alias.as_deref().unwrap_or(&tool_call.name);
-            let mut tool_name = match ToolName::new(requested_tool_name) {
+            let requested_tool_name = decode_provider_safe_tool_name(&tool_call.name);
+            let tool_name = match ToolName::new(&requested_tool_name) {
                 Ok(tool_name) => tool_name,
                 Err(error) => {
                     observations.push(format!(
@@ -1067,28 +1067,7 @@ impl CoddyRuntime {
                 continue;
             }
 
-            let mut definition = self.tool_registry.get(&tool_name);
-            if definition.is_none() {
-                if let Some(alias) = decode_model_tool_name_alias(&tool_call.name) {
-                    match ToolName::new(&alias) {
-                        Ok(alias_name) => {
-                            if let Some(alias_definition) = self.tool_registry.get(&alias_name) {
-                                tool_name = alias_name;
-                                definition = Some(alias_definition);
-                            }
-                        }
-                        Err(error) => {
-                            observations.push(format!(
-                                "- `{}` was rejected because the decoded tool alias `{alias}` is invalid: {error}.",
-                                tool_call.name
-                            ));
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            let Some(definition) = definition else {
+            let Some(definition) = self.tool_registry.get(&tool_name) else {
                 observations.push(format!(
                     "- `{tool_name}` was rejected because it is not registered in the local tool registry."
                 ));
@@ -1702,29 +1681,6 @@ fn summarize_chat_tool_calls(tool_calls: &[ChatToolCall]) -> String {
         .map(|call| call.name.as_str())
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn decode_model_tool_name_alias(name: &str) -> Option<String> {
-    let alias = name.strip_prefix("coddy_tool__").unwrap_or(name);
-    let decoded = alias.replace("__dot__", ".").replace("::", ".");
-    if decoded != alias {
-        return Some(decoded);
-    }
-
-    for namespace in ["filesystem", "subagent", "shell"] {
-        if let Some(method) = alias.strip_prefix(&format!("{namespace}._")) {
-            if !method.is_empty() {
-                return Some(format!("{namespace}.{method}"));
-            }
-        }
-        if let Some(method) = alias.strip_prefix(&format!("{namespace}_")) {
-            if !method.is_empty() {
-                return Some(format!("{namespace}.{method}"));
-            }
-        }
-    }
-
-    None
 }
 
 fn normalize_model_initiated_tool_input(
@@ -4160,18 +4116,22 @@ mod tests {
     }
 
     #[test]
-    fn model_tool_alias_decoder_accepts_namespace_underscore_aliases() {
+    fn runtime_uses_shared_tool_alias_decoder() {
         assert_eq!(
-            decode_model_tool_name_alias("filesystem_search_files").as_deref(),
-            Some(SEARCH_FILES_TOOL)
+            decode_provider_safe_tool_name("filesystem_search_files"),
+            SEARCH_FILES_TOOL
         );
         assert_eq!(
-            decode_model_tool_name_alias("subagent_team_plan").as_deref(),
-            Some(SUBAGENT_TEAM_PLAN_TOOL)
+            decode_provider_safe_tool_name("subagent_team_plan"),
+            SUBAGENT_TEAM_PLAN_TOOL
         );
         assert_eq!(
-            decode_model_tool_name_alias("unknown_tool").as_deref(),
-            None
+            decode_provider_safe_tool_name("filesystem._list_files"),
+            LIST_FILES_TOOL
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("unknown_tool"),
+            "unknown_tool"
         );
     }
 

@@ -1213,7 +1213,7 @@ fn provider_safe_tool_description(tool: &ChatToolSpec) -> String {
     }
 }
 
-pub(crate) fn decode_provider_safe_tool_name(name: &str) -> String {
+pub fn decode_provider_safe_tool_name(name: &str) -> String {
     let alias = name.strip_prefix("coddy_tool__").unwrap_or(name);
     let decoded = alias.replace("__dot__", ".").replace("::", ".");
     if decoded != alias {
