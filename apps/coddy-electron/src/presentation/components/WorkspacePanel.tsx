@@ -202,6 +202,7 @@ export function WorkspacePanel({
                 <MetaPill
                   label={`highest risk: ${toolSafety.highestRisk ?? 'none'}`}
                 />
+                <MetaPill label={`high: ${toolSafety.highRisk}`} />
                 <MetaPill label={`critical: ${toolSafety.criticalRisk}`} />
                 <MetaPill
                   label={`high-risk auto-approved: ${toolSafety.highRiskAutoApproved}`}

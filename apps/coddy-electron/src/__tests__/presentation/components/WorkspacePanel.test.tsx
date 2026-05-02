@@ -45,6 +45,7 @@ describe('WorkspacePanel', () => {
     expect(screen.getByText('auto-approved: 1')).toBeInTheDocument()
     expect(screen.getByText('approval required: 1')).toBeInTheDocument()
     expect(screen.getByText('highest risk: Critical')).toBeInTheDocument()
+    expect(screen.getByText('high: 0')).toBeInTheDocument()
     expect(screen.getByText('critical: 1')).toBeInTheDocument()
     expect(screen.getByText('high-risk auto-approved: 0')).toBeInTheDocument()
   })
