@@ -468,23 +468,67 @@ fn tool_observation_message(
     outcome: &LocalToolRouteOutcome,
     max_chars: usize,
 ) -> String {
-    let value = match &outcome.result {
+    let max_chars = max_chars.max(256);
+    let initial_text_budget = max_chars.saturating_sub(512).max(96);
+
+    for include_metadata in [true, false] {
+        let mut text_budget = initial_text_budget;
+        loop {
+            let value = tool_observation_value(tool_call, outcome, text_budget, include_metadata);
+            if let Some(rendered) = render_json_within_budget(&value, max_chars) {
+                return rendered;
+            }
+
+            if text_budget <= 96 {
+                break;
+            }
+            text_budget = (text_budget / 2).max(96);
+        }
+    }
+
+    let value = tool_observation_value(tool_call, outcome, 32, false);
+    serde_json::to_string(&value).unwrap_or_else(|_| value.to_string())
+}
+
+fn tool_observation_value(
+    tool_call: &ToolCall,
+    outcome: &LocalToolRouteOutcome,
+    max_text_chars: usize,
+    include_metadata: bool,
+) -> serde_json::Value {
+    match &outcome.result {
         Some(result) => json!({
             "tool": tool_call.tool_name.as_str(),
             "call_id": tool_call.id,
             "status": format!("{:?}", result.status),
             "output": result.output.as_ref().map(|output| {
+                let (text, compacted, omitted_chars) =
+                    compact_observation_text(&output.text, max_text_chars);
+                let metadata = if include_metadata {
+                    output.metadata.clone()
+                } else {
+                    json!({
+                        "omitted": true,
+                        "reason": "observation_context_budget",
+                    })
+                };
                 json!({
-                    "text": output.text,
-                    "metadata": output.metadata,
+                    "text": text,
+                    "metadata": metadata,
                     "truncated": output.truncated,
+                    "compacted": compacted,
+                    "omitted_chars": omitted_chars,
                 })
             }),
             "error": result.error.as_ref().map(|error| {
+                let (message, compacted, omitted_chars) =
+                    compact_observation_text(&error.message, max_text_chars);
                 json!({
                     "code": error.code,
-                    "message": error.message,
+                    "message": message,
                     "retryable": error.retryable,
+                    "compacted": compacted,
+                    "omitted_chars": omitted_chars,
                 })
             }),
         }),
@@ -493,11 +537,66 @@ fn tool_observation_message(
             "call_id": tool_call.id,
             "status": "PendingApproval",
         }),
-    };
-    truncate_chars(
-        &serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
-        max_chars,
+    }
+}
+
+fn render_json_within_budget(value: &serde_json::Value, max_chars: usize) -> Option<String> {
+    let pretty = serde_json::to_string_pretty(value).ok()?;
+    if pretty.chars().count() <= max_chars {
+        return Some(pretty);
+    }
+
+    let compact = serde_json::to_string(value).ok()?;
+    if compact.chars().count() <= max_chars {
+        Some(compact)
+    } else {
+        None
+    }
+}
+
+fn compact_observation_text(text: &str, max_chars: usize) -> (String, bool, usize) {
+    let total_chars = text.chars().count();
+    if total_chars <= max_chars {
+        return (text.to_string(), false, 0);
+    }
+
+    let marker = format!(
+        "\n[Coddy compacted tool observation: original {total_chars} chars; middle content omitted for context budget.]\n"
+    );
+    let marker_chars = marker.chars().count();
+    if marker_chars >= max_chars {
+        let fallback = format!(
+            "[Coddy compacted tool observation: original {total_chars} chars; content omitted.]"
+        );
+        return (
+            take_chars(&fallback, max_chars),
+            true,
+            total_chars.saturating_sub(max_chars),
+        );
+    }
+
+    let available_chars = max_chars - marker_chars;
+    let head_chars = available_chars / 2;
+    let tail_chars = available_chars - head_chars;
+    let prefix = take_chars(text, head_chars);
+    let suffix = take_last_chars(text, tail_chars);
+    (
+        format!("{prefix}{marker}{suffix}"),
+        true,
+        total_chars.saturating_sub(head_chars + tail_chars),
     )
+}
+
+fn take_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+fn take_last_chars(value: &str, max_chars: usize) -> String {
+    let total_chars = value.chars().count();
+    value
+        .chars()
+        .skip(total_chars.saturating_sub(max_chars))
+        .collect()
 }
 
 fn truncate_chars(value: &str, max_chars: usize) -> String {
@@ -735,6 +834,56 @@ mod tests {
                     && observation.text.contains("# Coddy")
             }));
         }
+    }
+
+    #[test]
+    fn compacts_large_tool_observation_as_valid_json_for_next_model_turn() {
+        let workspace = TempWorkspace::new();
+        let large_file = format!("BEGIN_MARKER\n{}\nEND_MARKER\n", "x".repeat(8_000));
+        workspace.write("src/large.rs", &large_file);
+        let runtime = LocalAgentRuntime::new(&workspace.path).expect("runtime");
+        let model = ScriptedModel::new(vec![
+            tool_call_response(
+                READ_FILE_TOOL,
+                json!({ "path": "src/large.rs", "max_bytes": 12_000 }),
+            ),
+            ChatResponse::from_text("done"),
+        ]);
+        let config = AgenticLoopConfig {
+            max_model_turns: 2,
+            observation_max_chars: 1024,
+        };
+
+        let outcome = AgenticModelLoop::with_config(&runtime, &model, config).run(
+            AgenticLoopRequest::new(Uuid::new_v4(), "Inspect the large file", test_model_ref()),
+        );
+
+        assert_eq!(outcome.stop, AgenticLoopStop::Completed);
+        let requests = model.requests();
+        let second_turn_tool_observation = requests[1]
+            .messages
+            .iter()
+            .find(|message| message.role == crate::ChatMessageRole::Tool)
+            .expect("tool observation message");
+        assert!(
+            second_turn_tool_observation.content.chars().count() <= 1024,
+            "tool observation exceeded budget: {} chars",
+            second_turn_tool_observation.content.chars().count()
+        );
+
+        let value: Value = serde_json::from_str(&second_turn_tool_observation.content)
+            .expect("tool observation remains valid JSON after compaction");
+        assert_eq!(value["output"]["compacted"], json!(true));
+        assert!(
+            value["output"]["omitted_chars"]
+                .as_u64()
+                .expect("omitted chars")
+                > 0
+        );
+        let text = value["output"]["text"].as_str().expect("output text");
+        assert!(text.contains("BEGIN_MARKER"));
+        assert!(text.contains("END_MARKER"));
+        assert!(text.contains("Coddy compacted tool observation"));
     }
 
     #[test]

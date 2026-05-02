@@ -229,18 +229,26 @@ compaction e recuperacao focada.
 
 Melhoria implementada:
 
-- limite de 12 Ki chars por observacao de tool enviada ao follow-up do modelo;
+- limite de 12 Ki chars por observacao de tool enviada ao follow-up do modelo
+  no fluxo `/ask`;
+- compactacao estrutural tambem no loop agentic direto do `coddy-agent`,
+  aplicada antes da serializacao da mensagem `tool`;
+- preservacao de JSON valido apos compactacao, evitando que o follow-up do
+  modelo receba observacoes truncadas fora do formato esperado;
 - preservacao do inicio e do fim do output, para manter imports/cabecalhos e
   conclusoes/erros finais;
-- marcador explicito `Coddy compacted tool output` informando que o meio foi
-  omitido por budget de contexto;
+- marcadores explicitos `Coddy compacted tool output` e
+  `Coddy compacted tool observation` informando que o meio foi omitido por
+  budget de contexto;
 - instrucao para reexecutar leitura/busca mais estreita quando o trecho omitido
   for necessario;
 - teste de regressao cobrindo arquivo grande, preservacao de `BEGIN_MARKER` e
-  `END_MARKER`, presenca do marcador de compactacao e limite de tamanho.
+  `END_MARKER`, presenca do marcador de compactacao, JSON valido e limite de
+  tamanho.
 
 Metrica local apos a mudanca:
 
+- `cargo test -p coddy-agent -- --test-threads=1`: 180 passed.
 - `cargo test -p coddy-runtime -- --test-threads=1`: 60 passed.
 - `./target/debug/coddy eval quality --json`: score 100.
 - Multiagent eval: 3/3 passed, score 100.
@@ -287,6 +295,16 @@ OpenRouter ainda podem retornar respostas vazias persistentes em uma minoria de
 casos. A proxima melhoria de maior impacto e reduzir dependencia de tentativas
 reativas com roteamento alternativo de provider/modelo e compaction adaptativa
 de observacoes.
+
+Smoke live adicional apos a compactacao estrutural do loop agentic direto:
+
+- Comando: `target/debug/coddy eval prompt-battery --json --model-provider openrouter --model-name deepseek/deepseek-v4-flash --limit 20 --concurrency 4`.
+- Resultado: 19/20 passed, score 95, raw score 90, member recall 95.
+- Model error rate: 5%, causado por resposta vazia persistente do provider
+  OpenRouter em um caso.
+- Interpretacao: a mudanca local nao degradou o harness; a principal aresta
+  live continua sendo fallback/roteamento quando o provider retorna resposta
+  vazia sem content/tool calls.
 
 ## Fontes pesquisadas
 
