@@ -252,11 +252,14 @@ Melhoria implementada:
   de latencia da chamada.
 - politica de retry centralizada no modulo de modelo, compartilhada por runtime
   `/ask`, eval live e loop agentic direto para evitar divergencia de criterios.
+- respostas vazias persistentes do provider agora continuam sendo reportadas
+  como falha, mas o run e os eventos marcam a falha como recuperavel para que UI
+  e usuario possam oferecer retry/troca de provider sem tratar como erro fatal.
 
 Metrica local apos a mudanca:
 
 - `cargo test -p coddy-agent -- --test-threads=1`: 184 passed.
-- `cargo test -p coddy-runtime -- --test-threads=1`: 60 passed.
+- `cargo test -p coddy-runtime -- --test-threads=1`: 61 passed.
 - `./target/debug/coddy eval quality --json`: score 100.
 - Multiagent eval: 3/3 passed, score 100.
 - Prompt battery deterministica: 1200/1200 passed, score 100.

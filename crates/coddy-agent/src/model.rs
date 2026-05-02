@@ -395,6 +395,9 @@ impl ChatModelError {
         match self {
             Self::ProviderUnavailable { .. } => true,
             Self::ProviderError { retryable, .. } | Self::Transport { retryable, .. } => *retryable,
+            Self::InvalidProviderResponse { message, .. } => {
+                is_retryable_invalid_provider_response(message)
+            }
             _ => false,
         }
     }
@@ -2578,6 +2581,15 @@ mod tests {
 
     #[test]
     fn retry_policy_retries_recoverable_provider_and_empty_responses_but_not_timeouts() {
+        let empty_response_error = ChatModelError::InvalidProviderResponse {
+            provider: "openrouter".to_string(),
+            message: "response did not include assistant content or tool calls".to_string(),
+        };
+        let invalid_json_error = ChatModelError::InvalidProviderResponse {
+            provider: "openrouter".to_string(),
+            message: "failed to parse chat response JSON: expected value".to_string(),
+        };
+
         assert!(should_retry_chat_model_request_error(
             &ChatModelError::ProviderError {
                 provider: "openrouter".to_string(),
@@ -2585,12 +2597,10 @@ mod tests {
                 retryable: true,
             },
         ));
-        assert!(should_retry_chat_model_request_error(
-            &ChatModelError::InvalidProviderResponse {
-                provider: "openrouter".to_string(),
-                message: "response did not include assistant content or tool calls".to_string(),
-            },
-        ));
+        assert!(should_retry_chat_model_request_error(&empty_response_error));
+        assert!(empty_response_error.retryable());
+        assert!(!should_retry_chat_model_request_error(&invalid_json_error));
+        assert!(!invalid_json_error.retryable());
         assert!(!should_retry_chat_model_request_error(
             &ChatModelError::Transport {
                 provider: "openrouter".to_string(),

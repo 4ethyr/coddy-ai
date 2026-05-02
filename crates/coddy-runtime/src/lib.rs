@@ -5526,6 +5526,78 @@ mod tests {
     }
 
     #[test]
+    fn ask_command_tracks_exhausted_empty_provider_response_as_recoverable() {
+        let request_id = Uuid::new_v4();
+        let empty_response_error = || {
+            Err(ChatModelError::InvalidProviderResponse {
+                provider: "openrouter".to_string(),
+                message: "response did not include assistant content or tool calls".to_string(),
+            })
+        };
+        let (chat_client, requests) = QueuedChatResultClient::new(vec![
+            empty_response_error(),
+            empty_response_error(),
+            empty_response_error(),
+            empty_response_error(),
+        ]);
+        let runtime =
+            CoddyRuntime::with_chat_client(AgentToolRegistry::default(), Arc::new(chat_client));
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openrouter".to_string(),
+                    name: "deepseek/deepseek-v4-flash".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "route this task".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: Some(ModelCredential {
+                    provider: "openrouter".to_string(),
+                    token: "sk-or-test-token".to_string(),
+                    endpoint: None,
+                    metadata: Default::default(),
+                }),
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let run_id = runtime
+            .events_after(1)
+            .0
+            .iter()
+            .find_map(|event| match event.event {
+                ReplEvent::RunStarted { run_id } => Some(run_id),
+                _ => None,
+            })
+            .expect("run started");
+        let summary = runtime.agent_run_summary(run_id).expect("run summary");
+
+        assert_eq!(captured_requests.len(), 4);
+        assert!(request_has_empty_response_retry_guidance(
+            &captured_requests[1]
+        ));
+        assert!(text.contains("response did not include assistant content or tool calls"));
+        assert_eq!(summary.last_phase, coddy_agent::AgentRunPhase::Failed);
+        assert_eq!(
+            summary.failure_code.as_deref(),
+            Some("invalid_provider_response")
+        );
+        assert!(summary.recoverable_failure);
+    }
+
+    #[test]
     fn workspace_listing_does_not_allow_path_traversal() {
         let request_id = Uuid::new_v4();
         let workspace = TempWorkspace::new();
