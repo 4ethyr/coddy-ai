@@ -575,6 +575,25 @@ Validation:
 - `git diff --check`: passed.
 - `./scripts/guard_no_secrets.sh`: passed.
 
+### Battery 23: Slash-Driven Quality Gate
+
+Goal: let the user trigger the deterministic quality gate directly from the chat input without
+sending an instruction to the model.
+
+Implemented result:
+
+- Added a local `/quality run` command that opens the Workspace quality panel and starts the
+  combined quality eval.
+- Added `/eval run`, `/evals run` and `/metrics run` as equivalent aliases.
+- Kept `/quality`, `/eval`, `/evals` and `/metrics` as navigation-only commands for inspecting the
+  quality panel without starting a run.
+- Wired the behavior in both Desktop and FloatingTerminal so the same slash command path works
+  from either UI mode.
+
+Validation:
+
+- `npm test -- slashCommands DesktopApp FloatingTerminal`: 3 files passed, 40 tests passed.
+
 ## Current Assessment
 
 The multiagent harness is now measurable before execution. It can compose a team plan, expose

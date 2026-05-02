@@ -50,6 +50,7 @@ export function FloatingTerminal() {
     captureAndExplain,
     dismissConfirmation,
     replyPermission,
+    runQualityEval,
     conversationHistory,
     conversationHistoryStatus,
     conversationHistoryError,
@@ -149,6 +150,16 @@ export function FloatingTerminal() {
         return
       }
 
+      if (command.kind === 'run-quality-eval') {
+        setHistoryOpen(false)
+        setStatusOpen(false)
+        setHelpOpen(false)
+        persistDesktopTab('workspace')
+        void runQualityEval()
+        void openUi('DesktopApp')
+        return
+      }
+
       if (command.kind === 'open-history') {
         setStatusOpen(false)
         setHelpOpen(false)
@@ -174,7 +185,7 @@ export function FloatingTerminal() {
       persistDesktopTab(command.tab)
       void openUi('DesktopApp')
     },
-    [ask, loadConversationHistory, newSession, openUi],
+    [ask, loadConversationHistory, newSession, openUi, runQualityEval],
   )
 
   const handleOpenConversation = useCallback(

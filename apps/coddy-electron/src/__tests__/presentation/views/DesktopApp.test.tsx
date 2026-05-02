@@ -44,6 +44,9 @@ const sessionContext = {
   dismissConfirmation: vi.fn(),
   replyPermission: vi.fn(),
   selectWorkspaceFolder: vi.fn(),
+  runMultiagentEval: vi.fn(),
+  runPromptBatteryEval: vi.fn(),
+  runQualityEval: vi.fn(),
   loadConversationHistory: vi.fn(),
   openConversation: vi.fn(),
 }
@@ -318,6 +321,20 @@ describe('DesktopApp', () => {
     expect(sessionContext.ask).not.toHaveBeenCalled()
     expect(screen.getByText('/home/user/project')).toBeInTheDocument()
     expect(sessionContext.selectWorkspaceFolder).toHaveBeenCalledOnce()
+  })
+
+  it('opens the workspace tab and runs the quality gate from /quality run', async () => {
+    render(<DesktopApp />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Instruct Coddy agent...'),
+      '/quality run',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(screen.getByText('Quality gate')).toBeInTheDocument()
+    expect(sessionContext.runQualityEval).toHaveBeenCalledOnce()
   })
 
   it('loads history and starts new sessions from slash commands', async () => {

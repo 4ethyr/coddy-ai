@@ -173,6 +173,12 @@ export function DesktopApp() {
         return
       }
 
+      if (command.kind === 'run-quality-eval') {
+        setActiveTab('workspace')
+        void runQualityEval()
+        return
+      }
+
       if (command.kind === 'open-history') {
         setActiveTab('chat')
         setStatusOpen(false)
@@ -200,7 +206,7 @@ export function DesktopApp() {
 
       setActiveTab(command.tab)
     },
-    [ask, loadConversationHistory, newSession, setActiveTab],
+    [ask, loadConversationHistory, newSession, runQualityEval, setActiveTab],
   )
 
   const handleOpenConversation = useCallback(

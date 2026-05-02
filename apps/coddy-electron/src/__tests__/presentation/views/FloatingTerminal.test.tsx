@@ -44,6 +44,9 @@ const sessionContext = {
   dismissConfirmation: vi.fn(),
   replyPermission: vi.fn(),
   selectWorkspaceFolder: vi.fn(),
+  runMultiagentEval: vi.fn(),
+  runPromptBatteryEval: vi.fn(),
+  runQualityEval: vi.fn(),
   loadConversationHistory: vi.fn(),
   openConversation: vi.fn(),
 }
@@ -289,6 +292,23 @@ describe('FloatingTerminal', () => {
     expect(window.localStorage.getItem('coddy:desktop-active-tab')).toBe(
       'workspace',
     )
+    expect(sessionContext.openUi).toHaveBeenCalledWith('DesktopApp')
+  })
+
+  it('opens desktop workspace and runs the quality gate from /quality run', async () => {
+    render(<FloatingTerminal />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Enter command or prompt...'),
+      '/quality run',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(window.localStorage.getItem('coddy:desktop-active-tab')).toBe(
+      'workspace',
+    )
+    expect(sessionContext.runQualityEval).toHaveBeenCalledOnce()
     expect(sessionContext.openUi).toHaveBeenCalledWith('DesktopApp')
   })
 

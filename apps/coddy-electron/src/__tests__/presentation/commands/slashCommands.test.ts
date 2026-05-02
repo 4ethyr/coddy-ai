@@ -32,6 +32,12 @@ describe('slashCommands', () => {
       kind: 'open-desktop-tab',
       tab: 'workspace',
     })
+    expect(resolveUiSlashCommand('/quality run')).toEqual({
+      kind: 'run-quality-eval',
+    })
+    expect(resolveUiSlashCommand('/eval run')).toEqual({
+      kind: 'run-quality-eval',
+    })
     expect(resolveUiSlashCommand('/models')).toEqual({
       kind: 'open-desktop-tab',
       tab: 'models',
