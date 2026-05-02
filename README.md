@@ -16,11 +16,12 @@ glassmorphism.
 
 Coddy is under active development. The current implementation includes the CLI,
 runtime IPC, Electron UI, model discovery, secure credential storage, local
-Ollama chat completion, session events, tool metadata, permission primitives,
-declarative subagent metadata and early runtime streaming. Some advanced
-capabilities, such as complete multi-provider LLM execution, executable
-subagents and MCP, are planned or partially scaffolded and should be evolved
-incrementally with tests.
+Ollama chat completion, OpenAI/OpenRouter compatible chat execution, Gemini API
+chat execution, Azure OpenAI chat execution, Vertex Claude execution, session
+events, tool metadata, permission primitives, guarded local tools, conversation
+history, deterministic quality evals and early runtime streaming. Advanced
+capabilities such as isolated executable subagents and MCP are planned or
+partially scaffolded and should be evolved incrementally with tests.
 
 ## Main Features
 
@@ -44,6 +45,10 @@ incrementally with tests.
 - Secure token handling through Electron `safeStorage` when available.
 - Agent tool registry, tool metadata, risk levels, permissions and approval
   primitives.
+- Deterministic quality gates for multiagent routing, reducer contracts and the
+  1200-prompt subagent prompt battery.
+- Live prompt-battery execution against selected providers for measuring model
+  routing quality and recoverable provider failures without exposing API keys.
 - Declarative subagent registry with explorer, planner, coder, reviewer,
   security-reviewer, test-writer, eval-runner and docs-writer roles exposed
   through the read-only `subagent.list` tool.
@@ -370,6 +375,13 @@ Inspect runtime session state:
 ./target/debug/coddy session watch --after 0
 ```
 
+Work with conversation history:
+
+```bash
+./target/debug/coddy session history
+./target/debug/coddy session new
+```
+
 Open UI modes through the runtime:
 
 ```bash
@@ -419,6 +431,15 @@ requests from the Rust runtime. The Electron main process sends the selected
 provider credential to the CLI as a request-scoped environment payload; the
 token is not stored in renderer state and is redacted from Rust debug output.
 Custom OpenAI-compatible runtime endpoints must use HTTPS.
+
+OpenRouter routes can occasionally return an empty assistant message even when
+the request itself is valid. Coddy treats the known empty-response shape as
+recoverable, retries boundedly, and adds a short internal retry instruction on
+subsequent attempts asking the provider to return non-empty content. Timeouts
+are still treated separately and are not retried past the client budget. In the
+latest 50-prompt live battery with `openrouter/deepseek/deepseek-v4-flash`, this
+reduced the observed model error rate from 14% to 6% and raised the guarded
+score from 86 to 94.
 
 Vertex Claude execution uses Google OAuth/ADC/gcloud credentials, the active
 gcloud project, and the selected Vertex region. Claude model IDs must use the
@@ -487,6 +508,25 @@ Repository split boundary:
 cargo test -p coddy-ipc --test repository_boundaries
 ```
 
+Agent quality gates:
+
+```bash
+./target/debug/coddy eval multiagent --json
+./target/debug/coddy eval prompt-battery --json
+./target/debug/coddy eval quality --json
+```
+
+Live model routing sample, using the provider credential configured for the
+selected provider:
+
+```bash
+./target/debug/coddy eval prompt-battery --json \
+  --model-provider openrouter \
+  --model-name deepseek/deepseek-v4-flash \
+  --limit 50 \
+  --concurrency 4
+```
+
 ## Security Model
 
 Coddy is designed around explicit boundaries:
@@ -511,6 +551,8 @@ Additional documentation lives in:
 - [docs/repl/repository-split-manifest.md](docs/repl/repository-split-manifest.md)
 - [docs/repl/ui-ux-spec.md](docs/repl/ui-ux-spec.md)
 - [docs/repl/coding-agent-reference-analysis.md](docs/repl/coding-agent-reference-analysis.md)
+- [docs/coding-agent-capability-review.md](docs/coding-agent-capability-review.md)
+- [docs/repl/multiagent-hardness-eval.md](docs/repl/multiagent-hardness-eval.md)
 
 ## Relationship With VisionClip
 
@@ -528,14 +570,14 @@ See the split manifest:
 
 Near-term priorities:
 
-- connect the runtime to production cloud model clients for real chat
-  completion;
-- expand Vertex region and project configuration for partner model execution;
+- connect isolated subagent execution sessions to the existing reducer and
+  approval gates;
+- improve adaptive tool budgeting and observation compaction for broad coding
+  prompts;
+- expand live eval sampling and baseline comparison across providers;
 - add durable agent memory with sensitive-data policy;
-- evolve the tool loop from primitives to full action/observation/validation;
 - add MCP client/server registry support;
-- implement subagent orchestration;
-- expand evals for coding-agent behavior and regression detection;
+- keep improving provider error recovery and user-facing diagnostics;
 - add signed release artifacts and automatic update metadata.
 
 ## License
