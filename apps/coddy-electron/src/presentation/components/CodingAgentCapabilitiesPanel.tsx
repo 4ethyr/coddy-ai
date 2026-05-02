@@ -84,7 +84,7 @@ export function CodingAgentCapabilitiesPanel({
         },
         {
           label: 'Risk envelope',
-          detail: `${toolSummary.lowRisk} low, ${toolSummary.mediumRisk} medium, ${toolSummary.highRisk} high/critical.`,
+          detail: `${toolSummary.lowRisk} low, ${toolSummary.mediumRisk} medium, ${toolSummary.highRisk} high, ${toolSummary.criticalRisk} critical.`,
           tone: toolSummary.hasHighRiskTools ? 'gap' : 'ready',
         },
         {

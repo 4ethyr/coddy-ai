@@ -11,6 +11,7 @@ export interface ToolSafetySummary {
   lowRisk: number
   mediumRisk: number
   highRisk: number
+  criticalRisk: number
   highestRisk: ToolRiskLevel | null
   highRiskAutoApproved: number
   highRiskGuarded: number
@@ -30,6 +31,7 @@ export function summarizeToolSafety(
     lowRisk: 0,
     mediumRisk: 0,
     highRisk: 0,
+    criticalRisk: 0,
     highestRisk: null,
     highRiskAutoApproved: 0,
     highRiskGuarded: 0,
@@ -54,8 +56,10 @@ export function summarizeToolSafety(
       summary.lowRisk += 1
     } else if (tool.risk_level === 'Medium') {
       summary.mediumRisk += 1
-    } else {
+    } else if (tool.risk_level === 'High') {
       summary.highRisk += 1
+    } else {
+      summary.criticalRisk += 1
     }
 
     summary.highestRisk = maxRisk(summary.highestRisk, tool.risk_level)
@@ -71,7 +75,7 @@ export function summarizeToolSafety(
 
   summary.hasApprovalControls =
     summary.approvalRequired > 0 || summary.denied > 0
-  summary.hasHighRiskTools = summary.highRisk > 0
+  summary.hasHighRiskTools = summary.highRisk > 0 || summary.criticalRisk > 0
   summary.hasAutoApprovedHighRiskTools = summary.highRiskAutoApproved > 0
 
   return summary

@@ -26,7 +26,7 @@ describe('WorkspacePanel', () => {
             category: 'Shell',
             input_schema: { type: 'object', required: ['command'] },
             output_schema: { type: 'object' },
-            risk_level: 'Medium',
+            risk_level: 'Critical',
             permissions: ['ExecuteCommand'],
             timeout_ms: 30_000,
             approval_policy: 'AskOnUse',
@@ -44,7 +44,8 @@ describe('WorkspacePanel', () => {
     expect(screen.getByText('ExecuteCommand')).toBeInTheDocument()
     expect(screen.getByText('auto-approved: 1')).toBeInTheDocument()
     expect(screen.getByText('approval required: 1')).toBeInTheDocument()
-    expect(screen.getByText('highest risk: Medium')).toBeInTheDocument()
+    expect(screen.getByText('highest risk: Critical')).toBeInTheDocument()
+    expect(screen.getByText('critical: 1')).toBeInTheDocument()
     expect(screen.getByText('high-risk auto-approved: 0')).toBeInTheDocument()
   })
 
