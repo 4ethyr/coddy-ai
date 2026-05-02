@@ -202,6 +202,9 @@ export function WorkspacePanel({
                 <MetaPill
                   label={`highest risk: ${toolSafety.highestRisk ?? 'none'}`}
                 />
+                <MetaPill
+                  label={`high-risk auto-approved: ${toolSafety.highRiskAutoApproved}`}
+                />
               </div>
               <div className="grid gap-3 xl:grid-cols-2">
                 {tools.map((tool) => (

@@ -87,6 +87,7 @@ describe('CodingAgentCapabilitiesPanel', () => {
     expect(screen.getByText('3 registered tools are visible to the current session.')).toBeInTheDocument()
     expect(screen.getByText('1 auto-approved, 2 require approval, 0 denied.')).toBeInTheDocument()
     expect(screen.getByText('1 low, 1 medium, 1 high/critical.')).toBeInTheDocument()
+    expect(screen.getByText('1 guarded, 0 auto-approved.')).toBeInTheDocument()
     expect(screen.getByText('/home/user/project')).toBeInTheDocument()
     expect(screen.getByText(/1 subagent activities/i)).toBeInTheDocument()
   })

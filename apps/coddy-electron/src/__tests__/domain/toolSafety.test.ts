@@ -32,9 +32,31 @@ describe('summarizeToolSafety', () => {
       mediumRisk: 1,
       highRisk: 2,
       highestRisk: 'Critical',
+      highRiskAutoApproved: 0,
+      highRiskGuarded: 2,
       hasApprovalControls: true,
       hasHighRiskTools: true,
+      hasAutoApprovedHighRiskTools: false,
     })
+  })
+
+  it('flags high-risk tools that are auto-approved', () => {
+    const summary = summarizeToolSafety([
+      tool({
+        name: 'shell.run',
+        approval_policy: 'AutoApprove',
+        risk_level: 'High',
+      }),
+      tool({
+        name: 'network.http_post',
+        approval_policy: 'AlwaysAsk',
+        risk_level: 'Critical',
+      }),
+    ])
+
+    expect(summary.highRiskAutoApproved).toBe(1)
+    expect(summary.highRiskGuarded).toBe(1)
+    expect(summary.hasAutoApprovedHighRiskTools).toBe(true)
   })
 
   it('returns a neutral summary for an empty tool catalog', () => {
@@ -47,8 +69,11 @@ describe('summarizeToolSafety', () => {
       mediumRisk: 0,
       highRisk: 0,
       highestRisk: null,
+      highRiskAutoApproved: 0,
+      highRiskGuarded: 0,
       hasApprovalControls: false,
       hasHighRiskTools: false,
+      hasAutoApprovedHighRiskTools: false,
     })
   })
 })

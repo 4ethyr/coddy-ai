@@ -88,6 +88,11 @@ export function CodingAgentCapabilitiesPanel({
           tone: toolSummary.hasHighRiskTools ? 'gap' : 'ready',
         },
         {
+          label: 'High-risk guard',
+          detail: `${toolSummary.highRiskGuarded} guarded, ${toolSummary.highRiskAutoApproved} auto-approved.`,
+          tone: toolSummary.hasAutoApprovedHighRiskTools ? 'gap' : 'ready',
+        },
+        {
           label: 'Provider-safe names',
           detail:
             'Dotted tools are decoded through provider-safe aliases before execution.',
