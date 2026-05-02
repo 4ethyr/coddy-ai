@@ -1811,11 +1811,28 @@ fn build_model_system_prompt(
     if tool_use_policy.max_tool_calls == Some(0) {
         sections.push(format_no_tools_context_boundary(&session.messages));
     } else {
+        sections.push(format_tool_budget_context(tool_use_policy));
         sections.push(format_workspace_context(&session.workspace_context));
         sections.push(format_recent_session_messages(&session.messages));
         sections.push(format_tool_context(tool_definitions));
     }
     sections.join("\n\n")
+}
+
+fn format_tool_budget_context(tool_use_policy: ToolUsePolicy) -> String {
+    match tool_use_policy.max_tool_calls {
+        Some(limit) => [
+            format!("Tool-use budget: at most {limit} runtime tool calls this turn."),
+            "Pick the highest-signal inspection first; prefer files or searches that directly answer the user's request.".to_string(),
+            "When the budget is exhausted, synthesize the best grounded answer from gathered observations and state remaining uncertainty.".to_string(),
+        ]
+        .join("\n"),
+        None => [
+            "Tool-use budget: bounded by Coddy runtime safeguards.",
+            "Use focused tools only when they add evidence, and synthesize once the relevant context is sufficient.",
+        ]
+        .join("\n"),
+    }
 }
 
 fn build_tool_followup_system_prompt(base_prompt: &str, tools_enabled: bool) -> String {
@@ -3494,6 +3511,44 @@ mod tests {
             captured_requests[0].messages[1].content,
             "continue the implementation"
         );
+    }
+
+    #[test]
+    fn ask_command_injects_user_requested_tool_budget_guidance() {
+        let request_id = Uuid::new_v4();
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("budget accepted"));
+        let runtime =
+            CoddyRuntime::with_chat_client(AgentToolRegistry::default(), Arc::new(chat_client));
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Use no maximo 2 tools para revisar o modulo.".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let system_prompt = &captured_requests[0].messages[0].content;
+
+        assert!(system_prompt.contains("Tool-use budget: at most 2 runtime tool calls"));
+        assert!(system_prompt.contains("Pick the highest-signal inspection first"));
+        assert!(system_prompt.contains("synthesize the best grounded answer"));
     }
 
     #[test]
