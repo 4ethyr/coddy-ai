@@ -7,6 +7,7 @@ export type UiSlashCommand =
   | { kind: 'new-session' }
   | { kind: 'show-status' }
   | { kind: 'show-help' }
+  | { kind: 'show-capabilities' }
   | { kind: 'set-speak'; enabled: boolean }
   | { kind: 'run-quality-eval' }
   | { kind: 'agent-workflow'; prompt: string }
@@ -42,6 +43,12 @@ const TAB_COMMANDS: Record<string, DesktopTab> = {
 }
 
 const SETTINGS_COMMANDS = new Set(['settings', 'setting', 'settins', 'config'])
+const CAPABILITY_COMMANDS = new Set([
+  'agent',
+  'capability',
+  'capabilities',
+  'readiness',
+])
 const WORKFLOW_COMMANDS = new Set([
   'code',
   'implement',
@@ -151,6 +158,13 @@ export const UI_SLASH_COMMAND_SUGGESTIONS: UiSlashCommandSuggestion[] = [
     insertText: '/status',
   },
   {
+    command: '/capabilities',
+    title: 'Show coding-agent readiness',
+    description: 'Inspect agent loop, safety controls, tools and known gaps.',
+    insertText: '/capabilities',
+    aliases: ['/agent', '/readiness'],
+  },
+  {
     command: '/new',
     title: 'New session',
     description: 'Archive this chat and start a clean session.',
@@ -191,6 +205,10 @@ export function resolveUiSlashCommand(input: string): UiSlashCommand | null {
 
   if (command === 'status') {
     return { kind: 'show-status' }
+  }
+
+  if (CAPABILITY_COMMANDS.has(command)) {
+    return { kind: 'show-capabilities' }
   }
 
   if (command === 'speak') {

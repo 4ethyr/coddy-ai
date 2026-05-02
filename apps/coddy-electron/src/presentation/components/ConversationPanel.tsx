@@ -12,6 +12,7 @@ import { SelectionCopyRegion } from '@/presentation/components/SelectionCopyRegi
 import { ConversationHistoryPanel } from '@/presentation/components/ConversationHistoryPanel'
 import { SessionStatusPanel } from '@/presentation/components/SessionStatusPanel'
 import { SlashCommandHelpPanel } from '@/presentation/components/SlashCommandHelpPanel'
+import { CodingAgentCapabilitiesPanel } from '@/presentation/components/CodingAgentCapabilitiesPanel'
 import {
   ThinkingIndicator,
   type ThinkingAnimation,
@@ -34,6 +35,10 @@ interface Props {
   statusWorkspacePath?: string | null
   statusToolCount?: number
   onCloseStatus?: () => void
+  capabilitiesOpen?: boolean
+  capabilitiesWorkspacePath?: string | null
+  capabilitiesToolCount?: number
+  onCloseCapabilities?: () => void
   helpOpen?: boolean
   onCloseHelp?: () => void
 }
@@ -53,6 +58,10 @@ export function ConversationPanel({
   statusWorkspacePath = null,
   statusToolCount = 0,
   onCloseStatus,
+  capabilitiesOpen = false,
+  capabilitiesWorkspacePath = null,
+  capabilitiesToolCount = 0,
+  onCloseCapabilities,
   helpOpen = false,
   onCloseHelp,
 }: Props) {
@@ -86,6 +95,15 @@ export function ConversationPanel({
               workspacePath={statusWorkspacePath}
               toolCount={statusToolCount}
               onClose={onCloseStatus ?? (() => {})}
+            />
+          )}
+
+          {capabilitiesOpen && (
+            <CodingAgentCapabilitiesPanel
+              session={session}
+              workspacePath={capabilitiesWorkspacePath}
+              toolCount={capabilitiesToolCount}
+              onClose={onCloseCapabilities ?? (() => {})}
             />
           )}
 

@@ -326,6 +326,37 @@ describe('DesktopApp', () => {
     expect(screen.getByText('tools=1')).toBeInTheDocument()
   })
 
+  it('shows coding-agent capabilities from the /capabilities slash command', async () => {
+    sessionContext.activeWorkspacePath = '/home/user/coddy'
+    sessionContext.toolCatalog = [
+      {
+        name: 'filesystem.list_files',
+        description: 'List files',
+        category: 'Filesystem',
+        input_schema: { type: 'object' },
+        output_schema: { type: 'object' },
+        risk_level: 'Low',
+        approval_policy: 'AutoApprove',
+        timeout_ms: 10000,
+        permissions: ['ReadWorkspace'],
+      },
+    ]
+    render(<DesktopApp />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Instruct Coddy agent...'),
+      '/capabilities',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole('region', { name: 'Coding agent capabilities' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('agent.capabilities')).toBeInTheDocument()
+    expect(screen.getByText('/home/user/coddy')).toBeInTheDocument()
+  })
+
   it('shows local slash command help from the /? slash command', async () => {
     render(<DesktopApp />)
 
