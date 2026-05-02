@@ -1637,12 +1637,51 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
             "<｜dsml｜invoke",
             "</｜dsml｜invoke",
             "<invoke name=",
+            "<read_file",
+            "</read_file",
+            "<list_files",
+            "</list_files",
+            "<search_files",
+            "</search_files",
+            "<apply_edit",
+            "</apply_edit",
+            "<filesystem.read_file",
+            "</filesystem.read_file",
+            "<filesystem.list_files",
+            "</filesystem.list_files",
+            "<filesystem.search_files",
+            "</filesystem.search_files",
+            "<filesystem.apply_edit",
+            "</filesystem.apply_edit",
         ],
     ) {
         return true;
     }
 
     if normalized.contains("\"tool_calls\"") && normalized.contains("\"arguments\"") {
+        return true;
+    }
+
+    if contains_any(
+        &normalized,
+        &[
+            "tool call:",
+            "tool_call:",
+            "tool-call:",
+            "tool calls:",
+            "requested tool:",
+        ],
+    ) && contains_any(
+        &normalized,
+        &[
+            "filesystem.read_file",
+            "filesystem.list_files",
+            "filesystem.search_files",
+            "filesystem.apply_edit",
+            "shell.run",
+            "subagent.",
+        ],
+    ) {
         return true;
     }
 
@@ -3446,6 +3485,44 @@ mod tests {
             .contains("textual tool-call attempt from the model"));
         assert!(response.text.contains("not executed for safety"));
         assert!(!response.text.contains("README.md"));
+    }
+
+    #[test]
+    fn assistant_response_blocks_simple_xml_tool_markup() {
+        let response = ChatResponse::from_text(
+            r#"Search results show relevant files.
+
+<read_file>
+<path>apps/coddy-electron/src/domain/services/toolSafety.ts</path>
+</read_file>"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("toolSafety.ts"));
+    }
+
+    #[test]
+    fn assistant_response_blocks_markdown_pseudo_tool_calls() {
+        let response = ChatResponse::from_text(
+            r#"### Search 1
+
+**Tool call: `filesystem.search_files`**
+- Query: `Critical`
+- Paths: `crates/`"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("Critical"));
     }
 
     #[test]
