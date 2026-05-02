@@ -53,6 +53,8 @@ export type {
   MultiagentEvalSuiteSummary,
   PromptBatteryFailure,
   PromptBatteryResult,
+  QualityEvalCheck,
+  QualityEvalResult,
 } from './evals'
 
 export type {

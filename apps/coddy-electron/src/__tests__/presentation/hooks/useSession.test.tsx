@@ -65,6 +65,7 @@ function createClient(overrides: Partial<ReplIpcClient> = {}): ReplIpcClient {
     openUi: vi.fn(),
     runMultiagentEval: vi.fn(),
     runPromptBatteryEval: vi.fn(),
+    runQualityEval: vi.fn(),
     captureAndExplain: vi.fn(),
     dismissConfirmation: vi.fn(),
     replyPermission: vi.fn(),
@@ -196,6 +197,59 @@ describe('useSession cancellation errors', () => {
     })
 
     expect(captureVoice).toHaveBeenCalledWith({ speakResponse: true })
+
+    unmount()
+  })
+
+  it('runs the combined quality eval and stores its status', async () => {
+    const quality = {
+      kind: 'coddy.qualityEval' as const,
+      version: 1,
+      status: 'passed' as const,
+      passed: true,
+      score: 100,
+      checks: [
+        {
+          name: 'multiagent',
+          status: 'passed' as const,
+          score: 100,
+          passed: 3,
+          failed: 0,
+        },
+        {
+          name: 'prompt-battery',
+          status: 'passed' as const,
+          score: 100,
+          promptCount: 1200,
+          passed: 1200,
+          failed: 0,
+        },
+      ],
+      multiagent: { score: 100, passed: 3, failed: 0, reports: [] },
+      promptBattery: {
+        promptCount: 1200,
+        stackCount: 30,
+        knowledgeAreaCount: 10,
+        passed: 1200,
+        failed: 0,
+        score: 100,
+        memberCoverage: { explorer: 1200 },
+        failures: [],
+      },
+    }
+    clientRef.current = createClient({
+      runQualityEval: vi.fn().mockResolvedValue(quality),
+    })
+
+    const { result, unmount } = renderHook(() => useSession())
+    await waitFor(() => expect(result.current.connecting).toBe(false))
+
+    await act(async () => {
+      await result.current.runQualityEval()
+    })
+
+    expect(result.current.qualityEval).toEqual(quality)
+    expect(result.current.qualityEvalStatus).toBe('succeeded')
 
     unmount()
   })

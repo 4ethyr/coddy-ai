@@ -6,6 +6,7 @@ import type {
   MultiagentEvalRequest,
   MultiagentEvalResult,
   PromptBatteryResult,
+  QualityEvalResult,
   ReplToolCatalogItem,
   ToolRiskLevel,
 } from '@/domain'
@@ -21,6 +22,9 @@ interface Props {
   promptBattery?: PromptBatteryResult | null
   promptBatteryStatus?: EvalRunStatus
   promptBatteryError?: string | null
+  qualityEval?: QualityEvalResult | null
+  qualityEvalStatus?: EvalRunStatus
+  qualityEvalError?: string | null
   workspacePath?: string | null
   workspaceStatus?: EvalRunStatus
   workspaceError?: string | null
@@ -29,6 +33,7 @@ interface Props {
   onSelectWorkspace?: () => void
   onRunMultiagentEval?: (request: MultiagentEvalRequest) => void
   onRunPromptBattery?: () => void
+  onRunQualityEval?: () => void
 }
 
 interface EvalHarnessSettings {
@@ -45,6 +50,9 @@ export function WorkspacePanel({
   promptBattery,
   promptBatteryStatus = 'idle',
   promptBatteryError = null,
+  qualityEval,
+  qualityEvalStatus = 'idle',
+  qualityEvalError = null,
   workspacePath = null,
   workspaceStatus = 'idle',
   workspaceError = null,
@@ -53,6 +61,7 @@ export function WorkspacePanel({
   onSelectWorkspace,
   onRunMultiagentEval,
   onRunPromptBattery,
+  onRunQualityEval,
 }: Props) {
   const workspaceBusy = workspaceStatus === 'running'
 
@@ -148,6 +157,15 @@ export function WorkspacePanel({
             status={promptBatteryStatus}
             error={promptBatteryError}
             onRun={onRunPromptBattery}
+          />
+        )}
+
+        {(onRunQualityEval || qualityEval || qualityEvalError) && (
+          <QualityEvalPanel
+            result={qualityEval}
+            status={qualityEvalStatus}
+            error={qualityEvalError}
+            onRun={onRunQualityEval}
           />
         )}
 
@@ -410,6 +428,85 @@ function PromptBatteryPanel({
         <div className="flex flex-wrap gap-2">
           {coverage.map(([member, count]) => (
             <MetaPill key={member} label={`${member}: ${count}`} />
+          ))}
+        </div>
+      )}
+
+      {error && (
+        <p
+          role="alert"
+          className="rounded border border-red-400/20 bg-red-400/10 px-3 py-2 font-mono text-xs text-red-200"
+        >
+          {error}
+        </p>
+      )}
+    </section>
+  )
+}
+
+function QualityEvalPanel({
+  result,
+  status,
+  error,
+  onRun,
+}: {
+  result?: QualityEvalResult | null
+  status: EvalRunStatus
+  error?: string | null
+  onRun?: () => void
+}) {
+  const disabled = status === 'running' || !onRun
+  const score = result ? Math.round(result.score) : '--'
+  const checks = result?.checks ?? []
+  const gateStatus = result?.status ?? '--'
+  const statusTone =
+    result?.status === 'failed' || result?.passed === false ? 'danger' : 'success'
+
+  return (
+    <section className="flex flex-col gap-4 border-t border-white/10 pt-5">
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+        <div>
+          <p className="font-display text-[10px] uppercase tracking-[0.22em] text-primary/70">
+            Quality Harness
+          </p>
+          <h2 className="mt-1 font-display text-lg font-medium text-on-surface">
+            Quality gate
+          </h2>
+        </div>
+        <button
+          type="button"
+          onClick={onRun}
+          disabled={disabled}
+          aria-label="Run quality eval"
+          className="desktop-glass-panel inline-flex h-9 items-center justify-center gap-2 rounded-lg px-4 font-display text-[11px] uppercase tracking-[0.18em] text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Icon
+            name={status === 'running' ? 'cpu' : 'bot'}
+            className={`h-4 w-4 ${status === 'running' ? 'animate-pulse' : ''}`}
+          />
+          {status === 'running' ? 'Running' : 'Run quality'}
+        </button>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <EvalMetric label="score" value={String(score)} tone="primary" />
+        <EvalMetric label="status" value={String(gateStatus)} tone={statusTone} />
+        <EvalMetric
+          label="checks"
+          value={String(checks.length || '--')}
+          tone="primary"
+        />
+        <EvalMetric
+          label="prompts"
+          value={String(result?.promptBattery.promptCount ?? '--')}
+          tone="success"
+        />
+      </div>
+
+      {checks.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {checks.map((check) => (
+            <MetaPill key={check.name} label={`${check.name}: ${check.score}`} />
           ))}
         </div>
       )}

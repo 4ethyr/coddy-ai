@@ -13,6 +13,7 @@ const replApi = {
       'repl:history',
       'repl:eval-multiagent',
       'repl:eval-prompt-battery',
+      'repl:eval-quality',
       'workspace:get-active',
       'workspace:select-folder',
       'models:list',

@@ -38,6 +38,7 @@ describe('EventStreamer', () => {
       selectWorkspaceFolder: vi.fn(),
       runMultiagentEval: vi.fn(),
       runPromptBatteryEval: vi.fn(),
+      runQualityEval: vi.fn(),
       listProviderModels: vi.fn(),
       watchEvents(afterSequence: number): AsyncIterable<ReplEventEnvelope> {
         watchedAfter.push(afterSequence)
@@ -98,6 +99,7 @@ describe('EventStreamer', () => {
       selectWorkspaceFolder: vi.fn(),
       runMultiagentEval: vi.fn(),
       runPromptBatteryEval: vi.fn(),
+      runQualityEval: vi.fn(),
       listProviderModels: vi.fn(),
       watchEvents(): AsyncIterable<ReplEventEnvelope> {
         watchStarted = true

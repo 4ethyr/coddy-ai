@@ -270,6 +270,73 @@ describe('WorkspacePanel', () => {
     expect(onRun).toHaveBeenCalledTimes(1)
   })
 
+  it('renders and triggers the combined quality eval gate', async () => {
+    const onRun = vi.fn()
+
+    render(
+      <WorkspacePanel
+        items={[]}
+        tools={[]}
+        qualityEvalStatus="succeeded"
+        onRunQualityEval={onRun}
+        qualityEval={{
+          kind: 'coddy.qualityEval',
+          version: 1,
+          status: 'passed',
+          passed: true,
+          score: 100,
+          checks: [
+            {
+              name: 'multiagent',
+              status: 'passed',
+              score: 100,
+              passed: 3,
+              failed: 0,
+            },
+            {
+              name: 'prompt-battery',
+              status: 'passed',
+              score: 100,
+              promptCount: 1200,
+              passed: 1200,
+              failed: 0,
+            },
+          ],
+          multiagent: {
+            score: 100,
+            passed: 3,
+            failed: 0,
+            reports: [],
+          },
+          promptBattery: {
+            promptCount: 1200,
+            stackCount: 30,
+            knowledgeAreaCount: 10,
+            passed: 1200,
+            failed: 0,
+            score: 100,
+            memberCoverage: { explorer: 1200 },
+            failures: [],
+          },
+        }}
+      />,
+    )
+
+    expect(screen.getByText('Quality gate')).toBeInTheDocument()
+    expect(screen.getByText('status')).toBeInTheDocument()
+    expect(screen.getByText('passed')).toBeInTheDocument()
+    expect(screen.getByText('checks')).toBeInTheDocument()
+    expect(screen.getByText('2')).toBeInTheDocument()
+    expect(screen.getByText('multiagent: 100')).toBeInTheDocument()
+    expect(screen.getByText('prompt-battery: 100')).toBeInTheDocument()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Run quality eval' }),
+    )
+
+    expect(onRun).toHaveBeenCalledTimes(1)
+  })
+
   it('locks the prompt battery action while a run is active', () => {
     render(
       <WorkspacePanel
@@ -282,6 +349,22 @@ describe('WorkspacePanel', () => {
 
     expect(
       screen.getByRole('button', { name: 'Run prompt battery' }),
+    ).toBeDisabled()
+    expect(screen.getByText('Running')).toBeInTheDocument()
+  })
+
+  it('locks the quality eval action while a run is active', () => {
+    render(
+      <WorkspacePanel
+        items={[]}
+        tools={[]}
+        qualityEvalStatus="running"
+        onRunQualityEval={vi.fn()}
+      />,
+    )
+
+    expect(
+      screen.getByRole('button', { name: 'Run quality eval' }),
     ).toBeDisabled()
     expect(screen.getByText('Running')).toBeInTheDocument()
   })

@@ -41,6 +41,9 @@ export function DesktopApp() {
     promptBattery,
     promptBatteryStatus,
     promptBatteryError,
+    qualityEval,
+    qualityEvalStatus,
+    qualityEvalError,
     activeWorkspacePath,
     workspaceSelectionStatus,
     workspaceSelectionError,
@@ -55,6 +58,7 @@ export function DesktopApp() {
     cancelVoiceCapture,
     runMultiagentEval,
     runPromptBatteryEval,
+    runQualityEval,
     selectWorkspaceFolder,
     openUi,
     replyPermission,
@@ -341,6 +345,9 @@ export function DesktopApp() {
               promptBattery={promptBattery}
               promptBatteryStatus={promptBatteryStatus}
               promptBatteryError={promptBatteryError}
+              qualityEval={qualityEval}
+              qualityEvalStatus={qualityEvalStatus}
+              qualityEvalError={qualityEvalError}
               evalHarnessSettings={evalHarness}
               onEvalHarnessSettingsChange={handleEvalHarnessChange}
               onRunMultiagentEval={(request) => {
@@ -348,6 +355,9 @@ export function DesktopApp() {
               }}
               onRunPromptBattery={() => {
                 void runPromptBatteryEval()
+              }}
+              onRunQualityEval={() => {
+                void runQualityEval()
               }}
             />
           )}

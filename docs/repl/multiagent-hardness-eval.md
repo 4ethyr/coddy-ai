@@ -541,6 +541,37 @@ Validation:
 - `git diff --check`: passed.
 - `./scripts/guard_no_secrets.sh`: passed.
 
+### Battery 22: Electron Quality Eval Integration
+
+Goal: make the combined quality gate available from the desktop Workspace flow through the same
+typed IPC and session-state path used by the existing multiagent and prompt-battery harnesses.
+
+Implemented result:
+
+- Added typed frontend contracts for `QualityEvalResult` and individual quality checks.
+- Added `runQualityEval` to `ReplIpcClient`, `CommandSender`, `ElectronReplIpcClient` and the
+  preload allowlist.
+- Added a main-process IPC handler for `repl:eval-quality`, which executes
+  `coddy eval quality --json`.
+- Extended `useSession` with quality eval result, status and error state.
+- Added a Workspace quality gate panel with score, status, check count, prompt count and compact
+  component check summaries.
+- Wired the Desktop Workspace tab to trigger the combined gate.
+
+Validation:
+
+- `npm test -- CommandSender ElectronReplIpcClient WorkspacePanel useSession integration EventStreamer SessionManager`: 7 files passed, 60 tests passed.
+- `npm test`: 39 files passed, 312 tests passed.
+- `npm run test:e2e`: 1 file passed, 1 test passed.
+- `npm run typecheck`: passed.
+- `npm run typecheck:main`: passed.
+- `npm run lint`: passed.
+- `npm run build`: passed.
+- `target/debug/coddy eval quality`: passed, score 100.
+- `target/debug/coddy eval quality --json`: status `passed`, score 100.
+- `git diff --check`: passed.
+- `./scripts/guard_no_secrets.sh`: passed.
+
 ## Current Assessment
 
 The multiagent harness is now measurable before execution. It can compose a team plan, expose
@@ -557,8 +588,8 @@ Electron frontend now also has a dedicated E2E smoke for the model-selection, me
 approval and subagent-activity path, using the production React app and IPC client contract against
 a simulated backend. Sensitive workspace reads now require approval before file access, then still
 pass through source-level redaction after approval. A combined `coddy eval quality` gate now bundles
-the default multiagent and prompt-battery signals into one deterministic report for local and CI
-checks.
+the default multiagent and prompt-battery signals into one deterministic report for local, CI and
+desktop Workspace checks.
 
 Remaining gaps:
 
