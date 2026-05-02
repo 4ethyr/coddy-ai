@@ -36,6 +36,7 @@ use uuid::Uuid;
 
 const MAX_MODEL_TOOL_ROUNDS: usize = 5;
 const MAX_MODEL_REQUEST_ATTEMPTS: usize = 4;
+const MAX_MODEL_TOOL_OBSERVATION_CHARS: usize = 12 * 1024;
 const MODEL_RETRY_BASE_DELAY_MS: u64 = 250;
 
 #[derive(Debug, Clone)]
@@ -1149,10 +1150,15 @@ impl CoddyRuntime {
                     }
                     let text = result
                         .output
+                        .as_ref()
                         .map(|output| {
-                            let mut text = output.text.trim().to_string();
+                            let (mut text, compacted) = compact_tool_output_for_model(&output.text);
+                            text = text.trim().to_string();
+                            if compacted {
+                                text.push_str("\n  Tool output compacted for model context. Ask for a narrower read/search if omitted content is needed.");
+                            }
                             if output.truncated {
-                                text.push_str("\n  Result truncated.");
+                                text.push_str("\n  Source tool result truncated by executor.");
                             }
                             text
                         })
@@ -1756,6 +1762,25 @@ fn normalize_model_initiated_tool_input(
         }
     }
     input
+}
+
+fn compact_tool_output_for_model(text: &str) -> (String, bool) {
+    let total_chars = text.chars().count();
+    if total_chars <= MAX_MODEL_TOOL_OBSERVATION_CHARS {
+        return (text.to_string(), false);
+    }
+
+    let marker = format!(
+        "\n[Coddy compacted tool output: original {total_chars} chars; middle content omitted for context budget.]\n"
+    );
+    let available = MAX_MODEL_TOOL_OBSERVATION_CHARS.saturating_sub(marker.chars().count());
+    let head_chars = available / 2;
+    let tail_chars = available.saturating_sub(head_chars);
+    let head: String = text.chars().take(head_chars).collect();
+    let tail_reversed: Vec<char> = text.chars().rev().take(tail_chars).collect();
+    let tail: String = tail_reversed.into_iter().rev().collect();
+
+    (format!("{head}{marker}{tail}"), true)
 }
 
 fn build_tool_round_limit_response(
@@ -5044,6 +5069,80 @@ mod tests {
                 .filter(|event| matches!(&event.event, ReplEvent::ToolStarted { name } if name == LIST_FILES_TOOL || name == READ_FILE_TOOL))
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn ask_command_compacts_large_tool_observations_before_followup() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        let large_file = format!(
+            "BEGIN_MARKER\n{}\nEND_MARKER\n",
+            "x".repeat(MAX_MODEL_TOOL_OBSERVATION_CHARS * 4)
+        );
+        workspace.write("src/large.rs", &large_file);
+        let (chat_client, requests) = QueuedChatClient::new(vec![
+            ChatResponse {
+                text: "I will inspect the large file.".to_string(),
+                deltas: vec!["I will inspect the large file.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-1".to_string()),
+                    name: READ_FILE_TOOL.to_string(),
+                    arguments: json!({
+                        "path": "src/large.rs",
+                        "max_bytes": MAX_MODEL_TOOL_OBSERVATION_CHARS * 8,
+                    }),
+                }],
+            },
+            ChatResponse::from_text("Large file inspection is complete."),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect the large source file".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let tool_message = captured_requests[1]
+            .messages
+            .iter()
+            .find(|message| message.role == coddy_agent::ChatMessageRole::Tool)
+            .expect("tool observation message");
+
+        assert_eq!(text, "Large file inspection is complete.");
+        assert!(tool_message.content.contains("BEGIN_MARKER"));
+        assert!(tool_message.content.contains("END_MARKER"));
+        assert!(tool_message.content.contains("Coddy compacted tool output"));
+        assert!(
+            tool_message.content.chars().count() <= MAX_MODEL_TOOL_OBSERVATION_CHARS + 512,
+            "tool observation was not compacted enough: {} chars",
+            tool_message.content.chars().count()
         );
     }
 

@@ -191,6 +191,8 @@ Implicacao para Coddy:
   executados, status e erros normalizados.
 - Adicionar teste de regressao para prompts que pedem analise de codebase e
   garantem que tools registradas usam nomes locais validos.
+- Manter observacoes de tools dentro de budget previsivel para evitar que
+  arquivos grandes dominem a proxima inferencia do modelo.
 
 ### P1: Subagents reais
 
@@ -202,7 +204,9 @@ Implicacao para Coddy:
 
 ### P1: Contexto e pesquisa
 
-- Adicionar resumo automatico de tool outputs longos.
+- Expandir resumo automatico de tool outputs longos para ranking por relevancia,
+  citacoes por trecho e re-leitura focada quando o conteudo omitido for
+  necessario.
 - Criar ranking simples por workspace: manifestos, docs, arquivos recentemente
   tocados, testes relacionados e resultados de busca.
 - Integrar MCP como fonte externa permissionada, preservando redacao de secrets
@@ -214,6 +218,33 @@ Implicacao para Coddy:
 - Rodar bateria pequena em PR e bateria maior sob demanda.
 - Registrar `modelErrorRate`, `toolErrorRate`, `validationPassRate`,
   `secretLeakCount`, `cancelRecoveryRate` e `averageRunLatencyMs`.
+
+## Rodada atual: compactacao de observacoes
+
+Problema validado na codebase: o runtime limitava numero de rounds de tools,
+mas a observacao textual enviada ao follow-up do modelo podia carregar um
+arquivo grande quase inteiro. Isso desperdicava contexto e ia contra o padrao
+observado em agentes top-tier: gerenciamento explicito de janela de contexto,
+compaction e recuperacao focada.
+
+Melhoria implementada:
+
+- limite de 12 Ki chars por observacao de tool enviada ao follow-up do modelo;
+- preservacao do inicio e do fim do output, para manter imports/cabecalhos e
+  conclusoes/erros finais;
+- marcador explicito `Coddy compacted tool output` informando que o meio foi
+  omitido por budget de contexto;
+- instrucao para reexecutar leitura/busca mais estreita quando o trecho omitido
+  for necessario;
+- teste de regressao cobrindo arquivo grande, preservacao de `BEGIN_MARKER` e
+  `END_MARKER`, presenca do marcador de compactacao e limite de tamanho.
+
+Metrica local apos a mudanca:
+
+- `cargo test -p coddy-runtime -- --test-threads=1`: 60 passed.
+- `./target/debug/coddy eval quality --json`: score 100.
+- Multiagent eval: 3/3 passed, score 100.
+- Prompt battery deterministica: 1200/1200 passed, score 100.
 
 ## Estado validado em 2026-05-02
 
