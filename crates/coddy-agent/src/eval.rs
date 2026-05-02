@@ -10,7 +10,10 @@ use coddy_core::{ModelCredential, ModelRef, PermissionReply};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::model::{ChatMessage, ChatModelClient, ChatModelError, ChatModelResult, ChatRequest};
+use crate::model::{
+    is_empty_assistant_response_error, with_empty_response_retry_guidance, ChatMessage,
+    ChatModelClient, ChatModelError, ChatModelResult, ChatRequest,
+};
 use crate::{
     AgentError, DeterministicPlanExecutor, DeterministicPlanItem, DeterministicPlanReport,
     DeterministicPlanStatus, SubagentExecutionCoordinator, SubagentExecutionSummary,
@@ -1248,13 +1251,20 @@ fn complete_prompt_battery_request_with_retry(
     client: &dyn ChatModelClient,
     request: ChatRequest,
 ) -> ChatModelResult {
-    const MAX_ATTEMPTS: usize = 3;
+    const MAX_ATTEMPTS: usize = 4;
 
     let mut last_error = None;
+    let mut should_add_empty_response_guidance = false;
     for attempt in 0..MAX_ATTEMPTS {
-        match client.complete(request.clone()) {
+        let attempt_request = if should_add_empty_response_guidance {
+            with_empty_response_retry_guidance(request.clone())
+        } else {
+            request.clone()
+        };
+        match client.complete(attempt_request) {
             Ok(response) => return Ok(response),
             Err(error) if attempt + 1 < MAX_ATTEMPTS && should_retry_live_eval_error(&error) => {
+                should_add_empty_response_guidance = is_empty_assistant_response_error(&error);
                 last_error = Some(error);
                 thread::sleep(Duration::from_millis(250 * (attempt as u64 + 1)));
             }
@@ -2431,6 +2441,13 @@ mod tests {
         );
     }
 
+    fn request_has_empty_response_retry_guidance(request: &ChatRequest) -> bool {
+        request
+            .messages
+            .iter()
+            .any(|message| message.content.contains("empty assistant content"))
+    }
+
     #[test]
     fn prompt_battery_policy_guard_completes_partial_model_routes() {
         let case = PromptBatteryCase {
@@ -2575,14 +2592,20 @@ mod tests {
     #[derive(Debug)]
     struct FlakyRoutingClient {
         attempts: std::sync::atomic::AtomicUsize,
+        failures_before_success: usize,
+        requests: std::sync::Mutex<Vec<ChatRequest>>,
     }
 
     impl ChatModelClient for FlakyRoutingClient {
-        fn complete(&self, _request: ChatRequest) -> ChatModelResult {
+        fn complete(&self, request: ChatRequest) -> ChatModelResult {
+            self.requests
+                .lock()
+                .expect("requests mutex poisoned")
+                .push(request);
             if self
                 .attempts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                == 0
+                < self.failures_before_success
             {
                 return Err(ChatModelError::InvalidProviderResponse {
                     provider: "openrouter".to_string(),
@@ -2599,7 +2622,7 @@ mod tests {
     }
 
     #[test]
-    fn live_prompt_battery_retries_empty_provider_responses_once() {
+    fn live_prompt_battery_retries_repeated_empty_provider_responses() {
         let case = PromptBatteryCase {
             id: "case-1".to_string(),
             stack: "rust".to_string(),
@@ -2611,6 +2634,8 @@ mod tests {
         let cases = [&case];
         let client = FlakyRoutingClient {
             attempts: std::sync::atomic::AtomicUsize::new(0),
+            failures_before_success: 3,
+            requests: std::sync::Mutex::new(Vec::new()),
         };
 
         let report = run_live_prompt_battery_cases(
@@ -2630,7 +2655,20 @@ mod tests {
         );
 
         assert_eq!(report.raw_passed, 1);
-        assert_eq!(client.attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(client.attempts.load(std::sync::atomic::Ordering::SeqCst), 4);
+        let captured_requests = client.requests.lock().expect("requests mutex poisoned");
+        assert!(!request_has_empty_response_retry_guidance(
+            &captured_requests[0]
+        ));
+        assert!(request_has_empty_response_retry_guidance(
+            &captured_requests[1]
+        ));
+        assert!(request_has_empty_response_retry_guidance(
+            &captured_requests[2]
+        ));
+        assert!(request_has_empty_response_retry_guidance(
+            &captured_requests[3]
+        ));
     }
 
     fn passing_multiagent_suite() -> MultiagentEvalSuiteReport {

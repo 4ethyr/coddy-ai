@@ -334,6 +334,23 @@ impl ChatResponse {
     }
 }
 
+pub fn is_empty_assistant_response_error(error: &ChatModelError) -> bool {
+    match error {
+        ChatModelError::InvalidProviderResponse { message, .. } => {
+            let normalized = message.to_ascii_lowercase();
+            normalized.contains("did not include assistant content or tool calls")
+        }
+        _ => false,
+    }
+}
+
+pub fn with_empty_response_retry_guidance(mut request: ChatRequest) -> ChatRequest {
+    request.messages.push(ChatMessage::user(
+        "The previous provider attempt returned empty assistant content. Return a non-empty concise response now. If this is a routing task, return only the requested JSON shape.",
+    ));
+    request
+}
+
 impl ChatModelError {
     pub fn code(&self) -> &'static str {
         match self {
