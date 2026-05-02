@@ -5,6 +5,8 @@ export type UiSlashCommand =
   | { kind: 'open-desktop-tab'; tab: DesktopTab }
   | { kind: 'open-history' }
   | { kind: 'new-session' }
+  | { kind: 'show-status' }
+  | { kind: 'show-help' }
   | { kind: 'set-speak'; enabled: boolean }
   | { kind: 'agent-workflow'; prompt: string }
 
@@ -24,14 +26,46 @@ const TAB_COMMANDS: Record<string, DesktopTab> = {
   workspace: 'workspace',
   workspaces: 'workspace',
   files: 'workspace',
+  tool: 'workspace',
+  tools: 'workspace',
+  subagent: 'workspace',
+  subagents: 'workspace',
+  agents: 'workspace',
+  mcp: 'workspace',
+  quality: 'workspace',
+  eval: 'workspace',
+  evals: 'workspace',
+  metrics: 'workspace',
   models: 'models',
   model: 'models',
 }
 
 const SETTINGS_COMMANDS = new Set(['settings', 'setting', 'settins', 'config'])
-const WORKFLOW_COMMANDS = new Set(['plan', 'review', 'test', 'tests'])
+const WORKFLOW_COMMANDS = new Set([
+  'code',
+  'implement',
+  'plan',
+  'review',
+  'test',
+  'tests',
+])
 
 export const UI_SLASH_COMMAND_SUGGESTIONS: UiSlashCommandSuggestion[] = [
+  {
+    command: '/help',
+    title: 'Show commands',
+    description: 'List local slash commands without contacting the model.',
+    insertText: '/help',
+    aliases: ['/?'],
+  },
+  {
+    command: '/code',
+    title: 'Implement with TDD',
+    description: 'Inspect, plan, edit incrementally and validate a coding task.',
+    insertText: '/code ',
+    aliases: ['/implement'],
+    requiresArgument: true,
+  },
   {
     command: '/plan',
     title: 'Plan a coding task',
@@ -62,6 +96,33 @@ export const UI_SLASH_COMMAND_SUGGESTIONS: UiSlashCommandSuggestion[] = [
     aliases: ['/workspaces', '/files'],
   },
   {
+    command: '/tools',
+    title: 'Open tools',
+    description: 'Inspect tool catalog, risk levels and eval readiness.',
+    insertText: '/tools',
+    aliases: ['/tool'],
+  },
+  {
+    command: '/subagents',
+    title: 'Open subagents',
+    description: 'Inspect subagent activity, contracts and eval harness.',
+    insertText: '/subagents',
+    aliases: ['/subagent', '/agents'],
+  },
+  {
+    command: '/mcp',
+    title: 'Open MCP readiness',
+    description: 'Inspect external tool readiness and permission bridge status.',
+    insertText: '/mcp',
+  },
+  {
+    command: '/quality',
+    title: 'Open quality gate',
+    description: 'Run evals and inspect multiagent, prompt battery and quality scores.',
+    insertText: '/quality',
+    aliases: ['/eval', '/evals', '/metrics'],
+  },
+  {
     command: '/models',
     title: 'Open models',
     description: 'Load providers, choose models and inspect runtime readiness.',
@@ -80,6 +141,12 @@ export const UI_SLASH_COMMAND_SUGGESTIONS: UiSlashCommandSuggestion[] = [
     title: 'Open history',
     description: 'Show persisted redacted chat history.',
     insertText: '/history',
+  },
+  {
+    command: '/status',
+    title: 'Show status',
+    description: 'Show current session, model, workspace and activity state.',
+    insertText: '/status',
   },
   {
     command: '/new',
@@ -108,12 +175,20 @@ export function resolveUiSlashCommand(input: string): UiSlashCommand | null {
     return { kind: 'open-settings' }
   }
 
+  if (command === 'help' || command === '?') {
+    return { kind: 'show-help' }
+  }
+
   if (command === 'history') {
     return { kind: 'open-history' }
   }
 
   if (command === 'new') {
     return { kind: 'new-session' }
+  }
+
+  if (command === 'status') {
+    return { kind: 'show-status' }
   }
 
   if (command === 'speak') {
@@ -161,6 +236,23 @@ export function listUiSlashCommandSuggestions(
 }
 
 function codingWorkflowPrompt(command: string, goal: string): string {
+  if (command === 'code' || command === 'implement') {
+    return [
+      'Implementation coding workflow.',
+      '',
+      `Goal: ${goal}`,
+      '',
+      'Instructions:',
+      '- Explore first: inspect the smallest relevant files, scripts and tests before editing.',
+      '- State a short plan with assumptions, risk, target files and validation criteria before changing code.',
+      '- Use TDD for behavior changes: add or update a focused failing test before the implementation when practical.',
+      '- Keep edits incremental, clean, and aligned with the existing architecture; avoid unrelated refactors and dependencies.',
+      '- Use safe tools only; request approval for write, shell, network or destructive actions that require it.',
+      '- Validate with the narrowest useful test first, then broaden to lint, type-check or build when warranted.',
+      '- Final response must include changed files, validations run with pass/fail status, and remaining risks.',
+    ].join('\n')
+  }
+
   if (command === 'review') {
     return [
       'Code review workflow.',

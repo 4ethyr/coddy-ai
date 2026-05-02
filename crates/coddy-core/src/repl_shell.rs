@@ -22,6 +22,7 @@ pub enum ReplShellInput {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CodingWorkflowKind {
+    Code,
     Plan,
     Review,
     Test,
@@ -77,6 +78,10 @@ pub fn parse_repl_shell_input(input: &str) -> ReplShellInput {
         "/history" => ReplShellInput::History,
         "/new" => ReplShellInput::NewSession,
         "/exit" | "/quit" => ReplShellInput::Exit,
+        "/code" | "/implement" => ReplShellInput::Workflow {
+            kind: CodingWorkflowKind::Code,
+            goal,
+        },
         "/plan" => ReplShellInput::Workflow {
             kind: CodingWorkflowKind::Plan,
             goal,
@@ -133,6 +138,7 @@ fn help_response() -> ReplShellResponse {
             "/tools   Show registered local tools.".to_string(),
             "/history Show persisted chat history.".to_string(),
             "/new     Start a new chat session.".to_string(),
+            "/code    Implement a bounded coding task with TDD and validation.".to_string(),
             "/plan    Build an evidence-based implementation plan.".to_string(),
             "/review  Review code, diffs or architecture risks.".to_string(),
             "/test    Design or run focused validation for a change.".to_string(),
@@ -207,6 +213,7 @@ fn unknown_command_response(command: &str) -> ReplShellResponse {
 
 fn workflow_usage_response(kind: CodingWorkflowKind) -> ReplShellResponse {
     let command = match kind {
+        CodingWorkflowKind::Code => "/code",
         CodingWorkflowKind::Plan => "/plan",
         CodingWorkflowKind::Review => "/review",
         CodingWorkflowKind::Test => "/test",
@@ -223,6 +230,9 @@ fn workflow_usage_response(kind: CodingWorkflowKind) -> ReplShellResponse {
 pub fn coding_workflow_prompt(kind: CodingWorkflowKind, goal: &str) -> String {
     let goal = goal.trim();
     match kind {
+        CodingWorkflowKind::Code => format!(
+            "Implementation coding workflow.\n\nGoal: {goal}\n\nInstructions:\n- Explore first: inspect the smallest relevant files, scripts and tests before editing.\n- State a short plan with assumptions, risk, target files and validation criteria before changing code.\n- Use TDD for behavior changes: add or update a focused failing test before the implementation when practical.\n- Keep edits incremental, clean, and aligned with the existing architecture; avoid unrelated refactors and dependencies.\n- Use safe tools only; request approval for write, shell, network or destructive actions that require it.\n- Validate with the narrowest useful test first, then broaden to lint, type-check or build when warranted.\n- Final response must include changed files, validations run with pass/fail status, and remaining risks."
+        ),
         CodingWorkflowKind::Plan => format!(
             "Plan-only coding workflow.\n\nGoal: {goal}\n\nInstructions:\n- Inspect safe read-only workspace context before making code claims when tools are available.\n- Do not edit files or run mutating commands in this workflow.\n- Return objective, assumptions, relevant files to inspect, ordered steps, risks, validation plan and approval needs.\n- If evidence is missing, state exactly which read-only inspection is needed."
         ),
@@ -262,6 +272,20 @@ mod tests {
         assert_eq!(parse_repl_shell_input("/new"), ReplShellInput::NewSession);
         assert_eq!(parse_repl_shell_input("/exit"), ReplShellInput::Exit);
         assert_eq!(parse_repl_shell_input("/quit"), ReplShellInput::Exit);
+        assert_eq!(
+            parse_repl_shell_input("/code implement workspace support"),
+            ReplShellInput::Workflow {
+                kind: CodingWorkflowKind::Code,
+                goal: "implement workspace support".to_string(),
+            }
+        );
+        assert_eq!(
+            parse_repl_shell_input("/implement fix cancellation"),
+            ReplShellInput::Workflow {
+                kind: CodingWorkflowKind::Code,
+                goal: "fix cancellation".to_string(),
+            }
+        );
         assert_eq!(
             parse_repl_shell_input("/plan implement workspace support"),
             ReplShellInput::Workflow {
@@ -359,6 +383,20 @@ mod tests {
 
     #[test]
     fn workflow_commands_dispatch_coding_guidance_as_ask_commands() {
+        let action = handle_repl_shell_input("/code add provider fallback", &context());
+
+        assert!(matches!(
+            action,
+            ReplShellAction::SendCommand(crate::ReplCommand::Ask {
+                text,
+                context_policy: crate::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            }) if text.contains("Implementation coding workflow")
+                && text.contains("Goal: add provider fallback")
+                && text.contains("Use TDD")
+                && text.contains("Validate with the narrowest useful test")
+        ));
+
         let action = handle_repl_shell_input("/plan add provider fallback", &context());
 
         assert!(matches!(
@@ -393,6 +431,12 @@ mod tests {
 
     #[test]
     fn workflow_commands_without_goal_render_usage() {
+        assert!(matches!(
+            handle_repl_shell_input("/code", &context()),
+            ReplShellAction::Render(response)
+                if response.title == "Coding Workflow"
+                    && response.lines.iter().any(|line| line.contains("/code <goal"))
+        ));
         assert!(matches!(
             handle_repl_shell_input("/plan", &context()),
             ReplShellAction::Render(response)

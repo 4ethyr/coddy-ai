@@ -10,6 +10,7 @@ import type {
   MultiagentEvalRequest,
   MultiagentEvalResult,
   PromptBatteryResult,
+  QualityEvalResult,
   PermissionReply,
   ConversationRecord,
   AssessmentPolicy,
@@ -121,6 +122,15 @@ export async function runPromptBatteryEval(
   client: ReplIpcClient,
 ): Promise<PromptBatteryResult> {
   return client.runPromptBatteryEval()
+}
+
+/**
+ * Runs the combined deterministic quality gate exposed by the backend.
+ */
+export async function runQualityEval(
+  client: ReplIpcClient,
+): Promise<QualityEvalResult> {
+  return client.runQualityEval()
 }
 
 export async function getActiveWorkspace(

@@ -62,3 +62,23 @@ export interface PromptBatteryResult {
   memberCoverage: Record<string, number>
   failures: PromptBatteryFailure[]
 }
+
+export interface QualityEvalCheck {
+  name: string
+  status: 'passed' | 'failed'
+  score: number
+  passed?: number
+  failed?: number
+  promptCount?: number
+}
+
+export interface QualityEvalResult {
+  kind: 'coddy.qualityEval'
+  version: number
+  status: 'passed' | 'failed'
+  passed: boolean
+  score: number
+  checks: QualityEvalCheck[]
+  multiagent: MultiagentEvalSuiteSummary
+  promptBattery: PromptBatteryResult
+}

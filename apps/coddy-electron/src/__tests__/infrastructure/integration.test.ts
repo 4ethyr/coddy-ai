@@ -148,6 +148,51 @@ function createSimBridge(daemon: SimDaemon) {
             failures: [],
           })
 
+        case 'repl:eval-quality':
+          daemon.commands.push('eval-quality')
+          return Promise.resolve({
+            kind: 'coddy.qualityEval',
+            version: 1,
+            status: 'passed',
+            passed: true,
+            score: 100,
+            checks: [
+              {
+                name: 'multiagent',
+                status: 'passed',
+                score: 100,
+                passed: 3,
+                failed: 0,
+              },
+              {
+                name: 'prompt-battery',
+                status: 'passed',
+                score: 100,
+                promptCount: 1200,
+                passed: 1200,
+                failed: 0,
+              },
+            ],
+            multiagent: {
+              score: 100,
+              passed: 3,
+              failed: 0,
+              reports: [],
+            },
+            promptBattery: {
+              promptCount: 1200,
+              stackCount: 30,
+              knowledgeAreaCount: 10,
+              passed: 1200,
+              failed: 0,
+              score: 100,
+              memberCoverage: {
+                explorer: 1200,
+              },
+              failures: [],
+            },
+          })
+
         // ---- Watch start ----
         case 'repl:watch-start': {
           // Push existing events after sequence
@@ -551,6 +596,12 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
       >
     },
 
+    async runQualityEval() {
+      return (await sim.invoke('repl:eval-quality')) as Awaited<
+        ReturnType<ReplIpcClient['runQualityEval']>
+      >
+    },
+
     async listProviderModels(request) {
       return {
         provider: request.provider,
@@ -818,6 +869,22 @@ describe('IPC integration', () => {
       })
       expect(result.memberCoverage.explorer).toBe(1200)
       expect(daemon.commands).toEqual(['eval-prompt-battery'])
+    })
+
+    it('runs the combined deterministic quality gate through the frontend client port', async () => {
+      const result = await client.runQualityEval()
+
+      expect(result).toMatchObject({
+        kind: 'coddy.qualityEval',
+        version: 1,
+        status: 'passed',
+        passed: true,
+        score: 100,
+      })
+      expect(result.checks).toHaveLength(2)
+      expect(result.multiagent.passed).toBe(3)
+      expect(result.promptBattery.promptCount).toBe(1200)
+      expect(daemon.commands).toEqual(['eval-quality'])
     })
   })
 

@@ -4026,11 +4026,42 @@ mod tests {
 
     #[test]
     fn ask_command_executes_provider_safe_tool_aliases_through_agent_runtime() {
-        for alias in [
-            "coddy_tool__filesystem__dot__list_files",
-            "filesystem__dot__list_files",
-            "filesystem::list_files",
-            "filesystem_list_files",
+        for (alias, expected_tool, arguments) in [
+            (
+                "coddy_tool__filesystem__dot__list_files",
+                LIST_FILES_TOOL,
+                json!({ "path": ".", "max_entries": 20 }),
+            ),
+            (
+                "filesystem__dot__list_files",
+                LIST_FILES_TOOL,
+                json!({ "path": ".", "max_entries": 20 }),
+            ),
+            (
+                "filesystem::list_files",
+                LIST_FILES_TOOL,
+                json!({ "path": ".", "max_entries": 20 }),
+            ),
+            (
+                "filesystem_list_files",
+                LIST_FILES_TOOL,
+                json!({ "path": ".", "max_entries": 20 }),
+            ),
+            (
+                "filesystem__dot__read_file",
+                READ_FILE_TOOL,
+                json!({ "path": "src/main.rs", "max_bytes": 200 }),
+            ),
+            (
+                "coddy_tool__filesystem__dot__read_file",
+                READ_FILE_TOOL,
+                json!({ "path": "src/main.rs", "max_bytes": 200 }),
+            ),
+            (
+                "filesystem_search_files",
+                SEARCH_FILES_TOOL,
+                json!({ "path": ".", "query": "fn main", "max_matches": 5 }),
+            ),
         ] {
             let request_id = Uuid::new_v4();
             let workspace = TempWorkspace::new();
@@ -4043,7 +4074,7 @@ mod tests {
                     tool_calls: vec![ChatToolCall {
                         id: Some("call-1".to_string()),
                         name: alias.to_string(),
-                        arguments: json!({ "path": ".", "max_entries": 20 }),
+                        arguments,
                     }],
                 },
                 ChatResponse::from_text(format!("Final answer for {alias}.")),
@@ -4084,7 +4115,7 @@ mod tests {
             assert_eq!(text, format!("Final answer for {alias}."));
             assert!(events.iter().any(|event| matches!(
                 &event.event,
-                ReplEvent::ToolStarted { name } if name == LIST_FILES_TOOL
+                ReplEvent::ToolStarted { name } if name == expected_tool
             )));
             assert!(!events.iter().any(|event| matches!(
                 &event.event,

@@ -20,6 +20,7 @@ import type {
   MultiagentEvalResult,
   PermissionReply,
   PromptBatteryResult,
+  QualityEvalResult,
   ReplEventEnvelope,
   ReplMode,
   ReplSessionSnapshot,
@@ -205,6 +206,12 @@ export class ElectronReplIpcClient implements ReplIpcClient {
     return (await window.replApi.invoke(
       'repl:eval-prompt-battery',
     )) as PromptBatteryResult
+  }
+
+  async runQualityEval(): Promise<QualityEvalResult> {
+    return (await window.replApi.invoke(
+      'repl:eval-quality',
+    )) as QualityEvalResult
   }
 
   async listProviderModels(

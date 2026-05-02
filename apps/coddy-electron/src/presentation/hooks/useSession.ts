@@ -12,6 +12,7 @@ import type {
   MultiagentEvalResult,
   PermissionReply,
   PromptBatteryResult,
+  QualityEvalResult,
   ConversationRecord,
   ReplCommandResult,
   ReplMode,
@@ -42,6 +43,7 @@ import {
   listProviderModels,
   runMultiagentEval,
   runPromptBatteryEval,
+  runQualityEval,
   getActiveWorkspace,
   loadConversationHistory,
   selectWorkspaceFolder,
@@ -62,6 +64,9 @@ export interface UseSessionReturn {
   promptBattery: PromptBatteryResult | null
   promptBatteryStatus: EvalRunStatus
   promptBatteryError: string | null
+  qualityEval: QualityEvalResult | null
+  qualityEvalStatus: EvalRunStatus
+  qualityEvalError: string | null
   activeWorkspacePath: string | null
   conversationHistory: ConversationRecord[]
   conversationHistoryStatus: EvalRunStatus
@@ -104,6 +109,9 @@ export interface UseSessionReturn {
 
   /** Run the deterministic 1,200-prompt routing battery exposed by the backend */
   runPromptBatteryEval: () => Promise<PromptBatteryResult>
+
+  /** Run the combined deterministic quality gate exposed by the backend */
+  runQualityEval: () => Promise<QualityEvalResult>
 
   /** Select the local filesystem workspace used by the Rust runtime */
   selectWorkspaceFolder: () => Promise<WorkspaceSelectionResult>
@@ -154,6 +162,10 @@ export function useSession(): UseSessionReturn {
     useState<EvalRunStatus>('idle')
   const [promptBatteryError, setPromptBatteryError] =
     useState<string | null>(null)
+  const [qualityEval, setQualityEval] = useState<QualityEvalResult | null>(null)
+  const [qualityEvalStatus, setQualityEvalStatus] =
+    useState<EvalRunStatus>('idle')
+  const [qualityEvalError, setQualityEvalError] = useState<string | null>(null)
   const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(
     null,
   )
@@ -349,6 +361,24 @@ export function useSession(): UseSessionReturn {
     }
   }, [client])
 
+  const handleRunQualityEval = useCallback(async () => {
+    setQualityEvalStatus('running')
+    setQualityEvalError(null)
+
+    try {
+      const result = await runQualityEval(client)
+      setQualityEval(result)
+      setQualityEvalStatus(result.passed ? 'succeeded' : 'failed')
+      return result
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setQualityEvalError(message)
+      setQualityEvalStatus('failed')
+      setError(message)
+      throw err
+    }
+  }, [client])
+
   const handleSelectWorkspaceFolder = useCallback(async () => {
     setWorkspaceSelectionStatus('running')
     setWorkspaceSelectionError(null)
@@ -465,6 +495,9 @@ export function useSession(): UseSessionReturn {
     promptBattery,
     promptBatteryStatus,
     promptBatteryError,
+    qualityEval,
+    qualityEvalStatus,
+    qualityEvalError,
     activeWorkspacePath,
     conversationHistory,
     conversationHistoryStatus,
@@ -483,6 +516,7 @@ export function useSession(): UseSessionReturn {
     listProviderModels: handleListProviderModels,
     runMultiagentEval: handleRunMultiagentEval,
     runPromptBatteryEval: handleRunPromptBatteryEval,
+    runQualityEval: handleRunQualityEval,
     loadConversationHistory: handleLoadConversationHistory,
     selectWorkspaceFolder: handleSelectWorkspaceFolder,
     openUi: handleOpenUi,

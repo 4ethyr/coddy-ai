@@ -17,6 +17,7 @@ export {
   listProviderModels,
   runMultiagentEval,
   runPromptBatteryEval,
+  runQualityEval,
   getActiveWorkspace,
   loadConversationHistory,
   selectWorkspaceFolder,

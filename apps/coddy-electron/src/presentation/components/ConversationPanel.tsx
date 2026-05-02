@@ -10,6 +10,8 @@ import { InputBar } from '@/presentation/components/InputBar'
 import { ToolApprovalPanel } from '@/presentation/components/ToolApprovalPanel'
 import { SelectionCopyRegion } from '@/presentation/components/SelectionCopyRegion'
 import { ConversationHistoryPanel } from '@/presentation/components/ConversationHistoryPanel'
+import { SessionStatusPanel } from '@/presentation/components/SessionStatusPanel'
+import { SlashCommandHelpPanel } from '@/presentation/components/SlashCommandHelpPanel'
 import {
   ThinkingIndicator,
   type ThinkingAnimation,
@@ -28,6 +30,12 @@ interface Props {
   historyError?: string | null
   onOpenHistoryItem?: (sessionId: string) => void
   onCloseHistory?: () => void
+  statusOpen?: boolean
+  statusWorkspacePath?: string | null
+  statusToolCount?: number
+  onCloseStatus?: () => void
+  helpOpen?: boolean
+  onCloseHelp?: () => void
 }
 
 export function ConversationPanel({
@@ -41,6 +49,12 @@ export function ConversationPanel({
   historyError = null,
   onOpenHistoryItem,
   onCloseHistory,
+  statusOpen = false,
+  statusWorkspacePath = null,
+  statusToolCount = 0,
+  onCloseStatus,
+  helpOpen = false,
+  onCloseHelp,
 }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -61,6 +75,19 @@ export function ConversationPanel({
           </div>
 
           <PlanOfAttack session={session} />
+
+          {helpOpen && (
+            <SlashCommandHelpPanel onClose={onCloseHelp ?? (() => {})} />
+          )}
+
+          {statusOpen && (
+            <SessionStatusPanel
+              session={session}
+              workspacePath={statusWorkspacePath}
+              toolCount={statusToolCount}
+              onClose={onCloseStatus ?? (() => {})}
+            />
+          )}
 
           {historyOpen && (
             <ConversationHistoryPanel

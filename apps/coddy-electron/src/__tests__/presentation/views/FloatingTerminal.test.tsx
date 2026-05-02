@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { ConversationRecord, ReplSession } from '@/domain'
+import type { ConversationRecord, ReplSession, ReplToolCatalogItem } from '@/domain'
 import { FloatingTerminal } from '@/presentation/views/FloatingTerminal/FloatingTerminal'
 
 const sessionContext = {
@@ -25,7 +25,8 @@ const sessionContext = {
   connecting: false,
   reconnecting: false,
   error: null,
-  activeWorkspacePath: null,
+  activeWorkspacePath: null as string | null,
+  toolCatalog: [] as ReplToolCatalogItem[],
   conversationHistory: [] as ConversationRecord[],
   conversationHistoryStatus: 'idle',
   conversationHistoryError: null,
@@ -63,6 +64,8 @@ describe('FloatingTerminal', () => {
       streaming_text: '',
     }
     sessionContext.conversationHistory = []
+    sessionContext.activeWorkspacePath = null
+    sessionContext.toolCatalog = []
     sessionContext.conversationHistoryStatus = 'idle'
     sessionContext.conversationHistoryError = null
     Object.defineProperty(window, 'replApi', {
@@ -287,6 +290,44 @@ describe('FloatingTerminal', () => {
       'workspace',
     )
     expect(sessionContext.openUi).toHaveBeenCalledWith('DesktopApp')
+  })
+
+  it('shows local session status from the /status slash command', async () => {
+    sessionContext.activeWorkspacePath = '/home/user/project'
+    render(<FloatingTerminal />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Enter command or prompt...'),
+      '/status',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(sessionContext.openUi).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole('region', { name: 'Session status' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('status=Idle')).toBeInTheDocument()
+    expect(screen.getByText('model=ollama/gemma4-E2B')).toBeInTheDocument()
+    expect(screen.getByText('workspace=/home/user/project')).toBeInTheDocument()
+  })
+
+  it('shows local slash command help from the /help slash command', async () => {
+    render(<FloatingTerminal />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Enter command or prompt...'),
+      '/help',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(sessionContext.openUi).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole('region', { name: 'Slash command help' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('/code')).toBeInTheDocument()
+    expect(screen.getByText('/status')).toBeInTheDocument()
   })
 
   it('dispatches coding workflow slash commands as guarded prompts', async () => {

@@ -6,6 +6,7 @@ import {
   openUi,
   runMultiagentEval,
   runPromptBatteryEval,
+  runQualityEval,
   selectModel,
   selectWorkspaceFolder,
   sendAsk,
@@ -26,6 +27,7 @@ function clientWith(
     selectWorkspaceFolder: vi.fn(),
     runMultiagentEval: vi.fn(),
     runPromptBatteryEval: vi.fn(),
+    runQualityEval: vi.fn(),
     listProviderModels: vi.fn(),
     watchEvents: vi.fn(),
     ask: vi.fn(),
@@ -141,6 +143,44 @@ describe('CommandSender', () => {
 
     await expect(runPromptBatteryEval(client)).resolves.toEqual(result)
     expect(client.runPromptBatteryEval).toHaveBeenCalledWith()
+  })
+
+  it('runs the combined quality eval gate through the client port', async () => {
+    const result = {
+      kind: 'coddy.qualityEval',
+      version: 1,
+      status: 'passed' as const,
+      passed: true,
+      score: 100,
+      checks: [
+        { name: 'multiagent', status: 'passed' as const, score: 100, passed: 3, failed: 0 },
+        {
+          name: 'prompt-battery',
+          status: 'passed' as const,
+          score: 100,
+          promptCount: 1200,
+          passed: 1200,
+          failed: 0,
+        },
+      ],
+      multiagent: { score: 100, passed: 3, failed: 0, reports: [] },
+      promptBattery: {
+        promptCount: 1200,
+        stackCount: 30,
+        knowledgeAreaCount: 10,
+        passed: 1200,
+        failed: 0,
+        score: 100,
+        memberCoverage: { explorer: 1200 },
+        failures: [],
+      },
+    }
+    const client = clientWith({
+      runQualityEval: vi.fn().mockResolvedValue(result),
+    })
+
+    await expect(runQualityEval(client)).resolves.toEqual(result)
+    expect(client.runQualityEval).toHaveBeenCalledWith()
   })
 
   it('selects a local workspace folder through the client port', async () => {
