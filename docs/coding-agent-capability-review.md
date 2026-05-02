@@ -316,6 +316,10 @@ Smoke live adicional apos a compactacao estrutural do loop agentic direto:
 - Interpretacao: a mudanca local nao degradou o harness; a principal aresta
   live continua sendo fallback/roteamento quando o provider retorna resposta
   vazia sem content/tool calls.
+- Integracao frontend: falhas recuperaveis publicadas no `AgentRunSummary`
+  agora geram um aviso acionavel e redigido no painel de atividade do Desktop,
+  incluindo codigo tecnico, detalhe sem secrets e proxima acao para retry,
+  reducao de contexto/tool output ou troca de provider/modelo.
 
 ## Fontes pesquisadas
 
