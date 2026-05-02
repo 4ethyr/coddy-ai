@@ -1,4 +1,8 @@
-import type { ReplSession, ReplToolCatalogItem } from '@/domain'
+import {
+  summarizeToolSafety,
+  type ReplSession,
+  type ReplToolCatalogItem,
+} from '@/domain'
 import { Icon, type IconName } from './Icon'
 
 interface Props {
@@ -32,7 +36,7 @@ export function CodingAgentCapabilitiesPanel({
   const activeRun = session.active_run ?? 'none'
   const model = `${session.selected_model.provider}/${session.selected_model.name}`
   const subagentCount = session.subagent_activity.length
-  const toolSummary = summarizeTools(tools)
+  const toolSummary = summarizeToolSafety(tools)
 
   const groups: CapabilityGroup[] = [
     {
@@ -81,7 +85,7 @@ export function CodingAgentCapabilitiesPanel({
         {
           label: 'Risk envelope',
           detail: `${toolSummary.lowRisk} low, ${toolSummary.mediumRisk} medium, ${toolSummary.highRisk} high/critical.`,
-          tone: toolSummary.highRisk > 0 ? 'gap' : 'ready',
+          tone: toolSummary.hasHighRiskTools ? 'gap' : 'ready',
         },
         {
           label: 'Provider-safe names',
@@ -204,24 +208,6 @@ export function CodingAgentCapabilitiesPanel({
       </div>
     </section>
   )
-}
-
-function summarizeTools(tools: ReplToolCatalogItem[]) {
-  return {
-    total: tools.length,
-    autoApproved: tools.filter((tool) => tool.approval_policy === 'AutoApprove')
-      .length,
-    approvalRequired: tools.filter((tool) =>
-      tool.approval_policy === 'AskOnUse'
-      || tool.approval_policy === 'AlwaysAsk',
-    ).length,
-    denied: tools.filter((tool) => tool.approval_policy === 'Deny').length,
-    lowRisk: tools.filter((tool) => tool.risk_level === 'Low').length,
-    mediumRisk: tools.filter((tool) => tool.risk_level === 'Medium').length,
-    highRisk: tools.filter((tool) =>
-      tool.risk_level === 'High' || tool.risk_level === 'Critical',
-    ).length,
-  }
 }
 
 function ReadinessBadge({ tone }: { tone: ReadinessTone }) {
