@@ -557,10 +557,13 @@ Implemented result:
 - Added a Workspace quality gate panel with score, status, check count, prompt count and compact
   component check summaries.
 - Wired the Desktop Workspace tab to trigger the combined gate.
+- Added local slash-command discovery for `/quality`, `/eval`, `/evals` and `/metrics`, routing the
+  user to the Workspace quality gate without contacting the model.
 
 Validation:
 
 - `npm test -- CommandSender ElectronReplIpcClient WorkspacePanel useSession integration EventStreamer SessionManager`: 7 files passed, 60 tests passed.
+- `npm test -- slashCommands`: 1 file passed, 8 tests passed.
 - `npm test`: 39 files passed, 312 tests passed.
 - `npm run test:e2e`: 1 file passed, 1 test passed.
 - `npm run typecheck`: passed.

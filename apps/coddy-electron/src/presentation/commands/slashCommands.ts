@@ -32,6 +32,10 @@ const TAB_COMMANDS: Record<string, DesktopTab> = {
   subagents: 'workspace',
   agents: 'workspace',
   mcp: 'workspace',
+  quality: 'workspace',
+  eval: 'workspace',
+  evals: 'workspace',
+  metrics: 'workspace',
   models: 'models',
   model: 'models',
 }
@@ -110,6 +114,13 @@ export const UI_SLASH_COMMAND_SUGGESTIONS: UiSlashCommandSuggestion[] = [
     title: 'Open MCP readiness',
     description: 'Inspect external tool readiness and permission bridge status.',
     insertText: '/mcp',
+  },
+  {
+    command: '/quality',
+    title: 'Open quality gate',
+    description: 'Run evals and inspect multiagent, prompt battery and quality scores.',
+    insertText: '/quality',
+    aliases: ['/eval', '/evals', '/metrics'],
   },
   {
     command: '/models',
