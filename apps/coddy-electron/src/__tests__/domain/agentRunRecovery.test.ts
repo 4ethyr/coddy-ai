@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { buildAgentRunRecoveryNotice } from '@/domain'
+import {
+  buildAgentRunRecoveryNotice,
+  formatAgentRunRecoveryDiagnostics,
+} from '@/domain'
 import type { AgentRunSummary } from '@/domain'
 
 function failedRun(
@@ -45,6 +48,41 @@ describe('agent run recovery notices', () => {
     expect(notice?.message).toBe(
       'Bearer [REDACTED] and api-key: [REDACTED] failed.',
     )
+  })
+
+  it('formats clipboard diagnostics without leaking provider secrets', () => {
+    const notice = buildAgentRunRecoveryNotice(
+      failedRun(),
+      { provider: 'openrouter', name: 'deepseek/deepseek-v4-flash' },
+    )
+
+    expect(notice).not.toBeNull()
+
+    const diagnostics = formatAgentRunRecoveryDiagnostics(notice!)
+
+    expect(diagnostics).toContain('Coddy recoverable agent failure')
+    expect(diagnostics).toContain('technicalCode=invalid_provider_response')
+    expect(diagnostics).toContain(
+      'message=Provider returned an empty response for [REDACTED].',
+    )
+    expect(diagnostics).toContain('action=Retry this prompt.')
+    expect(diagnostics).not.toContain('sk-or-secret-token')
+  })
+
+  it('redacts diagnostics even when the notice was built elsewhere', () => {
+    const diagnostics = formatAgentRunRecoveryDiagnostics({
+      title: 'Recoverable model failure',
+      technicalCode: 'transport_error',
+      message: 'OpenRouter request failed with sk-or-secret-token.',
+      action: 'Retry without Bearer ya29.oauth-token.',
+    })
+
+    expect(diagnostics).toContain(
+      'message=OpenRouter request failed with [REDACTED].',
+    )
+    expect(diagnostics).toContain('action=Retry without Bearer [REDACTED]')
+    expect(diagnostics).not.toContain('sk-or-secret-token')
+    expect(diagnostics).not.toContain('ya29.oauth-token')
   })
 
   it('does not produce a recovery notice when there is no failed run', () => {

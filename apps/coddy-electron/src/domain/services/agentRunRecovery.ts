@@ -24,6 +24,18 @@ export function buildAgentRunRecoveryNotice(
   }
 }
 
+export function formatAgentRunRecoveryDiagnostics(
+  notice: AgentRunRecoveryNotice,
+): string {
+  return [
+    'Coddy recoverable agent failure',
+    `title=${redactProviderSecrets(notice.title)}`,
+    `technicalCode=${redactProviderSecrets(notice.technicalCode)}`,
+    `message=${redactProviderSecrets(notice.message)}`,
+    `action=${redactProviderSecrets(notice.action)}`,
+  ].join('\n')
+}
+
 function recoveryAction(code: string, provider?: string): string {
   if (provider === 'openrouter') {
     return 'Retry this prompt. If it repeats, reduce context/tool output, refresh OpenRouter routing, or select another provider/model.'

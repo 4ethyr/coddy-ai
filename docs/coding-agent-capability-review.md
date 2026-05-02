@@ -318,8 +318,9 @@ Smoke live adicional apos a compactacao estrutural do loop agentic direto:
   vazia sem content/tool calls.
 - Integracao frontend: falhas recuperaveis publicadas no `AgentRunSummary`
   agora geram um aviso acionavel e redigido no Desktop e no FloatingTerminal,
-  incluindo codigo tecnico, detalhe sem secrets e proxima acao para retry,
-  reducao de contexto/tool output ou troca de provider/modelo.
+  incluindo codigo tecnico, detalhe sem secrets, copia de diagnosticos
+  redigidos e proxima acao para retry, reducao de contexto/tool output ou
+  troca de provider/modelo.
 
 ## Fontes pesquisadas
 
