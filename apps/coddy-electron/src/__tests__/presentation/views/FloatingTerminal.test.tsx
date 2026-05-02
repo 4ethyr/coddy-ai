@@ -312,6 +312,24 @@ describe('FloatingTerminal', () => {
     expect(screen.getByText('workspace=/home/user/project')).toBeInTheDocument()
   })
 
+  it('shows local slash command help from the /help slash command', async () => {
+    render(<FloatingTerminal />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Enter command or prompt...'),
+      '/help',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(sessionContext.openUi).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole('region', { name: 'Slash command help' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('/code')).toBeInTheDocument()
+    expect(screen.getByText('/status')).toBeInTheDocument()
+  })
+
   it('dispatches coding workflow slash commands as guarded prompts', async () => {
     render(<FloatingTerminal />)
 

@@ -23,6 +23,7 @@ import { FloatingSettingsModal } from '@/presentation/components/FloatingSetting
 import { SelectionCopyRegion } from '@/presentation/components/SelectionCopyRegion'
 import { ConversationHistoryPanel } from '@/presentation/components/ConversationHistoryPanel'
 import { SessionStatusPanel } from '@/presentation/components/SessionStatusPanel'
+import { SlashCommandHelpPanel } from '@/presentation/components/SlashCommandHelpPanel'
 import { Icon } from '@/presentation/components/Icon'
 import {
   persistDesktopTab,
@@ -63,6 +64,7 @@ export function FloatingTerminal() {
   const [expanded, setExpanded] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [statusOpen, setStatusOpen] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
     () => loadSettings().floatingAppearance,
   )
@@ -136,6 +138,7 @@ export function FloatingTerminal() {
       if (command.kind === 'new-session') {
         setHistoryOpen(false)
         setStatusOpen(false)
+        setHelpOpen(false)
         void newSession()
         return
       }
@@ -148,6 +151,7 @@ export function FloatingTerminal() {
 
       if (command.kind === 'open-history') {
         setStatusOpen(false)
+        setHelpOpen(false)
         setHistoryOpen(true)
         void loadConversationHistory()
         return
@@ -155,7 +159,15 @@ export function FloatingTerminal() {
 
       if (command.kind === 'show-status') {
         setHistoryOpen(false)
+        setHelpOpen(false)
         setStatusOpen(true)
+        return
+      }
+
+      if (command.kind === 'show-help') {
+        setHistoryOpen(false)
+        setStatusOpen(false)
+        setHelpOpen(true)
         return
       }
 
@@ -396,6 +408,10 @@ export function FloatingTerminal() {
               onSelect={handleOpenConversation}
               onClose={() => setHistoryOpen(false)}
             />
+          )}
+
+          {helpOpen && (
+            <SlashCommandHelpPanel onClose={() => setHelpOpen(false)} />
           )}
 
           {statusOpen && (

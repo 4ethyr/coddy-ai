@@ -6,6 +6,7 @@ export type UiSlashCommand =
   | { kind: 'open-history' }
   | { kind: 'new-session' }
   | { kind: 'show-status' }
+  | { kind: 'show-help' }
   | { kind: 'set-speak'; enabled: boolean }
   | { kind: 'agent-workflow'; prompt: string }
 
@@ -46,6 +47,13 @@ const WORKFLOW_COMMANDS = new Set([
 ])
 
 export const UI_SLASH_COMMAND_SUGGESTIONS: UiSlashCommandSuggestion[] = [
+  {
+    command: '/help',
+    title: 'Show commands',
+    description: 'List local slash commands without contacting the model.',
+    insertText: '/help',
+    aliases: ['/?'],
+  },
   {
     command: '/code',
     title: 'Implement with TDD',
@@ -154,6 +162,10 @@ export function resolveUiSlashCommand(input: string): UiSlashCommand | null {
 
   if (SETTINGS_COMMANDS.has(command)) {
     return { kind: 'open-settings' }
+  }
+
+  if (command === 'help' || command === '?') {
+    return { kind: 'show-help' }
   }
 
   if (command === 'history') {

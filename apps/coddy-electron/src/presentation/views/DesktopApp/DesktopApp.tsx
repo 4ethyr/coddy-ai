@@ -69,6 +69,7 @@ export function DesktopApp() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [statusOpen, setStatusOpen] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
     () => loadSettings().floatingAppearance,
   )
@@ -157,6 +158,7 @@ export function DesktopApp() {
       if (command.kind === 'new-session') {
         setHistoryOpen(false)
         setStatusOpen(false)
+        setHelpOpen(false)
         void newSession()
         return
       }
@@ -170,6 +172,7 @@ export function DesktopApp() {
       if (command.kind === 'open-history') {
         setActiveTab('chat')
         setStatusOpen(false)
+        setHelpOpen(false)
         setHistoryOpen(true)
         void loadConversationHistory()
         return
@@ -178,7 +181,16 @@ export function DesktopApp() {
       if (command.kind === 'show-status') {
         setActiveTab('chat')
         setHistoryOpen(false)
+        setHelpOpen(false)
         setStatusOpen(true)
+        return
+      }
+
+      if (command.kind === 'show-help') {
+        setActiveTab('chat')
+        setHistoryOpen(false)
+        setStatusOpen(false)
+        setHelpOpen(true)
         return
       }
 
@@ -308,6 +320,8 @@ export function DesktopApp() {
               statusWorkspacePath={activeWorkspacePath}
               statusToolCount={toolCatalog.length}
               onCloseStatus={() => setStatusOpen(false)}
+              helpOpen={helpOpen}
+              onCloseHelp={() => setHelpOpen(false)}
             />
           )}
 

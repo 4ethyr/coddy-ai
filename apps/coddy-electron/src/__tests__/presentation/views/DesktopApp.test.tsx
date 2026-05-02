@@ -267,6 +267,23 @@ describe('DesktopApp', () => {
     expect(screen.getByText('tools=1')).toBeInTheDocument()
   })
 
+  it('shows local slash command help from the /? slash command', async () => {
+    render(<DesktopApp />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Instruct Coddy agent...'),
+      '/?',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole('region', { name: 'Slash command help' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('/workspace')).toBeInTheDocument()
+    expect(screen.getByText('/speak')).toBeInTheDocument()
+  })
+
   it('routes workflow slash commands through the agent prompt instead of tab navigation', async () => {
     render(<DesktopApp />)
 

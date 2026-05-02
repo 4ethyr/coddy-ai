@@ -40,6 +40,12 @@ describe('slashCommands', () => {
   })
 
   it('routes history and new session commands to session actions', () => {
+    expect(resolveUiSlashCommand('/help')).toEqual({
+      kind: 'show-help',
+    })
+    expect(resolveUiSlashCommand('/?')).toEqual({
+      kind: 'show-help',
+    })
     expect(resolveUiSlashCommand('/history')).toEqual({
       kind: 'open-history',
     })
@@ -105,6 +111,9 @@ describe('slashCommands', () => {
     ])
     expect(listUiSlashCommandSuggestions('/hist')).toMatchObject([
       { command: '/history' },
+    ])
+    expect(listUiSlashCommandSuggestions('/he')).toMatchObject([
+      { command: '/help' },
     ])
     expect(listUiSlashCommandSuggestions('/stat')).toMatchObject([
       { command: '/status' },
