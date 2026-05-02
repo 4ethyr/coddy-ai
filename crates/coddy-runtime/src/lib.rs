@@ -1801,6 +1801,14 @@ fn build_model_system_prompt(
             "- Do not expose secrets, tokens, credentials, or hidden configuration values.",
         ]
         .join("\n"),
+        [
+            "Evidence rules:",
+            "- When reviewing tests or coverage, cite the inspected test file paths and test names.",
+            "- Do not claim tests, coverage, files, or implementations are missing unless you searched or read the relevant paths in this turn.",
+            "- If the evidence is incomplete, say what was inspected and label the conclusion as unverified.",
+            "- Prefer precise uncertainty over broad unsupported criticism.",
+        ]
+        .join("\n"),
         format!("Context policy: {context_policy:?}"),
     ];
 
@@ -3498,8 +3506,15 @@ mod tests {
 
         assert!(system_prompt.contains("Agent loop:"));
         assert!(system_prompt.contains("Security rules:"));
+        assert!(system_prompt.contains("Evidence rules:"));
         assert!(system_prompt.contains("native structured tool_calls field only"));
         assert!(system_prompt.contains("Never print textual tool-call markup"));
+        assert!(system_prompt.contains(
+            "When reviewing tests or coverage, cite the inspected test file paths and test names"
+        ));
+        assert!(system_prompt.contains(
+            "Do not claim tests, coverage, files, or implementations are missing unless you searched or read the relevant paths in this turn"
+        ));
         assert!(system_prompt.contains("Context policy: ScreenAndWorkspace"));
         assert!(system_prompt.contains("Recent session messages before this turn:"));
         assert!(system_prompt.contains("sk-[REDACTED]"));
