@@ -344,6 +344,33 @@ pub fn is_empty_assistant_response_error(error: &ChatModelError) -> bool {
     }
 }
 
+pub fn should_retry_chat_model_request_error(error: &ChatModelError) -> bool {
+    match error {
+        ChatModelError::ProviderError { retryable, .. } => *retryable,
+        ChatModelError::Transport {
+            retryable, message, ..
+        } => *retryable && !is_timeout_transport_error(message),
+        ChatModelError::InvalidProviderResponse { message, .. } => {
+            is_retryable_invalid_provider_response(message)
+        }
+        _ => false,
+    }
+}
+
+fn is_timeout_transport_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("timeout")
+        || normalized.contains("timed out")
+        || normalized.contains("deadline")
+}
+
+fn is_retryable_invalid_provider_response(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("did not include assistant content or tool calls")
+        || normalized.contains("did not include choices")
+        || normalized.contains("finish_reason=error")
+}
+
 pub fn with_empty_response_retry_guidance(mut request: ChatRequest) -> ChatRequest {
     request.messages.push(ChatMessage::user(
         "The previous provider attempt returned empty assistant content. Return a non-empty concise response now. If this is a routing task, return only the requested JSON shape.",
@@ -2548,6 +2575,37 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn retry_policy_retries_recoverable_provider_and_empty_responses_but_not_timeouts() {
+        assert!(should_retry_chat_model_request_error(
+            &ChatModelError::ProviderError {
+                provider: "openrouter".to_string(),
+                message: "Provider returned error".to_string(),
+                retryable: true,
+            },
+        ));
+        assert!(should_retry_chat_model_request_error(
+            &ChatModelError::InvalidProviderResponse {
+                provider: "openrouter".to_string(),
+                message: "response did not include assistant content or tool calls".to_string(),
+            },
+        ));
+        assert!(!should_retry_chat_model_request_error(
+            &ChatModelError::Transport {
+                provider: "openrouter".to_string(),
+                message: "request timed out".to_string(),
+                retryable: true,
+            },
+        ));
+        assert!(!should_retry_chat_model_request_error(
+            &ChatModelError::ProviderError {
+                provider: "openrouter".to_string(),
+                message: "invalid api key".to_string(),
+                retryable: false,
+            },
+        ));
+    }
 
     #[derive(Debug)]
     struct StaticOllamaTransport {

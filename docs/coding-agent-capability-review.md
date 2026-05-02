@@ -250,10 +250,12 @@ Melhoria implementada:
   quando o provider retorna sem assistant content/tool calls;
 - timeouts de transporte continuam sem retry automatico para respeitar o budget
   de latencia da chamada.
+- politica de retry centralizada no modulo de modelo, compartilhada por runtime
+  `/ask`, eval live e loop agentic direto para evitar divergencia de criterios.
 
 Metrica local apos a mudanca:
 
-- `cargo test -p coddy-agent -- --test-threads=1`: 183 passed.
+- `cargo test -p coddy-agent -- --test-threads=1`: 184 passed.
 - `cargo test -p coddy-runtime -- --test-threads=1`: 60 passed.
 - `./target/debug/coddy eval quality --json`: score 100.
 - Multiagent eval: 3/3 passed, score 100.

@@ -1,9 +1,10 @@
 use coddy_agent::{
     decode_provider_safe_tool_name, is_empty_assistant_response_error,
-    model_tool_call_may_run as agent_model_tool_call_may_run, with_empty_response_retry_guidance,
-    AgentRunAction, AgentRunStopReason, AgentRunSummary, AgentRunV2, AgentToolRegistry,
-    ChatMessage, ChatModelClient, ChatModelError, ChatModelResult, ChatRequest, ChatResponse,
-    ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, SubagentExecutionGate,
+    model_tool_call_may_run as agent_model_tool_call_may_run,
+    should_retry_chat_model_request_error, with_empty_response_retry_guidance, AgentRunAction,
+    AgentRunStopReason, AgentRunSummary, AgentRunV2, AgentToolRegistry, ChatMessage,
+    ChatModelClient, ChatModelError, ChatModelResult, ChatRequest, ChatResponse, ChatToolCall,
+    ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, SubagentExecutionGate,
     SubagentExecutionHandoff, SubagentExecutionStartPlan, SubagentExecutionStartStatus,
     SubagentOutputContract, LIST_FILES_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL,
     SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
@@ -1228,7 +1229,7 @@ impl CoddyRuntime {
                 Ok(response) => return Ok(response),
                 Err(error)
                     if attempt + 1 < MAX_MODEL_REQUEST_ATTEMPTS
-                        && should_retry_model_request_error(&error) =>
+                        && should_retry_chat_model_request_error(&error) =>
                 {
                     should_add_empty_response_guidance = is_empty_assistant_response_error(&error);
                     last_error = Some(error);
@@ -2671,33 +2672,6 @@ fn first_number(text: &str) -> Option<usize> {
         }
     }
     digits.parse::<usize>().ok()
-}
-
-fn should_retry_model_request_error(error: &ChatModelError) -> bool {
-    match error {
-        ChatModelError::ProviderError { retryable, .. } => *retryable,
-        ChatModelError::Transport {
-            retryable, message, ..
-        } => *retryable && !is_timeout_transport_error(message),
-        ChatModelError::InvalidProviderResponse { message, .. } => {
-            is_retryable_invalid_provider_response(message)
-        }
-        _ => false,
-    }
-}
-
-fn is_timeout_transport_error(message: &str) -> bool {
-    let normalized = message.to_ascii_lowercase();
-    normalized.contains("timeout")
-        || normalized.contains("timed out")
-        || normalized.contains("deadline")
-}
-
-fn is_retryable_invalid_provider_response(message: &str) -> bool {
-    let normalized = message.to_ascii_lowercase();
-    normalized.contains("did not include assistant content or tool calls")
-        || normalized.contains("did not include choices")
-        || normalized.contains("finish_reason=error")
 }
 
 fn sleep_before_model_retry(attempt: usize) {

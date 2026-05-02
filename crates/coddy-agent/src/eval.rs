@@ -11,8 +11,9 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::model::{
-    is_empty_assistant_response_error, with_empty_response_retry_guidance, ChatMessage,
-    ChatModelClient, ChatModelError, ChatModelResult, ChatRequest,
+    is_empty_assistant_response_error, should_retry_chat_model_request_error,
+    with_empty_response_retry_guidance, ChatMessage, ChatModelClient, ChatModelError,
+    ChatModelResult, ChatRequest,
 };
 use crate::{
     AgentError, DeterministicPlanExecutor, DeterministicPlanItem, DeterministicPlanReport,
@@ -1263,7 +1264,9 @@ fn complete_prompt_battery_request_with_retry(
         };
         match client.complete(attempt_request) {
             Ok(response) => return Ok(response),
-            Err(error) if attempt + 1 < MAX_ATTEMPTS && should_retry_live_eval_error(&error) => {
+            Err(error)
+                if attempt + 1 < MAX_ATTEMPTS && should_retry_chat_model_request_error(&error) =>
+            {
                 should_add_empty_response_guidance = is_empty_assistant_response_error(&error);
                 last_error = Some(error);
                 thread::sleep(Duration::from_millis(250 * (attempt as u64 + 1)));
@@ -1278,15 +1281,6 @@ fn complete_prompt_battery_request_with_retry(
             message: "prompt battery retry exhausted without provider response".to_string(),
         }),
     )
-}
-
-fn should_retry_live_eval_error(error: &ChatModelError) -> bool {
-    match error {
-        ChatModelError::ProviderError { retryable, .. }
-        | ChatModelError::Transport { retryable, .. } => *retryable,
-        ChatModelError::InvalidProviderResponse { .. } => true,
-        _ => false,
-    }
 }
 
 fn missing_expected_members(case: &PromptBatteryCase, predicted_members: &[String]) -> Vec<String> {
