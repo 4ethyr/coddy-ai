@@ -1213,13 +1213,22 @@ fn provider_safe_tool_description(tool: &ChatToolSpec) -> String {
     }
 }
 
-fn decode_provider_safe_tool_name(name: &str) -> String {
+pub(crate) fn decode_provider_safe_tool_name(name: &str) -> String {
     let alias = name.strip_prefix("coddy_tool__").unwrap_or(name);
-    if alias.contains("__dot__") {
-        alias.replace("__dot__", ".")
-    } else {
-        name.to_string()
+    let decoded = alias.replace("__dot__", ".").replace("::", ".");
+    if decoded != alias {
+        return decoded;
     }
+
+    for namespace in ["filesystem", "subagent", "shell"] {
+        if let Some(method) = alias.strip_prefix(&format!("{namespace}_")) {
+            if !method.is_empty() {
+                return format!("{namespace}.{method}");
+            }
+        }
+    }
+
+    name.to_string()
 }
 
 fn is_provider_safe_function_name(name: &str) -> bool {
@@ -2954,6 +2963,14 @@ mod tests {
         );
         assert_eq!(
             decode_provider_safe_tool_name("filesystem.read_file"),
+            "filesystem.read_file"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem::read_file"),
+            "filesystem.read_file"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem_read_file"),
             "filesystem.read_file"
         );
     }

@@ -7,6 +7,7 @@ use coddy_core::{
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::model::decode_provider_safe_tool_name;
 use crate::{
     AgentRunStatus, AgentStep, AgentStepKind, AgentStepStatus, ChatMessage, ChatModelClient,
     ChatModelError, ChatRequest, ChatToolCall, ChatToolSpec, LocalAgentRuntime,
@@ -396,8 +397,7 @@ fn sanitize_config(config: AgenticLoopConfig) -> AgenticLoopConfig {
 }
 
 fn tool_call_from_chat_call(state: &RunState, chat_call: ChatToolCall) -> Result<ToolCall, String> {
-    let requested_name =
-        decode_provider_safe_tool_name_alias(&chat_call.name).unwrap_or(chat_call.name.clone());
+    let requested_name = decode_provider_safe_tool_name(&chat_call.name);
     let tool_name = ToolName::new(requested_name.clone()).map_err(|error| {
         format!(
             "model requested invalid tool name `{}` normalized as `{requested_name}`: {error}",
@@ -411,24 +411,6 @@ fn tool_call_from_chat_call(state: &RunState, chat_call: ChatToolCall) -> Result
         chat_call.arguments,
         unix_ms_now(),
     ))
-}
-
-fn decode_provider_safe_tool_name_alias(name: &str) -> Option<String> {
-    let alias = name.strip_prefix("coddy_tool__").unwrap_or(name);
-    let decoded = alias.replace("__dot__", ".").replace("::", ".");
-    if decoded != alias {
-        return Some(decoded);
-    }
-
-    for namespace in ["filesystem", "subagent", "shell"] {
-        if let Some(method) = alias.strip_prefix(&format!("{namespace}_")) {
-            if !method.is_empty() {
-                return Some(format!("{namespace}.{method}"));
-            }
-        }
-    }
-
-    None
 }
 
 fn failed_tool_stop(
