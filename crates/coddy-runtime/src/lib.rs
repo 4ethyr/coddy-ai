@@ -1712,6 +1712,11 @@ fn decode_model_tool_name_alias(name: &str) -> Option<String> {
     }
 
     for namespace in ["filesystem", "subagent", "shell"] {
+        if let Some(method) = alias.strip_prefix(&format!("{namespace}._")) {
+            if !method.is_empty() {
+                return Some(format!("{namespace}.{method}"));
+            }
+        }
         if let Some(method) = alias.strip_prefix(&format!("{namespace}_")) {
             if !method.is_empty() {
                 return Some(format!("{namespace}.{method}"));
@@ -4039,6 +4044,11 @@ mod tests {
             ),
             (
                 "filesystem::list_files",
+                LIST_FILES_TOOL,
+                json!({ "path": ".", "max_entries": 20 }),
+            ),
+            (
+                "filesystem._list_files",
                 LIST_FILES_TOOL,
                 json!({ "path": ".", "max_entries": 20 }),
             ),

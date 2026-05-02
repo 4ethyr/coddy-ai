@@ -1221,6 +1221,11 @@ pub(crate) fn decode_provider_safe_tool_name(name: &str) -> String {
     }
 
     for namespace in ["filesystem", "subagent", "shell"] {
+        if let Some(method) = alias.strip_prefix(&format!("{namespace}._")) {
+            if !method.is_empty() {
+                return format!("{namespace}.{method}");
+            }
+        }
         if let Some(method) = alias.strip_prefix(&format!("{namespace}_")) {
             if !method.is_empty() {
                 return format!("{namespace}.{method}");
@@ -2981,6 +2986,10 @@ mod tests {
         assert_eq!(
             decode_provider_safe_tool_name("filesystem_read_file"),
             "filesystem.read_file"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem._list_files"),
+            "filesystem.list_files"
         );
     }
 
