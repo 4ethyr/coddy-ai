@@ -49,6 +49,14 @@ describe('slashCommands', () => {
   })
 
   it('expands coding workflow commands into guarded agent prompts', () => {
+    expect(resolveUiSlashCommand('/code add workspace picker')).toMatchObject({
+      kind: 'agent-workflow',
+      prompt: expect.stringContaining('Implementation coding workflow'),
+    })
+    expect(resolveUiSlashCommand('/implement retry flow')).toMatchObject({
+      kind: 'agent-workflow',
+      prompt: expect.stringContaining('Use TDD'),
+    })
     expect(resolveUiSlashCommand('/plan add workspace picker')).toMatchObject({
       kind: 'agent-workflow',
       prompt: expect.stringContaining('Plan-only coding workflow'),
@@ -65,11 +73,15 @@ describe('slashCommands', () => {
 
   it('does not intercept unknown slash commands', () => {
     expect(resolveUiSlashCommand('/unknown')).toBeNull()
+    expect(resolveUiSlashCommand('/code')).toBeNull()
     expect(resolveUiSlashCommand('/plan')).toBeNull()
     expect(resolveUiSlashCommand('normal prompt')).toBeNull()
   })
 
   it('lists slash command suggestions for command discovery', () => {
+    expect(listUiSlashCommandSuggestions('/cod')).toMatchObject([
+      { command: '/code', insertText: '/code ', requiresArgument: true },
+    ])
     expect(listUiSlashCommandSuggestions('/pl')).toMatchObject([
       { command: '/plan', insertText: '/plan ', requiresArgument: true },
     ])

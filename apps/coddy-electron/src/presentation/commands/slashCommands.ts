@@ -29,9 +29,24 @@ const TAB_COMMANDS: Record<string, DesktopTab> = {
 }
 
 const SETTINGS_COMMANDS = new Set(['settings', 'setting', 'settins', 'config'])
-const WORKFLOW_COMMANDS = new Set(['plan', 'review', 'test', 'tests'])
+const WORKFLOW_COMMANDS = new Set([
+  'code',
+  'implement',
+  'plan',
+  'review',
+  'test',
+  'tests',
+])
 
 export const UI_SLASH_COMMAND_SUGGESTIONS: UiSlashCommandSuggestion[] = [
+  {
+    command: '/code',
+    title: 'Implement with TDD',
+    description: 'Inspect, plan, edit incrementally and validate a coding task.',
+    insertText: '/code ',
+    aliases: ['/implement'],
+    requiresArgument: true,
+  },
   {
     command: '/plan',
     title: 'Plan a coding task',
@@ -161,6 +176,23 @@ export function listUiSlashCommandSuggestions(
 }
 
 function codingWorkflowPrompt(command: string, goal: string): string {
+  if (command === 'code' || command === 'implement') {
+    return [
+      'Implementation coding workflow.',
+      '',
+      `Goal: ${goal}`,
+      '',
+      'Instructions:',
+      '- Explore first: inspect the smallest relevant files, scripts and tests before editing.',
+      '- State a short plan with assumptions, risk, target files and validation criteria before changing code.',
+      '- Use TDD for behavior changes: add or update a focused failing test before the implementation when practical.',
+      '- Keep edits incremental, clean, and aligned with the existing architecture; avoid unrelated refactors and dependencies.',
+      '- Use safe tools only; request approval for write, shell, network or destructive actions that require it.',
+      '- Validate with the narrowest useful test first, then broaden to lint, type-check or build when warranted.',
+      '- Final response must include changed files, validations run with pass/fail status, and remaining risks.',
+    ].join('\n')
+  }
+
   if (command === 'review') {
     return [
       'Code review workflow.',
