@@ -1,4 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use coddy_core::{
     ApprovalPolicy, ModelCredential, ModelRef, ReplEvent, ToolCall, ToolDefinition, ToolName,
@@ -7,7 +10,10 @@ use coddy_core::{
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::model::decode_provider_safe_tool_name;
+use crate::model::{
+    decode_provider_safe_tool_name, is_empty_assistant_response_error,
+    with_empty_response_retry_guidance,
+};
 use crate::{
     AgentRunStatus, AgentStep, AgentStepKind, AgentStepStatus, ChatMessage, ChatModelClient,
     ChatModelError, ChatRequest, ChatToolCall, ChatToolSpec, LocalAgentRuntime,
@@ -15,7 +21,9 @@ use crate::{
 };
 
 const DEFAULT_MAX_MODEL_TURNS: usize = 8;
+const DEFAULT_MAX_MODEL_REQUEST_ATTEMPTS: usize = 4;
 const DEFAULT_OBSERVATION_MAX_CHARS: usize = 16 * 1024;
+const MODEL_RETRY_BASE_DELAY_MS: u64 = 250;
 
 const DEFAULT_CODING_AGENT_SYSTEM_PROMPT: &str = r#"You are Coddy's coding agent.
 Operate like a senior coding agent: inspect before editing, plan briefly, make the smallest coherent change, and validate the result.
@@ -183,7 +191,7 @@ impl<'a> AgenticModelLoop<'a> {
                 }
             };
 
-            let response = match self.model_client.complete(chat_request) {
+            let response = match self.complete_model_request_with_retry(chat_request) {
                 Ok(response) => response,
                 Err(error) => {
                     return self.fail_model_error(state, error, model_turns, tool_calls);
@@ -333,6 +341,37 @@ impl<'a> AgenticModelLoop<'a> {
         })
     }
 
+    fn complete_model_request_with_retry(&self, request: ChatRequest) -> crate::ChatModelResult {
+        let mut last_error = None;
+        let mut should_add_empty_response_guidance = false;
+        for attempt in 0..DEFAULT_MAX_MODEL_REQUEST_ATTEMPTS {
+            let attempt_request = if should_add_empty_response_guidance {
+                with_empty_response_retry_guidance(request.clone())
+            } else {
+                request.clone()
+            };
+            match self.model_client.complete(attempt_request) {
+                Ok(response) => return Ok(response),
+                Err(error)
+                    if attempt + 1 < DEFAULT_MAX_MODEL_REQUEST_ATTEMPTS
+                        && should_retry_agentic_model_request_error(&error) =>
+                {
+                    should_add_empty_response_guidance = is_empty_assistant_response_error(&error);
+                    last_error = Some(error);
+                    sleep_before_agentic_model_retry(attempt);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(
+            last_error.unwrap_or_else(|| ChatModelError::InvalidProviderResponse {
+                provider: request.model.provider,
+                message: "model retry exhausted without provider response".to_string(),
+            }),
+        )
+    }
+
     fn fail_model_error(
         &self,
         mut state: RunState,
@@ -356,6 +395,42 @@ impl<'a> AgenticModelLoop<'a> {
             tool_calls,
         }
     }
+}
+
+fn should_retry_agentic_model_request_error(error: &ChatModelError) -> bool {
+    match error {
+        ChatModelError::ProviderError { retryable, .. } => *retryable,
+        ChatModelError::Transport {
+            retryable, message, ..
+        } => *retryable && !is_timeout_transport_error(message),
+        ChatModelError::InvalidProviderResponse { message, .. } => {
+            is_retryable_invalid_provider_response(message)
+        }
+        _ => false,
+    }
+}
+
+fn is_timeout_transport_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("timeout")
+        || normalized.contains("timed out")
+        || normalized.contains("deadline")
+}
+
+fn is_retryable_invalid_provider_response(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("did not include assistant content or tool calls")
+        || normalized.contains("did not include choices")
+        || normalized.contains("finish_reason=error")
+}
+
+fn sleep_before_agentic_model_retry(attempt: usize) {
+    if cfg!(test) {
+        return;
+    }
+    thread::sleep(Duration::from_millis(
+        MODEL_RETRY_BASE_DELAY_MS * (attempt as u64 + 1),
+    ));
 }
 
 impl AgenticLoopStop {
@@ -710,6 +785,42 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct ScriptedResultModel {
+        responses: Mutex<Vec<crate::ChatModelResult>>,
+        requests: Mutex<Vec<ChatRequest>>,
+    }
+
+    impl ScriptedResultModel {
+        fn new(responses: Vec<crate::ChatModelResult>) -> Self {
+            let mut responses = responses;
+            responses.reverse();
+            Self {
+                responses: Mutex::new(responses),
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn requests(&self) -> Vec<ChatRequest> {
+            self.requests.lock().expect("requests lock").clone()
+        }
+    }
+
+    impl ChatModelClient for ScriptedResultModel {
+        fn complete(&self, request: ChatRequest) -> crate::ChatModelResult {
+            self.requests.lock().expect("requests lock").push(request);
+            self.responses
+                .lock()
+                .expect("responses lock")
+                .pop()
+                .ok_or_else(|| ChatModelError::ProviderError {
+                    provider: "test".to_string(),
+                    message: "script exhausted".to_string(),
+                    retryable: false,
+                })?
+        }
+    }
+
     struct TempWorkspace {
         path: PathBuf,
     }
@@ -797,6 +908,94 @@ mod tests {
         assert!(second_turn_tool_observation
             .content
             .contains("\"status\": \"Succeeded\""));
+    }
+
+    #[test]
+    fn retries_recoverable_model_errors_before_failing_direct_agent_loop() {
+        let workspace = TempWorkspace::new();
+        let runtime = LocalAgentRuntime::new(&workspace.path).expect("runtime");
+        let model = ScriptedResultModel::new(vec![
+            Err(ChatModelError::ProviderError {
+                provider: "openrouter".to_string(),
+                message: "Provider returned error (HTTP 502; upstream provider unavailable)"
+                    .to_string(),
+                retryable: true,
+            }),
+            Ok(ChatResponse::from_text("Recovered after retry.")),
+        ]);
+
+        let outcome = AgenticModelLoop::new(&runtime, &model).run(AgenticLoopRequest::new(
+            Uuid::new_v4(),
+            "Summarize the workspace",
+            test_model_ref(),
+        ));
+
+        assert_eq!(outcome.stop, AgenticLoopStop::Completed);
+        assert_eq!(
+            outcome.final_response,
+            Some("Recovered after retry.".to_string())
+        );
+        assert_eq!(model.requests().len(), 2);
+    }
+
+    #[test]
+    fn retries_empty_provider_responses_with_direct_agent_loop_guidance() {
+        let workspace = TempWorkspace::new();
+        let runtime = LocalAgentRuntime::new(&workspace.path).expect("runtime");
+        let empty_response_error = || ChatModelError::InvalidProviderResponse {
+            provider: "openrouter".to_string(),
+            message: "response did not include assistant content or tool calls".to_string(),
+        };
+        let model = ScriptedResultModel::new(vec![
+            Err(empty_response_error()),
+            Ok(ChatResponse::from_text("Recovered after empty response.")),
+        ]);
+
+        let outcome = AgenticModelLoop::new(&runtime, &model).run(AgenticLoopRequest::new(
+            Uuid::new_v4(),
+            "Summarize the workspace",
+            test_model_ref(),
+        ));
+
+        assert_eq!(outcome.stop, AgenticLoopStop::Completed);
+        assert_eq!(
+            outcome.final_response,
+            Some("Recovered after empty response.".to_string())
+        );
+        let requests = model.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(!request_has_empty_response_retry_guidance(&requests[0]));
+        assert!(request_has_empty_response_retry_guidance(&requests[1]));
+    }
+
+    #[test]
+    fn does_not_retry_transport_timeouts_in_direct_agent_loop() {
+        let workspace = TempWorkspace::new();
+        let runtime = LocalAgentRuntime::new(&workspace.path).expect("runtime");
+        let model = ScriptedResultModel::new(vec![
+            Err(ChatModelError::Transport {
+                provider: "openrouter".to_string(),
+                message: "request timed out".to_string(),
+                retryable: true,
+            }),
+            Ok(ChatResponse::from_text("late retry")),
+        ]);
+
+        let outcome = AgenticModelLoop::new(&runtime, &model).run(AgenticLoopRequest::new(
+            Uuid::new_v4(),
+            "Summarize the workspace",
+            test_model_ref(),
+        ));
+
+        assert!(matches!(
+            outcome.stop,
+            AgenticLoopStop::ModelError {
+                ref code,
+                retryable: true,
+                ..
+            } if code == "transport_error"
+        ));
+        assert_eq!(model.requests().len(), 1);
     }
 
     #[test]
@@ -1116,5 +1315,14 @@ mod tests {
         assert!(outcome.state.events.iter().any(
             |event| matches!(event, ReplEvent::RunCompleted { run_id: event_run_id } if *event_run_id == run_id)
         ));
+    }
+
+    fn request_has_empty_response_retry_guidance(request: &ChatRequest) -> bool {
+        request.messages.iter().any(|message| {
+            message.role == crate::ChatMessageRole::User
+                && message
+                    .content
+                    .contains("previous provider attempt returned empty assistant content")
+        })
     }
 }

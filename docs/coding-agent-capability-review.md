@@ -245,10 +245,15 @@ Melhoria implementada:
 - teste de regressao cobrindo arquivo grande, preservacao de `BEGIN_MARKER` e
   `END_MARKER`, presenca do marcador de compactacao, JSON valido e limite de
   tamanho.
+- retry controlado tambem no loop agentic direto do `coddy-agent` para erros
+  recuperaveis de provider e respostas vazias, com guidance adicional somente
+  quando o provider retorna sem assistant content/tool calls;
+- timeouts de transporte continuam sem retry automatico para respeitar o budget
+  de latencia da chamada.
 
 Metrica local apos a mudanca:
 
-- `cargo test -p coddy-agent -- --test-threads=1`: 180 passed.
+- `cargo test -p coddy-agent -- --test-threads=1`: 183 passed.
 - `cargo test -p coddy-runtime -- --test-threads=1`: 60 passed.
 - `./target/debug/coddy eval quality --json`: score 100.
 - Multiagent eval: 3/3 passed, score 100.
@@ -299,7 +304,8 @@ de observacoes.
 Smoke live adicional apos a compactacao estrutural do loop agentic direto:
 
 - Comando: `target/debug/coddy eval prompt-battery --json --model-provider openrouter --model-name deepseek/deepseek-v4-flash --limit 20 --concurrency 4`.
-- Resultado: 19/20 passed, score 95, raw score 90, member recall 95.
+- Resultado mais recente: 19/20 passed, score 95, raw score 90, member recall
+  92.
 - Model error rate: 5%, causado por resposta vazia persistente do provider
   OpenRouter em um caso.
 - Interpretacao: a mudanca local nao degradou o harness; a principal aresta
