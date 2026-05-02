@@ -12,6 +12,18 @@ describe('slashCommands', () => {
       kind: 'open-desktop-tab',
       tab: 'workspace',
     })
+    expect(resolveUiSlashCommand('/tools')).toEqual({
+      kind: 'open-desktop-tab',
+      tab: 'workspace',
+    })
+    expect(resolveUiSlashCommand('/subagents')).toEqual({
+      kind: 'open-desktop-tab',
+      tab: 'workspace',
+    })
+    expect(resolveUiSlashCommand('/mcp')).toEqual({
+      kind: 'open-desktop-tab',
+      tab: 'workspace',
+    })
     expect(resolveUiSlashCommand('/models')).toEqual({
       kind: 'open-desktop-tab',
       tab: 'models',
@@ -90,6 +102,15 @@ describe('slashCommands', () => {
     ])
     expect(listUiSlashCommandSuggestions('/hist')).toMatchObject([
       { command: '/history' },
+    ])
+    expect(listUiSlashCommandSuggestions('/too')).toMatchObject([
+      { command: '/tools' },
+    ])
+    expect(listUiSlashCommandSuggestions('/sub')).toMatchObject([
+      { command: '/subagents' },
+    ])
+    expect(listUiSlashCommandSuggestions('/mc')).toMatchObject([
+      { command: '/mcp' },
     ])
     expect(listUiSlashCommandSuggestions('/workspace')).toEqual([])
     expect(listUiSlashCommandSuggestions('/plan add tests')).toEqual([])
