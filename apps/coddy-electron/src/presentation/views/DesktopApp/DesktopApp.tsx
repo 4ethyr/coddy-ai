@@ -331,6 +331,7 @@ export function DesktopApp() {
             <ConversationPanel
               session={session}
               onSend={handleSend}
+              onOpenModels={() => setActiveTab('models')}
               onPermissionReply={(requestId, reply) => {
                 void replyPermission(requestId, reply)
               }}

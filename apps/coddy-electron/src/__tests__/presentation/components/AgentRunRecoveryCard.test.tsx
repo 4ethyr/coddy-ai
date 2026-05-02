@@ -78,4 +78,28 @@ describe('AgentRunRecoveryCard', () => {
 
     expect(onRetry).toHaveBeenCalledTimes(1)
   })
+
+  it('offers model settings only when a model action is available', async () => {
+    const notice = buildAgentRunRecoveryNotice(
+      failedRun(),
+      { provider: 'openrouter', name: 'deepseek/deepseek-v4-flash' },
+    )
+    const onOpenModels = vi.fn()
+
+    expect(notice).not.toBeNull()
+
+    const { rerender } = render(<AgentRunRecoveryCard notice={notice!} />)
+
+    expect(
+      screen.queryByRole('button', { name: /open models/i }),
+    ).not.toBeInTheDocument()
+
+    rerender(
+      <AgentRunRecoveryCard notice={notice!} onOpenModels={onOpenModels} />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /open models/i }))
+
+    expect(onOpenModels).toHaveBeenCalledTimes(1)
+  })
 })

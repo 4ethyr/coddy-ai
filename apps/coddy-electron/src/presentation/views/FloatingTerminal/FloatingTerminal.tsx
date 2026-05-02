@@ -226,6 +226,11 @@ export function FloatingTerminal() {
     [openConversation],
   )
 
+  const handleOpenModels = useCallback(() => {
+    persistDesktopTab('models')
+    void openUi('DesktopApp')
+  }, [openUi])
+
   const handleCaptureVoice = useCallback(
     () => captureVoiceWithOptionalSpeech(captureVoice, speakVoiceResponses),
     [captureVoice, speakVoiceResponses],
@@ -478,6 +483,7 @@ export function FloatingTerminal() {
               notice={recoveryNotice}
               compact
               onRetry={retryPrompt ? () => handleSend(retryPrompt) : undefined}
+              onOpenModels={handleOpenModels}
             />
           )}
 

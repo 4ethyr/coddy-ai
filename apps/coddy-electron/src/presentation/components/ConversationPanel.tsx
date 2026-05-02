@@ -33,6 +33,7 @@ interface Props {
   session: ReplSession
   onSend: (text: string) => void
   onPermissionReply: (requestId: string, reply: PermissionReply) => void
+  onOpenModels?: () => void
   thinkingAnimation?: ThinkingAnimation
   historyOpen?: boolean
   historyRecords?: ConversationRecord[]
@@ -56,6 +57,7 @@ export function ConversationPanel({
   session,
   onSend,
   onPermissionReply,
+  onOpenModels,
   thinkingAnimation = 'scan',
   historyOpen = false,
   historyRecords = [],
@@ -92,7 +94,11 @@ export function ConversationPanel({
             </div>
           </div>
 
-          <PlanOfAttack session={session} onRetryPrompt={onSend} />
+          <PlanOfAttack
+            session={session}
+            onRetryPrompt={onSend}
+            onOpenModels={onOpenModels}
+          />
 
           {helpOpen && (
             <SlashCommandHelpPanel onClose={onCloseHelp ?? (() => {})} />
@@ -189,9 +195,11 @@ export function ConversationPanel({
 function PlanOfAttack({
   session,
   onRetryPrompt,
+  onOpenModels,
 }: {
   session: ReplSession
   onRetryPrompt?: (text: string) => void
+  onOpenModels?: () => void
 }) {
   const toolActivity = session.tool_activity ?? []
   const subagentActivity = session.subagent_activity ?? []
@@ -239,6 +247,7 @@ function PlanOfAttack({
                       ? () => onRetryPrompt(retryPrompt)
                       : undefined
                   }
+                  onOpenModels={onOpenModels}
                 />
               )}
               {agentRun.summary.stop_reason && (

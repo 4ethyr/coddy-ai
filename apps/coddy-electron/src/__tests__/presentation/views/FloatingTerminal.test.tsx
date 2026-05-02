@@ -211,6 +211,37 @@ describe('FloatingTerminal', () => {
     expect(sessionContext.ask).toHaveBeenCalledWith('analyze repo with tools')
   })
 
+  it('opens desktop model routing from recoverable floating failures', async () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      selected_model: {
+        provider: 'openrouter',
+        name: 'deepseek/deepseek-v4-flash',
+      },
+      agent_run: {
+        run_id: 'run-3',
+        summary: {
+          goal: 'analyze repo',
+          last_phase: 'Failed',
+          completed_steps: 2,
+          stop_reason: null,
+          failure_code: 'invalid_provider_response',
+          failure_message: 'empty provider response',
+          recoverable_failure: true,
+        },
+      },
+    }
+
+    render(<FloatingTerminal />)
+
+    await userEvent.click(screen.getByRole('button', { name: /open models/i }))
+
+    expect(window.localStorage.getItem('coddy:desktop-active-tab')).toBe(
+      'models',
+    )
+    expect(sessionContext.openUi).toHaveBeenCalledWith('DesktopApp')
+  })
+
   it('renders pending tool approval actions above the input', async () => {
     sessionContext.session = {
       ...sessionContext.session,

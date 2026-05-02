@@ -4,11 +4,16 @@ import { describe, expect, it, vi } from 'vitest'
 import { createInitialSession, type ReplSession } from '@/domain'
 import { ConversationPanel } from '@/presentation/components/ConversationPanel'
 
-function renderPanel(session: ReplSession, onSend = vi.fn()) {
+function renderPanel(
+  session: ReplSession,
+  onSend = vi.fn(),
+  onOpenModels = vi.fn(),
+) {
   return render(
     <ConversationPanel
       session={session}
       onSend={onSend}
+      onOpenModels={onOpenModels}
       onPermissionReply={vi.fn()}
     />,
   )
@@ -104,5 +109,31 @@ describe('ConversationPanel agent activity', () => {
     await userEvent.click(screen.getByRole('button', { name: /retry prompt/i }))
 
     expect(onSend).toHaveBeenCalledWith('analyze the workspace again')
+  })
+
+  it('opens models from a recoverable failure action', async () => {
+    const onOpenModels = vi.fn()
+    const session = createInitialSession('DesktopApp', {
+      provider: 'openrouter',
+      name: 'deepseek/deepseek-v4-flash',
+    })
+    session.agent_run = {
+      run_id: 'run-4',
+      summary: {
+        goal: 'analyze workspace',
+        last_phase: 'Failed',
+        completed_steps: 2,
+        stop_reason: null,
+        failure_code: 'invalid_provider_response',
+        failure_message: 'empty provider response',
+        recoverable_failure: true,
+      },
+    }
+
+    renderPanel(session, vi.fn(), onOpenModels)
+
+    await userEvent.click(screen.getByRole('button', { name: /open models/i }))
+
+    expect(onOpenModels).toHaveBeenCalledTimes(1)
   })
 })

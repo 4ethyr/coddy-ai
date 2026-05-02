@@ -9,12 +9,14 @@ interface Props {
   notice: AgentRunRecoveryNotice
   compact?: boolean
   onRetry?: () => void
+  onOpenModels?: () => void
 }
 
 export function AgentRunRecoveryCard({
   notice,
   compact = false,
   onRetry,
+  onOpenModels,
 }: Props) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>(
     'idle',
@@ -69,6 +71,16 @@ export function AgentRunRecoveryCard({
             >
               <Icon name="send" className="h-3.5 w-3.5" />
               retry prompt
+            </button>
+          )}
+          {onOpenModels && (
+            <button
+              type="button"
+              onClick={onOpenModels}
+              className="flex items-center gap-1.5 rounded border border-amber-200/20 px-2 py-1 font-mono text-[11px] text-amber-100/75 transition-colors hover:border-amber-200/40 hover:text-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-200"
+            >
+              <Icon name="cpu" className="h-3.5 w-3.5" />
+              open models
             </button>
           )}
           <button
