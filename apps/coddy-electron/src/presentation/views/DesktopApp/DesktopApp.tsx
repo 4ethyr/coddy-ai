@@ -47,6 +47,8 @@ export function DesktopApp() {
     connecting,
     error,
     ask,
+    newSession,
+    openConversation,
     selectModel,
     listProviderModels,
     captureVoice,
@@ -56,11 +58,16 @@ export function DesktopApp() {
     selectWorkspaceFolder,
     openUi,
     replyPermission,
+    conversationHistory,
+    conversationHistoryStatus,
+    conversationHistoryError,
+    loadConversationHistory,
   } = useSessionContext()
   const [activeTab, setActiveTabState] = useState<DesktopTab>(
     loadPersistedDesktopTab,
   )
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
     () => loadSettings().floatingAppearance,
   )
@@ -72,6 +79,9 @@ export function DesktopApp() {
   )
   const [evalHarness, setEvalHarness] = useState<EvalHarnessSettings>(
     () => loadSettings().evalHarness,
+  )
+  const [speakVoiceResponses, setSpeakVoiceResponses] = useState(
+    () => loadSettings().speakVoiceResponses,
   )
 
   const setActiveTab = useCallback((tab: DesktopTab) => {
@@ -143,9 +153,42 @@ export function DesktopApp() {
         return
       }
 
+      if (command.kind === 'new-session') {
+        setHistoryOpen(false)
+        void newSession()
+        return
+      }
+
+      if (command.kind === 'set-speak') {
+        setSpeakVoiceResponses(command.enabled)
+        saveSettings({ speakVoiceResponses: command.enabled })
+        return
+      }
+
+      if (command.kind === 'open-history') {
+        setActiveTab('chat')
+        setHistoryOpen(true)
+        void loadConversationHistory()
+        return
+      }
+
       setActiveTab(command.tab)
     },
-    [ask, setActiveTab],
+    [ask, loadConversationHistory, newSession, setActiveTab],
+  )
+
+  const handleOpenConversation = useCallback(
+    (sessionId: string) => {
+      setHistoryOpen(false)
+      setActiveTab('chat')
+      void openConversation(sessionId)
+    },
+    [openConversation, setActiveTab],
+  )
+
+  const handleCaptureVoice = useCallback(
+    () => captureVoice({ speakResponse: speakVoiceResponses }),
+    [captureVoice, speakVoiceResponses],
   )
 
   return (
@@ -178,7 +221,7 @@ export function DesktopApp() {
           <div className="flex items-center gap-3">
             <StatusIndicator status={session.status} />
             <VoiceButton
-              onCapture={captureVoice}
+              onCapture={handleCaptureVoice}
               onCancel={cancelVoiceCapture}
               disabled={connecting}
             />
@@ -245,6 +288,12 @@ export function DesktopApp() {
                 void replyPermission(requestId, reply)
               }}
               thinkingAnimation={modelThinking.animation}
+              historyOpen={historyOpen}
+              historyRecords={conversationHistory}
+              historyStatus={conversationHistoryStatus}
+              historyError={conversationHistoryError}
+              onOpenHistoryItem={handleOpenConversation}
+              onCloseHistory={() => setHistoryOpen(false)}
             />
           )}
 
@@ -290,9 +339,14 @@ export function DesktopApp() {
               appearance={appearance}
               modelThinking={modelThinking}
               localModel={localModel}
+              speakVoiceResponses={speakVoiceResponses}
               onOpenAppearance={() => setSettingsOpen(true)}
               onModelThinkingChange={handleModelThinkingChange}
               onLocalModelChange={handleLocalModelChange}
+              onSpeakVoiceResponsesChange={(enabled) => {
+                setSpeakVoiceResponses(enabled)
+                saveSettings({ speakVoiceResponses: enabled })
+              }}
             />
           )}
         </div>
@@ -432,16 +486,20 @@ function SettingsTab({
   appearance,
   modelThinking,
   localModel,
+  speakVoiceResponses,
   onOpenAppearance,
   onModelThinkingChange,
   onLocalModelChange,
+  onSpeakVoiceResponsesChange,
 }: {
   appearance: FloatingAppearanceSettings
   modelThinking: ModelThinkingSettings
   localModel: LocalModelSettings
+  speakVoiceResponses: boolean
   onOpenAppearance: () => void
   onModelThinkingChange: (next: ModelThinkingSettings) => void
   onLocalModelChange: (next: LocalModelSettings) => void
+  onSpeakVoiceResponsesChange: (enabled: boolean) => void
 }) {
   const setThinking = (patch: Partial<ModelThinkingSettings>) => {
     onModelThinkingChange({ ...modelThinking, ...patch })
@@ -551,6 +609,34 @@ function SettingsTab({
                 </span>
               </label>
             </div>
+          </div>
+        </section>
+
+        <section className="desktop-glass-panel mt-4 rounded-xl p-5">
+          <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
+            <div>
+              <h2 className="font-display text-lg text-on-surface">
+                Voice responses
+              </h2>
+              <p className="mt-1 max-w-2xl text-sm leading-6 text-on-surface-variant">
+                Ative fala apenas para respostas geradas depois de um input de voz.
+                O chat digitado continua silencioso.
+              </p>
+            </div>
+            <button
+              type="button"
+              aria-pressed={speakVoiceResponses}
+              onClick={() => onSpeakVoiceResponsesChange(!speakVoiceResponses)}
+              className={`rounded-full border px-4 py-2 font-mono text-xs transition-colors ${
+                speakVoiceResponses
+                  ? 'border-primary/45 bg-primary/10 text-primary'
+                  : 'border-white/15 bg-surface-container-high/70 text-on-surface-variant'
+              }`}
+            >
+              {speakVoiceResponses
+                ? 'Spoken responses on'
+                : 'Spoken responses off'}
+            </button>
           </div>
         </section>
 

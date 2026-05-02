@@ -21,6 +21,7 @@ import { ToolApprovalPanel } from '@/presentation/components/ToolApprovalPanel'
 import { AssessmentConfirmModal } from '@/presentation/components/AssessmentConfirmModal'
 import { FloatingSettingsModal } from '@/presentation/components/FloatingSettingsModal'
 import { SelectionCopyRegion } from '@/presentation/components/SelectionCopyRegion'
+import { ConversationHistoryPanel } from '@/presentation/components/ConversationHistoryPanel'
 import { Icon } from '@/presentation/components/Icon'
 import {
   persistDesktopTab,
@@ -34,6 +35,8 @@ export function FloatingTerminal() {
     reconnecting,
     error,
     ask,
+    newSession,
+    openConversation,
     reconnect,
     selectModel,
     listProviderModels,
@@ -43,6 +46,10 @@ export function FloatingTerminal() {
     captureAndExplain,
     dismissConfirmation,
     replyPermission,
+    conversationHistory,
+    conversationHistoryStatus,
+    conversationHistoryError,
+    loadConversationHistory,
   } =
     useSessionContext()
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -51,8 +58,12 @@ export function FloatingTerminal() {
   const [confirmationDismissed, setConfirmationDismissed] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
     () => loadSettings().floatingAppearance,
+  )
+  const [speakVoiceResponses, setSpeakVoiceResponses] = useState(
+    () => loadSettings().speakVoiceResponses,
   )
   const [thinkingAnimation] = useState(
     () => loadSettings().modelThinking.animation,
@@ -118,10 +129,41 @@ export function FloatingTerminal() {
         return
       }
 
+      if (command.kind === 'new-session') {
+        setHistoryOpen(false)
+        void newSession()
+        return
+      }
+
+      if (command.kind === 'set-speak') {
+        setSpeakVoiceResponses(command.enabled)
+        saveSettings({ speakVoiceResponses: command.enabled })
+        return
+      }
+
+      if (command.kind === 'open-history') {
+        setHistoryOpen(true)
+        void loadConversationHistory()
+        return
+      }
+
       persistDesktopTab(command.tab)
       void openUi('DesktopApp')
     },
-    [ask, openUi],
+    [ask, loadConversationHistory, newSession, openUi],
+  )
+
+  const handleOpenConversation = useCallback(
+    (sessionId: string) => {
+      setHistoryOpen(false)
+      void openConversation(sessionId)
+    },
+    [openConversation],
+  )
+
+  const handleCaptureVoice = useCallback(
+    () => captureVoice({ speakResponse: speakVoiceResponses }),
+    [captureVoice, speakVoiceResponses],
   )
 
   const terminalStyle = {
@@ -334,6 +376,16 @@ export function FloatingTerminal() {
             </div>
           )}
 
+          {historyOpen && (
+            <ConversationHistoryPanel
+              records={conversationHistory}
+              status={conversationHistoryStatus}
+              error={conversationHistoryError}
+              onSelect={handleOpenConversation}
+              onClose={() => setHistoryOpen(false)}
+            />
+          )}
+
           {error && (
             <div className="flex items-center gap-3 rounded-lg border border-red-400/25 bg-red-500/10 px-4 py-3 font-mono text-sm text-red-300">
               <Icon name="alert" className="h-4 w-4" />
@@ -410,7 +462,7 @@ export function FloatingTerminal() {
           />
         </div>
         <VoiceButton
-          onCapture={captureVoice}
+          onCapture={handleCaptureVoice}
           onCancel={cancelVoiceCapture}
           disabled={connecting}
         />

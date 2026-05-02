@@ -89,6 +89,25 @@ describe('MessageBubble', () => {
     expect(screen.getByText('Copy')).toBeInTheDocument()
   })
 
+  it('renders markdown tables as table elements instead of a flat paragraph', () => {
+    const text = [
+      '| Area | Status |',
+      '| --- | --- |',
+      '| Rust | ok |',
+      '| Electron | review |',
+    ].join('\n')
+    const { container } = render(
+      <MessageBubble
+        message={{ id: '9', role: 'assistant', text }}
+      />,
+    )
+
+    expect(container.querySelector('table')).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: 'Area' })).toBeInTheDocument()
+    expect(screen.getByRole('cell', { name: 'Electron' })).toBeInTheDocument()
+    expect(container.textContent).not.toContain('| Area | Status |')
+  })
+
   it('renders a user command icon without emoji avatars', () => {
     render(
       <MessageBubble

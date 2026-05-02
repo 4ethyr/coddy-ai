@@ -10,6 +10,7 @@ export type IconName =
   | 'cpu'
   | 'desktop'
   | 'file'
+  | 'history'
   | 'lock'
   | 'maximize'
   | 'mic'
@@ -90,6 +91,13 @@ const PATHS: Record<IconName, JSX.Element> = {
       <path d="M14 2v6h6" />
       <path d="M8 13h8" />
       <path d="M8 17h5" />
+    </>
+  ),
+  history: (
+    <>
+      <path d="M3 12a9 9 0 1 0 3-6.7" />
+      <path d="M3 3v6h6" />
+      <path d="M12 7v5l3 2" />
     </>
   ),
   lock: (

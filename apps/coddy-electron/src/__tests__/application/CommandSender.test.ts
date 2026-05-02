@@ -10,6 +10,8 @@ import {
   selectWorkspaceFolder,
   sendAsk,
   replyPermission,
+  startNewSession,
+  loadConversationHistory,
 } from '@/application'
 
 function clientWith(
@@ -19,6 +21,7 @@ function clientWith(
     getSnapshot: vi.fn(),
     getEventsAfter: vi.fn(),
     getToolCatalog: vi.fn(),
+    getConversationHistory: vi.fn(),
     getActiveWorkspace: vi.fn(),
     selectWorkspaceFolder: vi.fn(),
     runMultiagentEval: vi.fn(),
@@ -28,6 +31,8 @@ function clientWith(
     ask: vi.fn(),
     voiceTurn: vi.fn(),
     stopActiveRun: vi.fn(),
+    newSession: vi.fn(),
+    openConversation: vi.fn(),
     stopSpeaking: vi.fn(),
     selectModel: vi.fn(),
     openUi: vi.fn(),
@@ -151,5 +156,35 @@ describe('CommandSender', () => {
       message: 'workspace set',
     })
     expect(client.selectWorkspaceFolder).toHaveBeenCalledOnce()
+  })
+
+  it('starts a new session and loads conversation history through the client port', async () => {
+    const conversations = [
+      {
+        summary: {
+          session_id: 'session-1',
+          title: 'Review workspace',
+          created_at_unix_ms: 1,
+          updated_at_unix_ms: 2,
+          message_count: 2,
+          selected_model: { provider: 'openrouter', name: 'deepseek' },
+          mode: 'DesktopApp' as const,
+        },
+        messages: [],
+      },
+    ]
+    const client = clientWith({
+      newSession: vi.fn().mockResolvedValue({ message: 'new session' }),
+      getConversationHistory: vi.fn().mockResolvedValue(conversations),
+    })
+
+    await expect(startNewSession(client)).resolves.toEqual({
+      message: 'new session',
+    })
+    await expect(loadConversationHistory(client, 10)).resolves.toEqual(
+      conversations,
+    )
+    expect(client.newSession).toHaveBeenCalledOnce()
+    expect(client.getConversationHistory).toHaveBeenCalledWith(10)
   })
 })

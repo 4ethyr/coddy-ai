@@ -81,6 +81,10 @@ pub enum ReplCommand {
         reply: crate::PermissionReply,
     },
     DismissConfirmation,
+    NewSession,
+    OpenConversation {
+        session_id: uuid::Uuid,
+    },
     StopActiveRun,
     StopSpeaking,
 }

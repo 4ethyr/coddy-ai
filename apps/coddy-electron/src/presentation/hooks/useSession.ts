@@ -12,10 +12,12 @@ import type {
   MultiagentEvalResult,
   PermissionReply,
   PromptBatteryResult,
+  ConversationRecord,
   ReplCommandResult,
   ReplMode,
   ReplSession,
   ReplToolCatalogItem,
+  VoiceCaptureOptions,
   WorkspaceSelectionResult,
   AssessmentPolicy,
   ScreenAssistMode,
@@ -28,6 +30,8 @@ import {
   sendAsk,
   cancelRun,
   cancelSpeech,
+  openConversation,
+  startNewSession,
   selectModel,
   openUi,
   captureVoice,
@@ -39,6 +43,7 @@ import {
   runMultiagentEval,
   runPromptBatteryEval,
   getActiveWorkspace,
+  loadConversationHistory,
   selectWorkspaceFolder,
   loadSettings,
 } from '@/application'
@@ -58,6 +63,9 @@ export interface UseSessionReturn {
   promptBatteryStatus: EvalRunStatus
   promptBatteryError: string | null
   activeWorkspacePath: string | null
+  conversationHistory: ConversationRecord[]
+  conversationHistoryStatus: EvalRunStatus
+  conversationHistoryError: string | null
   workspaceSelectionStatus: EvalRunStatus
   workspaceSelectionError: string | null
   /** True while still connecting / loading the first snapshot */
@@ -71,6 +79,12 @@ export interface UseSessionReturn {
 
   /** Stop the current generation */
   cancelRun: () => Promise<void>
+
+  /** Archive the current conversation and start a clean session */
+  newSession: () => Promise<void>
+
+  /** Restore a persisted conversation as the active session */
+  openConversation: (sessionId: string) => Promise<void>
 
   /** Stop TTS playback */
   cancelSpeech: () => Promise<void>
@@ -94,11 +108,14 @@ export interface UseSessionReturn {
   /** Select the local filesystem workspace used by the Rust runtime */
   selectWorkspaceFolder: () => Promise<WorkspaceSelectionResult>
 
+  /** Load persisted redacted conversation history */
+  loadConversationHistory: () => Promise<ConversationRecord[]>
+
   /** Switch the REPL UI mode through the daemon */
   openUi: (mode: ReplMode) => Promise<void>
 
   /** Capture one voice turn; the backend dispatches the transcript itself */
-  captureVoice: () => Promise<ReplCommandResult>
+  captureVoice: (options?: VoiceCaptureOptions) => Promise<ReplCommandResult>
 
   /** Cancel the active microphone capture */
   cancelVoiceCapture: () => Promise<void>
@@ -140,6 +157,14 @@ export function useSession(): UseSessionReturn {
   const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(
     null,
   )
+  const [conversationHistory, setConversationHistory] = useState<
+    ConversationRecord[]
+  >([])
+  const [conversationHistoryStatus, setConversationHistoryStatus] =
+    useState<EvalRunStatus>('idle')
+  const [conversationHistoryError, setConversationHistoryError] = useState<
+    string | null
+  >(null)
   const [workspaceSelectionStatus, setWorkspaceSelectionStatus] =
     useState<EvalRunStatus>('idle')
   const [workspaceSelectionError, setWorkspaceSelectionError] =
@@ -228,6 +253,29 @@ export function useSession(): UseSessionReturn {
       setError(actionErrorMessage('Coddy could not stop the active run', err))
     }
   }, [client])
+
+  const handleNewSession = useCallback(async () => {
+    try {
+      await startNewSession(client)
+      setConversationHistoryStatus('idle')
+      init()
+    } catch (err) {
+      setError(actionErrorMessage('Coddy could not start a new session', err))
+    }
+  }, [client, init])
+
+  const handleOpenConversation = useCallback(
+    async (sessionId: string) => {
+      try {
+        await openConversation(client, sessionId)
+        setConversationHistoryStatus('idle')
+        init()
+      } catch (err) {
+        setError(actionErrorMessage('Coddy could not open conversation', err))
+      }
+    },
+    [client, init],
+  )
 
   const handleCancelSpeech = useCallback(async () => {
     try {
@@ -322,6 +370,24 @@ export function useSession(): UseSessionReturn {
     }
   }, [client, init])
 
+  const handleLoadConversationHistory = useCallback(async () => {
+    setConversationHistoryStatus('running')
+    setConversationHistoryError(null)
+
+    try {
+      const result = await loadConversationHistory(client)
+      setConversationHistory(result)
+      setConversationHistoryStatus('succeeded')
+      return result
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setConversationHistoryError(message)
+      setConversationHistoryStatus('failed')
+      setError(message)
+      throw err
+    }
+  }, [client])
+
   const handleOpenUi = useCallback(
     async (mode: ReplMode) => {
       try {
@@ -333,15 +399,20 @@ export function useSession(): UseSessionReturn {
     [client],
   )
 
-  const handleCaptureVoice = useCallback(async (): Promise<ReplCommandResult> => {
-    try {
-      return await captureVoice(client)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      setError(message)
-      return { error: { code: 'VOICE_CAPTURE_FAILED', message } }
-    }
-  }, [client])
+  const handleCaptureVoice = useCallback(
+    async (
+      options: VoiceCaptureOptions = {},
+    ): Promise<ReplCommandResult> => {
+      try {
+        return await captureVoice(client, options)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        setError(message)
+        return { error: { code: 'VOICE_CAPTURE_FAILED', message } }
+      }
+    },
+    [client],
+  )
 
   const handleCancelVoiceCapture = useCallback(async () => {
     try {
@@ -395,6 +466,9 @@ export function useSession(): UseSessionReturn {
     promptBatteryStatus,
     promptBatteryError,
     activeWorkspacePath,
+    conversationHistory,
+    conversationHistoryStatus,
+    conversationHistoryError,
     workspaceSelectionStatus,
     workspaceSelectionError,
     connecting,
@@ -402,11 +476,14 @@ export function useSession(): UseSessionReturn {
     error,
     ask,
     cancelRun: handleCancelRun,
+    newSession: handleNewSession,
+    openConversation: handleOpenConversation,
     cancelSpeech: handleCancelSpeech,
     selectModel: handleSelectModel,
     listProviderModels: handleListProviderModels,
     runMultiagentEval: handleRunMultiagentEval,
     runPromptBatteryEval: handleRunPromptBatteryEval,
+    loadConversationHistory: handleLoadConversationHistory,
     selectWorkspaceFolder: handleSelectWorkspaceFolder,
     openUi: handleOpenUi,
     captureVoice: handleCaptureVoice,

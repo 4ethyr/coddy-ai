@@ -9,18 +9,25 @@ import {
 import { InputBar } from '@/presentation/components/InputBar'
 import { ToolApprovalPanel } from '@/presentation/components/ToolApprovalPanel'
 import { SelectionCopyRegion } from '@/presentation/components/SelectionCopyRegion'
+import { ConversationHistoryPanel } from '@/presentation/components/ConversationHistoryPanel'
 import {
   ThinkingIndicator,
   type ThinkingAnimation,
 } from '@/presentation/components/ThinkingIndicator'
 import { Icon } from '@/presentation/components/Icon'
-import type { PermissionReply } from '@/domain'
+import type { ConversationRecord, PermissionReply } from '@/domain'
 
 interface Props {
   session: ReplSession
   onSend: (text: string) => void
   onPermissionReply: (requestId: string, reply: PermissionReply) => void
   thinkingAnimation?: ThinkingAnimation
+  historyOpen?: boolean
+  historyRecords?: ConversationRecord[]
+  historyStatus?: 'idle' | 'running' | 'succeeded' | 'failed'
+  historyError?: string | null
+  onOpenHistoryItem?: (sessionId: string) => void
+  onCloseHistory?: () => void
 }
 
 export function ConversationPanel({
@@ -28,6 +35,12 @@ export function ConversationPanel({
   onSend,
   onPermissionReply,
   thinkingAnimation = 'scan',
+  historyOpen = false,
+  historyRecords = [],
+  historyStatus = 'idle',
+  historyError = null,
+  onOpenHistoryItem,
+  onCloseHistory,
 }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -48,6 +61,16 @@ export function ConversationPanel({
           </div>
 
           <PlanOfAttack session={session} />
+
+          {historyOpen && (
+            <ConversationHistoryPanel
+              records={historyRecords}
+              status={historyStatus}
+              error={historyError}
+              onSelect={onOpenHistoryItem}
+              onClose={onCloseHistory ?? (() => {})}
+            />
+          )}
 
           {session.messages.map((msg) => (
             <MessageBubble key={msg.id} message={msg} />

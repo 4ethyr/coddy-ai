@@ -43,6 +43,23 @@ describe('FloatingSettingsModal', () => {
     expect(screen.getByLabelText('Glass secondary')).toBeInTheDocument()
   })
 
+  it('keeps the settings dialog in an overlay layer with its own scroll area', () => {
+    const { container } = render(
+      <FloatingSettingsModal
+        value={VALUE}
+        onChange={() => {}}
+        onClose={() => {}}
+      />,
+    )
+
+    const overlay = container.firstElementChild
+    expect(overlay?.className).toContain('fixed')
+    expect(overlay?.className).toContain('z-[300]')
+    expect(screen.getByRole('dialog', { name: 'Terminal settings' })).toHaveClass(
+      'max-h-[calc(100vh-6rem)]',
+    )
+  })
+
   it('emits normalized appearance changes', () => {
     const onChange = vi.fn()
     render(

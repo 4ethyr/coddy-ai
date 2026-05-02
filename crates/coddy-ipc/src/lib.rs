@@ -238,6 +238,12 @@ pub struct ReplToolsJob {
     pub request_id: Uuid,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplConversationHistoryJob {
+    pub request_id: Uuid,
+    pub limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReplToolCatalogItem {
     pub name: String,
@@ -321,6 +327,7 @@ pub enum CoddyRequest {
     Events(ReplEventsJob),
     EventStream(ReplEventStreamJob),
     Tools(ReplToolsJob),
+    ConversationHistory(ReplConversationHistoryJob),
 }
 
 impl CoddyRequest {
@@ -331,6 +338,7 @@ impl CoddyRequest {
             Self::Events(job) => job.request_id,
             Self::EventStream(job) => job.request_id,
             Self::Tools(job) => job.request_id,
+            Self::ConversationHistory(job) => job.request_id,
         }
     }
 }
@@ -375,6 +383,10 @@ pub enum CoddyResult {
         request_id: Uuid,
         tools: Vec<ReplToolCatalogItem>,
     },
+    ReplConversationHistory {
+        request_id: Uuid,
+        conversations: Vec<coddy_core::ConversationRecord>,
+    },
 }
 
 impl CoddyResult {
@@ -387,7 +399,8 @@ impl CoddyResult {
             | Self::ReplSessionSnapshot { request_id, .. }
             | Self::ReplEvents { request_id, .. }
             | Self::ReplTools { request_id, .. }
-            | Self::ReplToolCatalog { request_id, .. } => *request_id,
+            | Self::ReplToolCatalog { request_id, .. }
+            | Self::ReplConversationHistory { request_id, .. } => *request_id,
         }
     }
 }
@@ -465,6 +478,10 @@ mod tests {
                 after_sequence: 1,
             }),
             CoddyRequest::Tools(ReplToolsJob { request_id }),
+            CoddyRequest::ConversationHistory(ReplConversationHistoryJob {
+                request_id,
+                limit: Some(10),
+            }),
         ];
 
         for request in requests {
@@ -477,7 +494,7 @@ mod tests {
         let request_id = Uuid::new_v4();
         let job = ReplCommandJob {
             request_id,
-            command: coddy_core::ReplCommand::StopActiveRun,
+            command: coddy_core::ReplCommand::NewSession,
             speak: true,
         };
 
@@ -488,6 +505,23 @@ mod tests {
                 .expect("decode job");
 
         assert_eq!(decoded, job);
+    }
+
+    #[test]
+    fn conversation_history_request_roundtrips_through_bincode() {
+        let request = CoddyRequest::ConversationHistory(ReplConversationHistoryJob {
+            request_id: Uuid::new_v4(),
+            limit: Some(25),
+        });
+
+        let payload = bincode::serde::encode_to_vec(&request, bincode::config::standard())
+            .expect("encode request");
+        let (decoded, decoded_len): (CoddyRequest, usize) =
+            bincode::serde::decode_from_slice(&payload, bincode::config::standard())
+                .expect("decode history request");
+
+        assert_eq!(decoded_len, payload.len());
+        assert_eq!(decoded, request);
     }
 
     #[test]

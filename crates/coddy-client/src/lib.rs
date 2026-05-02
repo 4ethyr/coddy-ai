@@ -4,11 +4,13 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use coddy_core::{PermissionReply, ReplCommand, ReplEventEnvelope, ReplSessionSnapshot};
+use coddy_core::{
+    ConversationRecord, PermissionReply, ReplCommand, ReplEventEnvelope, ReplSessionSnapshot,
+};
 use coddy_ipc::{
     read_frame, write_frame, CoddyIpcError, CoddyRequest, CoddyResult, CoddyWireRequest,
-    CoddyWireResult, ReplCommandJob, ReplEventStreamJob, ReplEventsJob, ReplSessionSnapshotJob,
-    ReplToolCatalogItem, ReplToolsJob,
+    CoddyWireResult, ReplCommandJob, ReplConversationHistoryJob, ReplEventStreamJob, ReplEventsJob,
+    ReplSessionSnapshotJob, ReplToolCatalogItem, ReplToolsJob,
 };
 use tokio::net::UnixStream;
 use tokio::time::{sleep, timeout};
@@ -103,6 +105,15 @@ impl CoddyClient {
         self.send_command(ReplCommand::StopActiveRun, false).await
     }
 
+    pub async fn new_session(&self) -> Result<CoddyResult> {
+        self.send_command(ReplCommand::NewSession, false).await
+    }
+
+    pub async fn open_conversation(&self, session_id: Uuid) -> Result<CoddyResult> {
+        self.send_command(ReplCommand::OpenConversation { session_id }, false)
+            .await
+    }
+
     pub async fn reply_permission(
         &self,
         request_id: Uuid,
@@ -168,6 +179,25 @@ impl CoddyClient {
                 bail!("daemon returned error {code}: {message}")
             }
             _ => bail!("daemon returned unexpected response for REPL tools"),
+        }
+    }
+
+    pub async fn conversation_history(
+        &self,
+        limit: Option<usize>,
+    ) -> Result<Vec<ConversationRecord>> {
+        let request_id = Uuid::new_v4();
+        match self
+            .roundtrip(CoddyRequest::ConversationHistory(
+                ReplConversationHistoryJob { request_id, limit },
+            ))
+            .await?
+        {
+            CoddyResult::ReplConversationHistory { conversations, .. } => Ok(conversations),
+            CoddyResult::Error { code, message, .. } => {
+                bail!("daemon returned error {code}: {message}")
+            }
+            _ => bail!("daemon returned unexpected response for REPL conversation history"),
         }
     }
 
@@ -554,6 +584,56 @@ mod tests {
             catalog[0].permissions,
             vec![coddy_core::ToolPermission::ReadWorkspace]
         );
+        server.await.expect("server task");
+        let _ = std::fs::remove_file(socket_path);
+    }
+
+    #[tokio::test]
+    async fn client_reads_conversation_history() {
+        let socket_path = test_socket_path("conversation-history");
+        let listener = UnixListener::bind(&socket_path).expect("bind test socket");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept client");
+            let request: CoddyWireRequest = read_frame(&mut stream).await.expect("read request");
+            request.ensure_compatible().expect("compatible request");
+            let CoddyRequest::ConversationHistory(job) = request.request else {
+                panic!("unexpected request")
+            };
+            assert_eq!(job.limit, Some(5));
+            write_frame(
+                &mut stream,
+                &CoddyWireResult::new(CoddyResult::ReplConversationHistory {
+                    request_id: job.request_id,
+                    conversations: vec![ConversationRecord {
+                        summary: coddy_core::ConversationSummary {
+                            session_id: Uuid::new_v4(),
+                            title: "Analyze workspace".to_string(),
+                            created_at_unix_ms: 1,
+                            updated_at_unix_ms: 2,
+                            message_count: 1,
+                            selected_model: coddy_core::ModelRef {
+                                provider: "openrouter".to_string(),
+                                name: "deepseek".to_string(),
+                            },
+                            mode: coddy_core::ReplMode::DesktopApp,
+                        },
+                        messages: vec![coddy_core::ReplMessage {
+                            id: Uuid::new_v4(),
+                            role: "user".to_string(),
+                            text: "Analyze workspace".to_string(),
+                        }],
+                    }],
+                }),
+            )
+            .await
+            .expect("write response");
+        });
+
+        let client = CoddyClient::new(&socket_path);
+        let conversations = client.conversation_history(Some(5)).await.expect("history");
+
+        assert_eq!(conversations.len(), 1);
+        assert_eq!(conversations[0].summary.title, "Analyze workspace");
         server.await.expect("server task");
         let _ = std::fs::remove_file(socket_path);
     }

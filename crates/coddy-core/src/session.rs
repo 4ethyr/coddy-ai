@@ -119,8 +119,10 @@ impl ReplSession {
     pub fn apply_event(&mut self, event: &crate::ReplEvent) {
         match event {
             crate::ReplEvent::SessionStarted { session_id } => {
+                let mode = self.mode;
+                let selected_model = self.selected_model.clone();
+                *self = Self::new(mode, selected_model);
                 self.id = *session_id;
-                self.status = SessionStatus::Idle;
             }
             crate::ReplEvent::RunStarted { run_id } => {
                 self.active_run = Some(*run_id);
@@ -472,6 +474,54 @@ mod tests {
         assert_eq!(session.workspace_context.len(), 1);
         assert!(session.workspace_context[0].sensitive);
         assert_eq!(session.status, SessionStatus::BuildingContext);
+    }
+
+    #[test]
+    fn session_started_resets_conversation_state_but_keeps_ui_context() {
+        let mut session = ReplSession::new(
+            ReplMode::DesktopApp,
+            crate::ModelRef {
+                provider: "openrouter".to_string(),
+                name: "deepseek/deepseek-v4-flash".to_string(),
+            },
+        );
+        session.messages.push(crate::ReplMessage {
+            id: uuid::Uuid::new_v4(),
+            role: "user".to_string(),
+            text: "old prompt".to_string(),
+        });
+        session.workspace_context.push(ContextItem {
+            id: "tool:filesystem.read_file:Cargo.toml".to_string(),
+            label: "Cargo.toml".to_string(),
+            sensitive: false,
+        });
+        session.pending_permission = Some(
+            crate::PermissionRequest::new(
+                session.id,
+                uuid::Uuid::new_v4(),
+                None,
+                crate::ToolName::new("filesystem.read_file").expect("valid tool name"),
+                crate::ToolPermission::ReadWorkspace,
+                vec![".env".to_string()],
+                crate::ToolRiskLevel::High,
+                serde_json::json!({"path": ".env"}),
+                1_777_000_000_000,
+            )
+            .expect("valid permission request"),
+        );
+        let new_session_id = uuid::Uuid::new_v4();
+
+        session.apply_event(&crate::ReplEvent::SessionStarted {
+            session_id: new_session_id,
+        });
+
+        assert_eq!(session.id, new_session_id);
+        assert_eq!(session.mode, ReplMode::DesktopApp);
+        assert_eq!(session.selected_model.provider, "openrouter");
+        assert_eq!(session.status, SessionStatus::Idle);
+        assert!(session.messages.is_empty());
+        assert!(session.workspace_context.is_empty());
+        assert!(session.pending_permission.is_none());
     }
 
     #[test]

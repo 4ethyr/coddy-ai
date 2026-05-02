@@ -4,6 +4,7 @@ pub mod context;
 pub mod event;
 pub mod event_broker;
 pub mod event_log;
+pub mod history;
 mod json_value_wire;
 pub mod permission;
 pub mod policy;
@@ -29,6 +30,7 @@ pub use event::{
 };
 pub use event_broker::{ReplEventBroker, ReplEventSubscription};
 pub use event_log::{ReplEventEnvelope, ReplEventLog, ReplSessionSnapshot};
+pub use history::{redact_conversation_text, ConversationRecord, ConversationSummary};
 pub use permission::{
     PermissionAction, PermissionContractError, PermissionEvaluation, PermissionReply,
     PermissionRequest, PermissionResponse, PermissionRule, PermissionRuleset,

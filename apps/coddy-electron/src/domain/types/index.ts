@@ -60,6 +60,8 @@ export type {
   AssessmentPolicy as SessionAssessmentPolicy,
   VoiceState,
   ContextItem,
+  ConversationRecord,
+  ConversationSummary,
   SubagentActivity,
   ScreenUnderstandingContext,
   ReplSession,

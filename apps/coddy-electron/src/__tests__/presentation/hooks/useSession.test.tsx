@@ -50,6 +50,7 @@ function createClient(overrides: Partial<ReplIpcClient> = {}): ReplIpcClient {
     getSnapshot: vi.fn().mockResolvedValue(snapshot()),
     getEventsAfter: vi.fn(),
     getToolCatalog: vi.fn().mockResolvedValue([]),
+    getConversationHistory: vi.fn().mockResolvedValue([]),
     getActiveWorkspace: vi.fn().mockResolvedValue({ path: null }),
     selectWorkspaceFolder: vi.fn().mockResolvedValue({ path: null, cancelled: true }),
     listProviderModels: vi.fn(),
@@ -57,6 +58,8 @@ function createClient(overrides: Partial<ReplIpcClient> = {}): ReplIpcClient {
     ask: vi.fn(),
     voiceTurn: vi.fn(),
     stopActiveRun: vi.fn().mockResolvedValue(undefined),
+    newSession: vi.fn().mockResolvedValue({ message: 'new session' }),
+    openConversation: vi.fn().mockResolvedValue({ message: 'opened' }),
     stopSpeaking: vi.fn().mockResolvedValue(undefined),
     selectModel: vi.fn(),
     openUi: vi.fn(),
@@ -129,6 +132,70 @@ describe('useSession cancellation errors', () => {
     expect(result.current.error).toBe(
       'Coddy could not cancel voice capture: capture is stuck',
     )
+
+    unmount()
+  })
+
+  it('loads redacted conversation history through the session hook', async () => {
+    const conversations = [
+      {
+        summary: {
+          session_id: 'session-1',
+          title: 'Analyze workspace',
+          created_at_unix_ms: 1,
+          updated_at_unix_ms: 2,
+          message_count: 2,
+          selected_model: { provider: 'openrouter', name: 'deepseek' },
+          mode: 'DesktopApp' as const,
+        },
+        messages: [],
+      },
+    ]
+    clientRef.current = createClient({
+      getConversationHistory: vi.fn().mockResolvedValue(conversations),
+    })
+
+    const { result, unmount } = renderHook(() => useSession())
+    await waitFor(() => expect(result.current.connecting).toBe(false))
+
+    await act(async () => {
+      await result.current.loadConversationHistory()
+    })
+
+    expect(result.current.conversationHistory).toEqual(conversations)
+    expect(result.current.conversationHistoryStatus).toBe('succeeded')
+
+    unmount()
+  })
+
+  it('opens a persisted conversation and refreshes the daemon snapshot', async () => {
+    const openConversation = vi.fn().mockResolvedValue({ message: 'opened' })
+    clientRef.current = createClient({ openConversation })
+
+    const { result, unmount } = renderHook(() => useSession())
+    await waitFor(() => expect(result.current.connecting).toBe(false))
+
+    await act(async () => {
+      await result.current.openConversation('session-2')
+    })
+
+    expect(openConversation).toHaveBeenCalledWith('session-2')
+
+    unmount()
+  })
+
+  it('passes voice response options to the capture backend', async () => {
+    const captureVoice = vi.fn().mockResolvedValue({ text: 'voice command' })
+    clientRef.current = createClient({ captureVoice })
+
+    const { result, unmount } = renderHook(() => useSession())
+    await waitFor(() => expect(result.current.connecting).toBe(false))
+
+    await act(async () => {
+      await result.current.captureVoice({ speakResponse: true })
+    })
+
+    expect(captureVoice).toHaveBeenCalledWith({ speakResponse: true })
 
     unmount()
   })

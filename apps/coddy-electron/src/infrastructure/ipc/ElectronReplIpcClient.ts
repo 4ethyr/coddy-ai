@@ -6,6 +6,7 @@ import type {
   ReplIpcClient,
   ReplCommandResult,
   ReplEventsBatch,
+  VoiceCaptureOptions,
   WorkspaceSelectionResult,
 } from '@/domain'
 import type {
@@ -24,6 +25,7 @@ import type {
   ReplSessionSnapshot,
   ReplToolCatalogItem,
   ScreenAssistMode,
+  ConversationRecord,
 } from '@/domain'
 
 // ---------------------------------------------------------------------------
@@ -171,6 +173,13 @@ export class ElectronReplIpcClient implements ReplIpcClient {
     return (await window.replApi.invoke('repl:tools')) as ReplToolCatalogItem[]
   }
 
+  async getConversationHistory(limit?: number): Promise<ConversationRecord[]> {
+    return (await window.replApi.invoke(
+      'repl:history',
+      limit,
+    )) as ConversationRecord[]
+  }
+
   async getActiveWorkspace(): Promise<WorkspaceSelectionResult> {
     return (await window.replApi.invoke(
       'workspace:get-active',
@@ -226,6 +235,19 @@ export class ElectronReplIpcClient implements ReplIpcClient {
     await window.replApi.invoke('repl:stop-active-run')
   }
 
+  async newSession(): Promise<ReplCommandResult> {
+    return (await window.replApi.invoke(
+      'repl:new-session',
+    )) as ReplCommandResult
+  }
+
+  async openConversation(sessionId: string): Promise<ReplCommandResult> {
+    return (await window.replApi.invoke(
+      'repl:open-conversation',
+      sessionId,
+    )) as ReplCommandResult
+  }
+
   async stopSpeaking(): Promise<void> {
     await window.replApi.invoke('repl:stop-speaking')
   }
@@ -278,9 +300,12 @@ export class ElectronReplIpcClient implements ReplIpcClient {
     )) as ReplCommandResult
   }
 
-  async captureVoice(): Promise<ReplCommandResult> {
+  async captureVoice(
+    options: VoiceCaptureOptions = {},
+  ): Promise<ReplCommandResult> {
     return (await window.replApi.invoke(
       'voice:capture',
+      options,
     )) as ReplCommandResult
   }
 

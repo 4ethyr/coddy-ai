@@ -88,6 +88,21 @@ export interface ReplSession {
   streaming_text: string
 }
 
+export interface ConversationSummary {
+  session_id: string
+  title: string
+  created_at_unix_ms: number
+  updated_at_unix_ms: number
+  message_count: number
+  selected_model: ModelRef
+  mode: ReplMode
+}
+
+export interface ConversationRecord {
+  summary: ConversationSummary
+  messages: ReplMessage[]
+}
+
 export function createInitialSession(mode: ReplMode, model: ModelRef): ReplSession {
   return {
     id: '',

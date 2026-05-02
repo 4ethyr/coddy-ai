@@ -11,6 +11,7 @@ use coddy_agent::{
     DefaultChatModelClient, MultiagentEvalCase, MultiagentEvalRunner, MultiagentEvalSuiteReport,
 };
 use coddy_client::CoddyClient;
+use coddy_core::redact_conversation_text;
 use coddy_core::{
     AssessmentPolicy, ContextPolicy, ModelCredential, ModelRef, ModelRole, PermissionReply,
     ReplCommand, ReplMode,
@@ -264,6 +265,15 @@ impl From<CliReplMode> for ReplMode {
 #[derive(Debug, Subcommand)]
 enum SessionCommand {
     Snapshot,
+    New,
+    Open {
+        #[arg(long)]
+        id: uuid::Uuid,
+    },
+    History {
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     Tools,
     Events {
         #[arg(long, default_value_t = 0)]
@@ -472,6 +482,21 @@ async fn main() -> Result<()> {
             command: SessionCommand::Snapshot,
         }) => run_session_snapshot(&config).await,
         Some(Command::Session {
+            command: SessionCommand::New,
+        }) => {
+            let result = coddy_client(&config)?.new_session().await?;
+            print_job_result(result)
+        }
+        Some(Command::Session {
+            command: SessionCommand::Open { id },
+        }) => {
+            let result = coddy_client(&config)?.open_conversation(id).await?;
+            print_job_result(result)
+        }
+        Some(Command::Session {
+            command: SessionCommand::History { limit },
+        }) => run_session_history(&config, limit).await,
+        Some(Command::Session {
             command: SessionCommand::Tools,
         }) => run_session_tools(&config).await,
         Some(Command::Session {
@@ -505,7 +530,7 @@ async fn main() -> Result<()> {
             command: RuntimeCommand::Serve { socket },
         }) => run_runtime_serve(&config, socket).await,
         None => {
-            println!("Use `coddy repl`, `coddy ask`, `coddy voice`, `coddy screen explain`, `coddy permission reply`, `coddy model select`, `coddy ui open`, `coddy stop-speaking`, `coddy stop-active-run`, `coddy session snapshot`, `coddy runtime serve`, `coddy shortcuts test` ou `coddy doctor shortcuts`.");
+            println!("Use `coddy repl`, `coddy ask`, `coddy voice`, `coddy screen explain`, `coddy permission reply`, `coddy model select`, `coddy ui open`, `coddy stop-speaking`, `coddy stop-active-run`, `coddy session snapshot`, `coddy session open`, `coddy runtime serve`, `coddy shortcuts test` ou `coddy doctor shortcuts`.");
             Ok(())
         }
     }
@@ -561,12 +586,28 @@ async fn send_repl_command(
 
     info!(
         socket = %client.socket_path().display(),
-        ?command,
+        command = %redacted_repl_command_for_log(&command),
         speak,
         "sending Coddy REPL command"
     );
 
     client.send_command(command, speak).await
+}
+
+fn redacted_repl_command_for_log(command: &ReplCommand) -> String {
+    let mut redacted = command.clone();
+    match &mut redacted {
+        ReplCommand::Ask { text, .. } => {
+            *text = redact_conversation_text(text);
+        }
+        ReplCommand::VoiceTurn {
+            transcript_override: Some(transcript),
+        } => {
+            *transcript = redact_conversation_text(transcript);
+        }
+        _ => {}
+    }
+    format!("{redacted:?}")
 }
 
 async fn open_desktop_ui_or_send_runtime_command(
@@ -809,6 +850,12 @@ async fn run_shortcuts_test(config: &CoddyRuntimeConfig) -> Result<()> {
 async fn run_session_snapshot(config: &CoddyRuntimeConfig) -> Result<()> {
     let snapshot = coddy_client(config)?.snapshot().await?;
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    Ok(())
+}
+
+async fn run_session_history(config: &CoddyRuntimeConfig, limit: Option<usize>) -> Result<()> {
+    let conversations = coddy_client(config)?.conversation_history(limit).await?;
+    println!("{}", serde_json::to_string_pretty(&conversations)?);
     Ok(())
 }
 
@@ -1186,7 +1233,8 @@ async fn run_runtime_serve(config: &CoddyRuntimeConfig, socket: Option<PathBuf>)
             socket_path.display()
         )
     })?;
-    let runtime = coddy_runtime::CoddyRuntime::default();
+    let runtime = coddy_runtime::CoddyRuntime::default()
+        .with_conversation_history_path(CoddyRuntimeConfig::conversation_history_path()?);
 
     info!(socket = %socket_path.display(), "serving local Coddy runtime");
     runtime.serve_unix_listener(listener).await?;
@@ -1336,6 +1384,10 @@ fn format_job_result(result: CoddyResult) -> Result<String> {
         CoddyResult::ReplToolCatalog { tools, .. } => {
             Ok(format!("{}\n", serde_json::to_string_pretty(&tools)?))
         }
+        CoddyResult::ReplConversationHistory { conversations, .. } => Ok(format!(
+            "{}\n",
+            serde_json::to_string_pretty(&conversations)?
+        )),
     }
 }
 
@@ -1427,6 +1479,38 @@ mod tests {
                 command: SessionCommand::Tools
             })
         ));
+    }
+
+    #[test]
+    fn parses_session_history_and_new_commands() {
+        let history = Cli::try_parse_from(["coddy", "session", "history", "--limit", "20"])
+            .expect("parse session history");
+        match history.command {
+            Some(Command::Session {
+                command: SessionCommand::History { limit },
+            }) => assert_eq!(limit, Some(20)),
+            _ => panic!("unexpected history command"),
+        }
+
+        let new_session =
+            Cli::try_parse_from(["coddy", "session", "new"]).expect("parse session new");
+        assert!(matches!(
+            new_session.command,
+            Some(Command::Session {
+                command: SessionCommand::New
+            })
+        ));
+
+        let session_id = uuid::Uuid::new_v4();
+        let open =
+            Cli::try_parse_from(["coddy", "session", "open", "--id", &session_id.to_string()])
+                .expect("parse session open");
+        match open.command {
+            Some(Command::Session {
+                command: SessionCommand::Open { id },
+            }) => assert_eq!(id, session_id),
+            _ => panic!("unexpected open command"),
+        }
     }
 
     #[test]
@@ -1816,6 +1900,18 @@ mod tests {
         assert!(output.contains("filesystem.read_file"));
         assert!(output.contains("ReadWorkspace"));
         assert!(output.contains("AutoApprove"));
+    }
+
+    #[test]
+    fn repl_command_logging_redacts_prompt_secrets() {
+        let rendered = redacted_repl_command_for_log(&ReplCommand::Ask {
+            text: "Use OPENROUTER_API_KEY=sk-or-secret-token".to_string(),
+            context_policy: ContextPolicy::WorkspaceOnly,
+            model_credential: None,
+        });
+
+        assert!(!rendered.contains("sk-or-secret-token"));
+        assert!(rendered.contains("[redacted]"));
     }
 
     #[test]

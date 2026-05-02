@@ -11,11 +11,13 @@ import type {
   MultiagentEvalResult,
   PromptBatteryResult,
   PermissionReply,
+  ConversationRecord,
   AssessmentPolicy,
   ReplIpcClient,
   ReplCommandResult,
   ReplMode,
   ScreenAssistMode,
+  VoiceCaptureOptions,
   WorkspaceSelectionResult,
 } from '@/domain'
 
@@ -55,6 +57,22 @@ export async function sendVoiceTurn(
  */
 export async function cancelRun(client: ReplIpcClient): Promise<void> {
   await client.stopActiveRun()
+}
+
+/**
+ * Archives the current session and starts a fresh REPL conversation.
+ */
+export async function startNewSession(
+  client: ReplIpcClient,
+): Promise<ReplCommandResult> {
+  return assertCommandSucceeded(await client.newSession())
+}
+
+export async function openConversation(
+  client: ReplIpcClient,
+  sessionId: string,
+): Promise<ReplCommandResult> {
+  return assertCommandSucceeded(await client.openConversation(sessionId))
 }
 
 /**
@@ -111,6 +129,13 @@ export async function getActiveWorkspace(
   return client.getActiveWorkspace()
 }
 
+export async function loadConversationHistory(
+  client: ReplIpcClient,
+  limit = 25,
+): Promise<ConversationRecord[]> {
+  return client.getConversationHistory(limit)
+}
+
 export async function selectWorkspaceFolder(
   client: ReplIpcClient,
 ): Promise<WorkspaceSelectionResult> {
@@ -139,8 +164,9 @@ export async function openUi(
  */
 export async function captureVoice(
   client: ReplIpcClient,
+  options: VoiceCaptureOptions = {},
 ): Promise<ReplCommandResult> {
-  return client.captureVoice()
+  return client.captureVoice(options)
 }
 
 /**

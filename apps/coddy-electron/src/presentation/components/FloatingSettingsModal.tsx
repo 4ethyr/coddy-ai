@@ -20,13 +20,13 @@ export function FloatingSettingsModal({ value, onChange, onClose }: Props) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 px-4 backdrop-blur-sm"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="floating-settings-title"
-    >
-      <section className="w-full max-w-xl overflow-hidden rounded-2xl border border-primary/25 bg-slate-950/80 text-on-surface backdrop-blur-2xl">
+    <div className="fixed inset-0 z-[300] flex items-start justify-center overflow-y-auto bg-black/30 px-4 pb-6 pt-20 backdrop-blur-sm">
+      <section
+        className="max-h-[calc(100vh-6rem)] w-full max-w-xl overflow-y-auto rounded-lg border border-primary/25 bg-slate-950/90 text-on-surface shadow-[0_24px_80px_rgba(0,0,0,0.55)] backdrop-blur-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="floating-settings-title"
+      >
         <header className="flex items-center justify-between border-b border-primary/15 px-6 py-4">
           <div className="flex items-center gap-3">
             <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-primary/30 bg-primary/10 text-primary">

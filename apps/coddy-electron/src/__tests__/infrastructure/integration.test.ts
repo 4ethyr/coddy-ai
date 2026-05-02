@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import type { ReplIpcClient, ReplCommandResult } from '@/domain'
 import type {
+  ConversationRecord,
   ModelRef,
   ModelRole,
   AssessmentPolicy,
@@ -31,6 +32,7 @@ interface SimDaemon {
   snapshotSession: ReplSessionSnapshotSession
   toolCatalog: ReplToolCatalogItem[]
   commands: string[]
+  history: ConversationRecord[]
 }
 
 function createSimDaemon(): SimDaemon {
@@ -38,6 +40,7 @@ function createSimDaemon(): SimDaemon {
     currentSequence: 0,
     events: [],
     commands: [],
+    history: [],
     toolCatalog: [
       {
         name: 'filesystem.read_file',
@@ -109,6 +112,9 @@ function createSimBridge(daemon: SimDaemon) {
         // ---- Tool catalog ----
         case 'repl:tools':
           return Promise.resolve(daemon.toolCatalog)
+
+        case 'repl:history':
+          return Promise.resolve(daemon.history)
 
         case 'repl:eval-multiagent':
           daemon.commands.push('eval-multiagent')
@@ -232,6 +238,87 @@ function createSimBridge(daemon: SimDaemon) {
           daemon.commands.push('stop-active-run')
           return Promise.resolve({ ok: true })
 
+        case 'repl:new-session': {
+          daemon.commands.push('new-session')
+          if (daemon.snapshotSession.messages.length > 0) {
+            daemon.history.unshift({
+              summary: {
+                session_id: daemon.snapshotSession.id,
+                title: daemon.snapshotSession.messages[0]?.text ?? 'New conversation',
+                created_at_unix_ms: 1,
+                updated_at_unix_ms: 2,
+                message_count: daemon.snapshotSession.messages.length,
+                selected_model: daemon.snapshotSession.selected_model,
+                mode: daemon.snapshotSession.mode,
+              },
+              messages: daemon.snapshotSession.messages,
+            })
+          }
+          daemon.snapshotSession = {
+            ...daemon.snapshotSession,
+            id: `sim-session-${Date.now()}`,
+            status: 'Idle',
+            messages: [],
+            workspace_context: [],
+            active_run: null,
+            pending_permission: null,
+            subagent_activity: [],
+          }
+          pushEvent(daemon, watchListeners, {
+            SessionStarted: { session_id: daemon.snapshotSession.id },
+          })
+          return Promise.resolve({ message: 'new session' })
+        }
+
+        case 'repl:open-conversation': {
+          const sessionId = args[0] as string
+          daemon.commands.push(`open-conversation:${sessionId}`)
+          const record = daemon.history.find(
+            (item) => item.summary.session_id === sessionId,
+          )
+          if (!record) {
+            return Promise.resolve({
+              error: {
+                code: 'conversation_not_found',
+                message: `conversation ${sessionId} was not found`,
+              },
+            })
+          }
+
+          daemon.snapshotSession = {
+            ...daemon.snapshotSession,
+            id: record.summary.session_id,
+            mode: record.summary.mode,
+            status: 'Idle',
+            selected_model: record.summary.selected_model,
+            messages: [],
+            workspace_context: [],
+            active_run: null,
+            pending_permission: null,
+            subagent_activity: [],
+            streaming_text: '',
+          }
+          pushEvent(daemon, watchListeners, {
+            SessionStarted: { session_id: record.summary.session_id },
+          })
+          pushEvent(daemon, watchListeners, {
+            OverlayShown: { mode: record.summary.mode },
+          })
+          pushEvent(daemon, watchListeners, {
+            ModelSelected: {
+              model: record.summary.selected_model,
+              role: 'Chat',
+            },
+          })
+          for (const message of record.messages) {
+            pushEvent(daemon, watchListeners, {
+              MessageAppended: { message },
+            })
+          }
+
+          return Promise.resolve({ message: 'conversation opened' })
+        }
+
         case 'repl:select-model': {
           const model = args[0] as ModelRef
           const role = args[1] as ModelRole
@@ -351,7 +438,7 @@ function pushEvent(
   daemon.currentSequence++
   const envelope: ReplEventEnvelope = {
     sequence: daemon.currentSequence,
-    session_id: 'sim-session-uuid',
+    session_id: daemon.snapshotSession.id,
     run_id: null,
     captured_at_unix_ms: Date.now(),
     event,
@@ -436,6 +523,12 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
 
     async getToolCatalog() {
       return (await sim.invoke('repl:tools')) as ReplToolCatalogItem[]
+    },
+
+    async getConversationHistory() {
+      return (await sim.invoke('repl:history')) as Awaited<
+        ReturnType<ReplIpcClient['getConversationHistory']>
+      >
     },
 
     async getActiveWorkspace() {
@@ -535,6 +628,17 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
       await sim.invoke('repl:stop-active-run')
     },
 
+    async newSession() {
+      return (await sim.invoke('repl:new-session')) as ReplCommandResult
+    },
+
+    async openConversation(sessionId: string) {
+      return (await sim.invoke(
+        'repl:open-conversation',
+        sessionId,
+      )) as ReplCommandResult
+    },
+
     async stopSpeaking() {
       await sim.invoke('repl:stop-speaking')
     },
@@ -576,8 +680,8 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
       )) as ReplCommandResult
     },
 
-    async captureVoice() {
-      return (await sim.invoke('voice:capture')) as ReplCommandResult
+    async captureVoice(options = {}) {
+      return (await sim.invoke('voice:capture', options)) as ReplCommandResult
     },
 
     async cancelVoiceCapture() {
@@ -747,6 +851,49 @@ describe('IPC integration', () => {
         'TokenDelta',
         'MessageAppended',
         'RunCompleted',
+      ])
+    })
+  })
+
+  describe('conversation history', () => {
+    it('opens a selected history item and restores its session snapshot', async () => {
+      daemon.history = [
+        {
+          summary: {
+            session_id: 'history-session-1',
+            title: 'Analyze workspace',
+            created_at_unix_ms: 10,
+            updated_at_unix_ms: 20,
+            message_count: 2,
+            selected_model: {
+              provider: 'openrouter',
+              name: 'deepseek/deepseek-v4-flash',
+            },
+            mode: 'DesktopApp',
+          },
+          messages: [
+            { id: 'm1', role: 'user', text: 'Analise a codebase' },
+            { id: 'm2', role: 'assistant', text: 'Resumo da arquitetura' },
+          ],
+        },
+      ]
+
+      const result = await client.openConversation('history-session-1')
+      const snapshot = await client.getSnapshot()
+
+      expect(result.message).toBe('conversation opened')
+      expect(snapshot.session.id).toBe('history-session-1')
+      expect(snapshot.session.mode).toBe('DesktopApp')
+      expect(snapshot.session.selected_model).toEqual({
+        provider: 'openrouter',
+        name: 'deepseek/deepseek-v4-flash',
+      })
+      expect(snapshot.session.messages.map((message) => message.text)).toEqual([
+        'Analise a codebase',
+        'Resumo da arquitetura',
+      ])
+      expect(daemon.commands).toEqual([
+        'open-conversation:history-session-1',
       ])
     })
   })
