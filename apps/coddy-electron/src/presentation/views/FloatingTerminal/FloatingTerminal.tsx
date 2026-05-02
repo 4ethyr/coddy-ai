@@ -4,7 +4,7 @@
 
 import { useRef, useEffect, useCallback, useState } from 'react'
 import type { CSSProperties } from 'react'
-import type { ScreenAssistMode } from '@/domain'
+import { buildAgentRunRecoveryNotice, type ScreenAssistMode } from '@/domain'
 import type { FloatingAppearanceSettings } from '@/application'
 import { loadSettings, saveSettings } from '@/application'
 import { useSessionContext } from '@/presentation/hooks'
@@ -25,6 +25,7 @@ import { ConversationHistoryPanel } from '@/presentation/components/Conversation
 import { SessionStatusPanel } from '@/presentation/components/SessionStatusPanel'
 import { SlashCommandHelpPanel } from '@/presentation/components/SlashCommandHelpPanel'
 import { CodingAgentCapabilitiesPanel } from '@/presentation/components/CodingAgentCapabilitiesPanel'
+import { AgentRunRecoveryCard } from '@/presentation/components/AgentRunRecoveryCard'
 import { Icon } from '@/presentation/components/Icon'
 import {
   persistDesktopTab,
@@ -80,6 +81,12 @@ export function FloatingTerminal() {
   )
   const toolActivity = session.tool_activity ?? []
   const subagentActivity = session.subagent_activity ?? []
+  const recoveryNotice = session.agent_run
+    ? buildAgentRunRecoveryNotice(
+        session.agent_run.summary,
+        session.selected_model,
+      )
+    : null
 
   // Auto-scroll to bottom on new messages or streaming tokens
   useEffect(() => {
@@ -457,6 +464,10 @@ export function FloatingTerminal() {
               tools={toolCatalog ?? []}
               onClose={() => setCapabilitiesOpen(false)}
             />
+          )}
+
+          {recoveryNotice && (
+            <AgentRunRecoveryCard notice={recoveryNotice} compact />
           )}
 
           {error && (

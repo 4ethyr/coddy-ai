@@ -317,7 +317,7 @@ Smoke live adicional apos a compactacao estrutural do loop agentic direto:
   live continua sendo fallback/roteamento quando o provider retorna resposta
   vazia sem content/tool calls.
 - Integracao frontend: falhas recuperaveis publicadas no `AgentRunSummary`
-  agora geram um aviso acionavel e redigido no painel de atividade do Desktop,
+  agora geram um aviso acionavel e redigido no Desktop e no FloatingTerminal,
   incluindo codigo tecnico, detalhe sem secrets e proxima acao para retry,
   reducao de contexto/tool output ou troca de provider/modelo.
 
