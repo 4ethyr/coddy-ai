@@ -396,10 +396,12 @@ fn sanitize_config(config: AgenticLoopConfig) -> AgenticLoopConfig {
 }
 
 fn tool_call_from_chat_call(state: &RunState, chat_call: ChatToolCall) -> Result<ToolCall, String> {
-    let tool_name = ToolName::new(chat_call.name.clone()).map_err(|error| {
+    let requested_name =
+        decode_provider_safe_tool_name_alias(&chat_call.name).unwrap_or(chat_call.name.clone());
+    let tool_name = ToolName::new(requested_name.clone()).map_err(|error| {
         format!(
-            "model requested invalid tool name `{}`: {error}",
-            chat_call.name
+            "model requested invalid tool name `{}` normalized as `{requested_name}`: {error}",
+            chat_call.name,
         )
     })?;
     Ok(ToolCall::new(
@@ -409,6 +411,24 @@ fn tool_call_from_chat_call(state: &RunState, chat_call: ChatToolCall) -> Result
         chat_call.arguments,
         unix_ms_now(),
     ))
+}
+
+fn decode_provider_safe_tool_name_alias(name: &str) -> Option<String> {
+    let alias = name.strip_prefix("coddy_tool__").unwrap_or(name);
+    let decoded = alias.replace("__dot__", ".").replace("::", ".");
+    if decoded != alias {
+        return Some(decoded);
+    }
+
+    for namespace in ["filesystem", "subagent", "shell"] {
+        if let Some(method) = alias.strip_prefix(&format!("{namespace}_")) {
+            if !method.is_empty() {
+                return Some(format!("{namespace}.{method}"));
+            }
+        }
+    }
+
+    None
 }
 
 fn failed_tool_stop(
@@ -696,6 +716,43 @@ mod tests {
         assert!(second_turn_tool_observation
             .content
             .contains("\"status\": \"Succeeded\""));
+    }
+
+    #[test]
+    fn executes_provider_safe_tool_aliases_and_records_canonical_tool_name() {
+        for alias in [
+            "filesystem__dot__read_file",
+            "coddy_tool__filesystem__dot__read_file",
+            "filesystem_read_file",
+        ] {
+            let workspace = TempWorkspace::new();
+            workspace.write("README.md", "# Coddy\n");
+            let runtime = LocalAgentRuntime::new(&workspace.path).expect("runtime");
+            let model = ScriptedModel::new(vec![
+                tool_call_response(alias, json!({ "path": "README.md" })),
+                ChatResponse::from_text(format!("Alias {alias} worked.")),
+            ]);
+
+            let outcome = AgenticModelLoop::new(&runtime, &model).run(AgenticLoopRequest::new(
+                Uuid::new_v4(),
+                "Read the README and summarize it",
+                test_model_ref(),
+            ));
+
+            assert_eq!(outcome.stop, AgenticLoopStop::Completed);
+            assert_eq!(
+                outcome.final_response,
+                Some(format!("Alias {alias} worked."))
+            );
+            assert_eq!(outcome.tool_calls, 1);
+            assert!(outcome.state.events.iter().any(|event| {
+                matches!(event, ReplEvent::ToolStarted { name } if name == READ_FILE_TOOL)
+            }));
+            assert!(outcome.state.observations.iter().any(|observation| {
+                observation.tool_name.as_str() == READ_FILE_TOOL
+                    && observation.text.contains("# Coddy")
+            }));
+        }
     }
 
     #[test]

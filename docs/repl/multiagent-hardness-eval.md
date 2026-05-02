@@ -594,6 +594,26 @@ Validation:
 
 - `npm test -- slashCommands DesktopApp FloatingTerminal`: 3 files passed, 40 tests passed.
 
+### Battery 24: Agentic Loop Tool Alias Hardening
+
+Goal: prevent provider-safe tool names such as `filesystem__dot__read_file` from being rejected
+when the canonical `filesystem.read_file` tool is registered.
+
+Implemented result:
+
+- Added focused coverage for `filesystem__dot__read_file`,
+  `coddy_tool__filesystem__dot__read_file` and `filesystem_read_file` in the standalone agentic
+  loop.
+- Normalized provider-safe tool aliases before building the internal `ToolCall`.
+- Preserved canonical tool names in events and observations so downstream state, metrics and UI
+  panels continue to reference the registered tool.
+
+Validation:
+
+- `cargo test -p coddy-agent executes_provider_safe_tool_aliases_and_records_canonical_tool_name -- --test-threads=1`: passed.
+- `cargo test --workspace -- --test-threads=1`: passed.
+- `target/debug/coddy eval quality`: passed, score 100.
+
 ## Current Assessment
 
 The multiagent harness is now measurable before execution. It can compose a team plan, expose
