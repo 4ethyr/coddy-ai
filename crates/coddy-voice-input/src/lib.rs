@@ -15,6 +15,8 @@ use which::which;
 
 pub mod overlay;
 
+const RECORDER_SHUTDOWN_GRACE_MS: u64 = 1_500;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VoiceInputConfig {
     #[serde(default)]
@@ -247,6 +249,15 @@ fn with_optional_target(mut args: Vec<String>, target: &str) -> Vec<String> {
 }
 
 async fn record_with_window(program: &str, args: &[String], duration_ms: u64) -> Result<()> {
+    record_with_window_with_grace(program, args, duration_ms, RECORDER_SHUTDOWN_GRACE_MS).await
+}
+
+async fn record_with_window_with_grace(
+    program: &str,
+    args: &[String],
+    duration_ms: u64,
+    shutdown_grace_ms: u64,
+) -> Result<()> {
     let rendered = render_command(program, args);
     let mut child = Command::new(program);
     child
@@ -280,7 +291,14 @@ async fn record_with_window(program: &str, args: &[String], duration_ms: u64) ->
             } else {
                 let _ = child.start_kill();
             }
-            let _ = child.wait().await;
+
+            if timeout(Duration::from_millis(shutdown_grace_ms), child.wait())
+                .await
+                .is_err()
+            {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+            }
         }
     }
 
@@ -432,6 +450,25 @@ mod tests {
         assert_eq!(
             render_command("pw-record", &["--rate".into(), "16000".into()]),
             "pw-record --rate 16000"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_window_kills_recorder_that_ignores_interrupt() {
+        let started = std::time::Instant::now();
+
+        record_with_window_with_grace(
+            "sh",
+            &["-c".into(), "trap '' INT; while :; do :; done".into()],
+            20,
+            50,
+        )
+        .await
+        .expect("recorder should be terminated after grace period");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "recorder shutdown should not hang after the capture window"
         );
     }
 

@@ -575,6 +575,64 @@ Validation:
 - `git diff --check`: passed.
 - `./scripts/guard_no_secrets.sh`: passed.
 
+### Battery 23: Slash-Driven Quality Gate
+
+Goal: let the user trigger the deterministic quality gate directly from the chat input without
+sending an instruction to the model.
+
+Implemented result:
+
+- Added a local `/quality run` command that opens the Workspace quality panel and starts the
+  combined quality eval.
+- Added `/eval run`, `/evals run` and `/metrics run` as equivalent aliases.
+- Kept `/quality`, `/eval`, `/evals` and `/metrics` as navigation-only commands for inspecting the
+  quality panel without starting a run.
+- Wired the behavior in both Desktop and FloatingTerminal so the same slash command path works
+  from either UI mode.
+
+Validation:
+
+- `npm test -- slashCommands DesktopApp FloatingTerminal`: 3 files passed, 40 tests passed.
+
+### Battery 24: Agentic Loop Tool Alias Hardening
+
+Goal: prevent provider-safe tool names such as `filesystem__dot__read_file` from being rejected
+when the canonical `filesystem.read_file` tool is registered.
+
+Implemented result:
+
+- Added focused coverage for `filesystem__dot__read_file`,
+  `coddy_tool__filesystem__dot__read_file` and `filesystem_read_file` in the standalone agentic
+  loop.
+- Normalized provider-safe tool aliases before building the internal `ToolCall`.
+- Preserved canonical tool names in events and observations so downstream state, metrics and UI
+  panels continue to reference the registered tool.
+
+Validation:
+
+- `cargo test -p coddy-agent executes_provider_safe_tool_aliases_and_records_canonical_tool_name -- --test-threads=1`: passed.
+- `cargo test --workspace -- --test-threads=1`: passed.
+- `target/debug/coddy eval quality`: passed, score 100.
+
+### Battery 25: OpenRouter Generic Upstream Error Retry
+
+Goal: make OpenRouter follow-up turns more resilient when a routed provider returns only a generic
+`Provider returned error` payload without HTTP status metadata.
+
+Implemented result:
+
+- Treated OpenRouter `Provider returned error` payloads without explicit status/code as retryable
+  upstream failures.
+- Kept provider-specific behavior scoped to OpenRouter so ordinary OpenAI-compatible invalid
+  request errors are not blindly retried.
+- Verified that the runtime follow-up retry path still retries recoverable model errors after tool
+  observations.
+
+Validation:
+
+- `cargo test -p coddy-agent treats_openrouter_generic_provider_returned_error_as_retryable -- --test-threads=1`: passed.
+- `cargo test -p coddy-runtime ask_command_retries_recoverable_tool_followup_model_errors -- --test-threads=1`: passed.
+
 ## Current Assessment
 
 The multiagent harness is now measurable before execution. It can compose a team plan, expose

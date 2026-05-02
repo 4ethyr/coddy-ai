@@ -24,6 +24,6 @@ describe('model capabilities', () => {
         provider: 'vertex',
         name: 'gemini-3.1-flash-lite-preview',
       }).route,
-    ).toBe('fallback')
+    ).toBe('fallback_required')
   })
 })

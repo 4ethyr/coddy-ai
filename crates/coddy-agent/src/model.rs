@@ -1213,13 +1213,27 @@ fn provider_safe_tool_description(tool: &ChatToolSpec) -> String {
     }
 }
 
-fn decode_provider_safe_tool_name(name: &str) -> String {
+pub(crate) fn decode_provider_safe_tool_name(name: &str) -> String {
     let alias = name.strip_prefix("coddy_tool__").unwrap_or(name);
-    if alias.contains("__dot__") {
-        alias.replace("__dot__", ".")
-    } else {
-        name.to_string()
+    let decoded = alias.replace("__dot__", ".").replace("::", ".");
+    if decoded != alias {
+        return decoded;
     }
+
+    for namespace in ["filesystem", "subagent", "shell"] {
+        if let Some(method) = alias.strip_prefix(&format!("{namespace}._")) {
+            if !method.is_empty() {
+                return format!("{namespace}.{method}");
+            }
+        }
+        if let Some(method) = alias.strip_prefix(&format!("{namespace}_")) {
+            if !method.is_empty() {
+                return format!("{namespace}.{method}");
+            }
+        }
+    }
+
+    name.to_string()
 }
 
 fn is_provider_safe_function_name(name: &str) -> bool {
@@ -1896,7 +1910,7 @@ fn openai_compatible_json_error(value: &Value) -> Option<&Value> {
     value.get("error").filter(|error| !error.is_null())
 }
 
-fn openai_compatible_error_retryable(error: &Value, status: Option<u16>) -> bool {
+fn openai_compatible_error_retryable(provider: &str, error: &Value, status: Option<u16>) -> bool {
     if status.is_some_and(is_retryable_provider_status) {
         return true;
     }
@@ -1912,6 +1926,15 @@ fn openai_compatible_error_retryable(error: &Value, status: Option<u16>) -> bool
             || normalized.contains("temporar")
             || normalized.contains("overload")
             || normalized.contains("unavailable");
+    }
+    if provider == "openrouter" {
+        return openai_compatible_error_message(error)
+            .map(|message| {
+                message
+                    .to_ascii_lowercase()
+                    .contains("provider returned error")
+            })
+            .unwrap_or(false);
     }
     false
 }
@@ -2207,7 +2230,7 @@ fn parse_openai_compatible_chat_body(provider: &str, body: &str) -> ChatModelRes
         return Err(ChatModelError::ProviderError {
             provider: provider.to_string(),
             message: format_openai_compatible_error(provider, error, None),
-            retryable: openai_compatible_error_retryable(error, None),
+            retryable: openai_compatible_error_retryable(provider, error, None),
         });
     }
 
@@ -2222,7 +2245,7 @@ fn parse_openai_compatible_chat_body(provider: &str, body: &str) -> ChatModelRes
         return Err(ChatModelError::ProviderError {
             provider: provider.to_string(),
             message: format_openai_compatible_error(provider, error, None),
-            retryable: openai_compatible_error_retryable(error, None),
+            retryable: openai_compatible_error_retryable(provider, error, None),
         });
     }
     if choice["finish_reason"].as_str() == Some("error") {
@@ -2955,6 +2978,18 @@ mod tests {
         assert_eq!(
             decode_provider_safe_tool_name("filesystem.read_file"),
             "filesystem.read_file"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem::read_file"),
+            "filesystem.read_file"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem_read_file"),
+            "filesystem.read_file"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem._list_files"),
+            "filesystem.list_files"
         );
     }
 
@@ -3887,6 +3922,33 @@ mod tests {
         assert!(message.contains("code server_error"));
         assert!(message.contains("upstream provider: DeepSeek"));
         assert!(message.contains("provider disconnected"));
+    }
+
+    #[test]
+    fn treats_openrouter_generic_provider_returned_error_as_retryable() {
+        let body = serde_json::json!({
+            "choices": [
+                {
+                    "finish_reason": "error",
+                    "error": {
+                        "message": "Provider returned error"
+                    }
+                }
+            ]
+        })
+        .to_string();
+
+        let error =
+            parse_openai_compatible_chat_body("openrouter", &body).expect_err("provider error");
+
+        let ChatModelError::ProviderError {
+            message, retryable, ..
+        } = error
+        else {
+            panic!("expected provider error");
+        };
+        assert!(retryable);
+        assert!(message.contains("Provider returned error"));
     }
 
     #[test]

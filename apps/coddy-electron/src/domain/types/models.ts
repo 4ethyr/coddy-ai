@@ -14,7 +14,7 @@ export type ProviderConnectionKind =
   | 'azure_resource'
 
 export type RuntimeChatSupport = 'supported' | 'adapter_pending'
-export type RuntimeTtsRoute = 'native' | 'fallback'
+export type RuntimeTtsRoute = 'native' | 'fallback_required'
 export type LocalModelProviderPreference = 'auto' | 'ollama' | 'hf' | 'vllm'
 
 export interface RuntimeChatCapability {
@@ -236,10 +236,10 @@ export function getRuntimeTtsCapability(
   }
 
   return {
-    route: 'fallback',
-    label: 'fallback TTS',
+    route: 'fallback_required',
+    label: 'TTS fallback required',
     description:
-      'The selected chat model does not advertise native TTS. Coddy should use the configured local TTS fallback for spoken responses.',
+      'The selected chat model does not advertise native TTS and will not be used for speech synthesis. Spoken responses require a configured TTS fallback.',
   }
 }
 

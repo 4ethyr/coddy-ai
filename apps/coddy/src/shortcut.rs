@@ -161,6 +161,7 @@ fn lock_owner_is_running(path: &Path) -> bool {
     };
 
     process_is_running(pid)
+        && (pid == std::process::id() || lock_owner_command_matches_voice_capture(pid))
 }
 
 fn process_is_running(pid: u32) -> bool {
@@ -169,6 +170,39 @@ fn process_is_running(pid: u32) -> bool {
         return true;
     }
     proc_root.join(pid.to_string()).exists()
+}
+
+fn lock_owner_command_matches_voice_capture(pid: u32) -> bool {
+    let proc_root = Path::new("/proc");
+    if !proc_root.exists() {
+        return true;
+    }
+
+    let Ok(cmdline) = fs::read(proc_root.join(pid.to_string()).join("cmdline")) else {
+        return true;
+    };
+    if cmdline.is_empty() {
+        return true;
+    }
+
+    let args = cmdline
+        .split(|byte| *byte == 0)
+        .filter_map(|part| std::str::from_utf8(part).ok())
+        .filter(|part| !part.is_empty());
+    command_line_is_coddy_voice_capture(args)
+}
+
+fn command_line_is_coddy_voice_capture<'a>(args: impl IntoIterator<Item = &'a str>) -> bool {
+    let args = args.into_iter().collect::<Vec<_>>();
+    let executable = args
+        .first()
+        .and_then(|arg| Path::new(arg).file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+
+    let first_command_arg = args.iter().skip(1).find(|arg| !arg.starts_with('-'));
+
+    executable.contains("coddy") && matches!(first_command_arg, Some(&"voice"))
 }
 
 impl Drop for VoiceShortcutLock {
@@ -532,6 +566,40 @@ mod tests {
 
         drop(lock);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn stale_lock_without_pid_is_reclaimed() {
+        let path = unique_lock_path();
+        fs::write(&path, "interrupted-before-pid-write\n").expect("write stale lock");
+
+        let lock = VoiceShortcutLock::acquire(path.clone()).expect("reclaim stale lock");
+
+        assert_eq!(lock.path(), path.as_path());
+        assert!(path.exists());
+
+        drop(lock);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn lock_owner_command_must_be_coddy_voice_capture() {
+        assert!(command_line_is_coddy_voice_capture([
+            "/home/demo/coddy",
+            "--speak",
+            "voice",
+            "--overlay"
+        ]));
+        assert!(!command_line_is_coddy_voice_capture([
+            "/usr/bin/bash",
+            "voice",
+            "--overlay"
+        ]));
+        assert!(!command_line_is_coddy_voice_capture([
+            "/home/demo/coddy",
+            "ask",
+            "voice"
+        ]));
     }
 
     #[test]

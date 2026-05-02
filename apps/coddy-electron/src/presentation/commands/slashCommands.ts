@@ -8,6 +8,7 @@ export type UiSlashCommand =
   | { kind: 'show-status' }
   | { kind: 'show-help' }
   | { kind: 'set-speak'; enabled: boolean }
+  | { kind: 'run-quality-eval' }
   | { kind: 'agent-workflow'; prompt: string }
 
 export type UiSlashCommandSuggestion = {
@@ -49,6 +50,7 @@ const WORKFLOW_COMMANDS = new Set([
   'test',
   'tests',
 ])
+const QUALITY_EVAL_COMMANDS = new Set(['quality', 'eval', 'evals', 'metrics'])
 
 export const UI_SLASH_COMMAND_SUGGESTIONS: UiSlashCommandSuggestion[] = [
   {
@@ -200,6 +202,13 @@ export function resolveUiSlashCommand(input: string): UiSlashCommand | null {
       return { kind: 'set-speak', enabled: false }
     }
     return null
+  }
+
+  if (
+    QUALITY_EVAL_COMMANDS.has(command)
+    && goalParts[0]?.toLowerCase() === 'run'
+  ) {
+    return { kind: 'run-quality-eval' }
   }
 
   const tab = TAB_COMMANDS[command]
