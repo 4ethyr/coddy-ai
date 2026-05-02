@@ -4,4 +4,5 @@ export type { AgentRunRecoveryNotice } from './agentRunRecovery'
 export {
   buildAgentRunRecoveryNotice,
   formatAgentRunRecoveryDiagnostics,
+  resolveAgentRunRetryPrompt,
 } from './agentRunRecovery'

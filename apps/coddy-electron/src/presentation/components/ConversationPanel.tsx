@@ -7,7 +7,10 @@ import type {
   ReplSession,
   ReplToolCatalogItem,
 } from '@/domain'
-import { buildAgentRunRecoveryNotice } from '@/domain'
+import {
+  buildAgentRunRecoveryNotice,
+  resolveAgentRunRetryPrompt,
+} from '@/domain'
 import {
   MarkdownContent,
   MessageBubble,
@@ -89,7 +92,7 @@ export function ConversationPanel({
             </div>
           </div>
 
-          <PlanOfAttack session={session} />
+          <PlanOfAttack session={session} onRetryPrompt={onSend} />
 
           {helpOpen && (
             <SlashCommandHelpPanel onClose={onCloseHelp ?? (() => {})} />
@@ -183,12 +186,21 @@ export function ConversationPanel({
   )
 }
 
-function PlanOfAttack({ session }: { session: ReplSession }) {
+function PlanOfAttack({
+  session,
+  onRetryPrompt,
+}: {
+  session: ReplSession
+  onRetryPrompt?: (text: string) => void
+}) {
   const toolActivity = session.tool_activity ?? []
   const subagentActivity = session.subagent_activity ?? []
   const agentRun = session.agent_run
   const recoveryNotice = agentRun
     ? buildAgentRunRecoveryNotice(agentRun.summary, session.selected_model)
+    : null
+  const retryPrompt = recoveryNotice
+    ? resolveAgentRunRetryPrompt(session.messages)
     : null
   const hasToolActivity = toolActivity.length > 0
   const hasSubagentActivity = subagentActivity.length > 0
@@ -220,7 +232,14 @@ function PlanOfAttack({ session }: { session: ReplSession }) {
                 />
               )}
               {recoveryNotice && (
-                <AgentRunRecoveryCard notice={recoveryNotice} />
+                <AgentRunRecoveryCard
+                  notice={recoveryNotice}
+                  onRetry={
+                    retryPrompt && onRetryPrompt
+                      ? () => onRetryPrompt(retryPrompt)
+                      : undefined
+                  }
+                />
               )}
               {agentRun.summary.stop_reason && (
                 <TaskStep

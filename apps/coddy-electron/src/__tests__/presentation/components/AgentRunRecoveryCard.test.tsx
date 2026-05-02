@@ -56,4 +56,26 @@ describe('AgentRunRecoveryCard', () => {
     expect(diagnostics).not.toContain('sk-or-secret-token')
     expect(screen.getByRole('button', { name: /copied/i })).toBeInTheDocument()
   })
+
+  it('offers retry only when a retry action is available', async () => {
+    const notice = buildAgentRunRecoveryNotice(
+      failedRun(),
+      { provider: 'openrouter', name: 'deepseek/deepseek-v4-flash' },
+    )
+    const onRetry = vi.fn()
+
+    expect(notice).not.toBeNull()
+
+    const { rerender } = render(<AgentRunRecoveryCard notice={notice!} />)
+
+    expect(
+      screen.queryByRole('button', { name: /retry prompt/i }),
+    ).not.toBeInTheDocument()
+
+    rerender(<AgentRunRecoveryCard notice={notice!} onRetry={onRetry} />)
+
+    await userEvent.click(screen.getByRole('button', { name: /retry prompt/i }))
+
+    expect(onRetry).toHaveBeenCalledTimes(1)
+  })
 })

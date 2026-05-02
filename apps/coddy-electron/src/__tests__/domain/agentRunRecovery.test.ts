@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildAgentRunRecoveryNotice,
   formatAgentRunRecoveryDiagnostics,
+  resolveAgentRunRetryPrompt,
 } from '@/domain'
 import type { AgentRunSummary } from '@/domain'
 
@@ -83,6 +84,25 @@ describe('agent run recovery notices', () => {
     expect(diagnostics).toContain('action=Retry without Bearer [REDACTED]')
     expect(diagnostics).not.toContain('sk-or-secret-token')
     expect(diagnostics).not.toContain('ya29.oauth-token')
+  })
+
+  it('resolves the latest non-empty user prompt for recovery retry', () => {
+    const prompt = resolveAgentRunRetryPrompt([
+      { id: 'm1', role: 'user', text: 'first prompt' },
+      { id: 'm2', role: 'assistant', text: 'failed response' },
+      { id: 'm3', role: 'user', text: '   ' },
+      { id: 'm4', role: 'user', text: '  retry this analysis  ' },
+    ])
+
+    expect(prompt).toBe('retry this analysis')
+  })
+
+  it('does not resolve retry prompts when no user message exists', () => {
+    const prompt = resolveAgentRunRetryPrompt([
+      { id: 'm1', role: 'assistant', text: 'hello' },
+    ])
+
+    expect(prompt).toBeNull()
   })
 
   it('does not produce a recovery notice when there is no failed run', () => {

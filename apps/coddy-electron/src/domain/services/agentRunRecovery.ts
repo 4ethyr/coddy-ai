@@ -1,4 +1,4 @@
-import type { AgentRunSummary, ModelRef } from '@/domain/types/events'
+import type { AgentRunSummary, ModelRef, ReplMessage } from '@/domain/types/events'
 
 export interface AgentRunRecoveryNotice {
   title: string
@@ -34,6 +34,20 @@ export function formatAgentRunRecoveryDiagnostics(
     `message=${redactProviderSecrets(notice.message)}`,
     `action=${redactProviderSecrets(notice.action)}`,
   ].join('\n')
+}
+
+export function resolveAgentRunRetryPrompt(
+  messages: ReplMessage[],
+): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.role !== 'user') continue
+
+    const text = message.text.trim()
+    if (text.length > 0) return text
+  }
+
+  return null
 }
 
 function recoveryAction(code: string, provider?: string): string {

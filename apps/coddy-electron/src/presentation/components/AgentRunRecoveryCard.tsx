@@ -8,11 +8,13 @@ import { Icon } from './Icon'
 interface Props {
   notice: AgentRunRecoveryNotice
   compact?: boolean
+  onRetry?: () => void
 }
 
 export function AgentRunRecoveryCard({
   notice,
   compact = false,
+  onRetry,
 }: Props) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>(
     'idle',
@@ -58,14 +60,26 @@ export function AgentRunRecoveryCard({
             {notice.technicalCode}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={handleCopyDiagnostics}
-          className="flex items-center gap-1.5 rounded border border-amber-200/20 px-2 py-1 font-mono text-[11px] text-amber-100/75 transition-colors hover:border-amber-200/40 hover:text-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-200"
-        >
-          <Icon name="copy" className="h-3.5 w-3.5" />
-          {copyLabel}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="flex items-center gap-1.5 rounded border border-amber-200/20 px-2 py-1 font-mono text-[11px] text-amber-100/75 transition-colors hover:border-amber-200/40 hover:text-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-200"
+            >
+              <Icon name="send" className="h-3.5 w-3.5" />
+              retry prompt
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleCopyDiagnostics}
+            className="flex items-center gap-1.5 rounded border border-amber-200/20 px-2 py-1 font-mono text-[11px] text-amber-100/75 transition-colors hover:border-amber-200/40 hover:text-amber-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-200"
+          >
+            <Icon name="copy" className="h-3.5 w-3.5" />
+            {copyLabel}
+          </button>
+        </div>
       </div>
       <p className="break-words font-mono text-xs text-amber-100/85">
         {notice.message}

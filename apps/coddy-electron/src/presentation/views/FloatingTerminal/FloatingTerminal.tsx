@@ -4,7 +4,11 @@
 
 import { useRef, useEffect, useCallback, useState } from 'react'
 import type { CSSProperties } from 'react'
-import { buildAgentRunRecoveryNotice, type ScreenAssistMode } from '@/domain'
+import {
+  buildAgentRunRecoveryNotice,
+  resolveAgentRunRetryPrompt,
+  type ScreenAssistMode,
+} from '@/domain'
 import type { FloatingAppearanceSettings } from '@/application'
 import { loadSettings, saveSettings } from '@/application'
 import { useSessionContext } from '@/presentation/hooks'
@@ -86,6 +90,9 @@ export function FloatingTerminal() {
         session.agent_run.summary,
         session.selected_model,
       )
+    : null
+  const retryPrompt = recoveryNotice
+    ? resolveAgentRunRetryPrompt(session.messages)
     : null
 
   // Auto-scroll to bottom on new messages or streaming tokens
@@ -467,7 +474,11 @@ export function FloatingTerminal() {
           )}
 
           {recoveryNotice && (
-            <AgentRunRecoveryCard notice={recoveryNotice} compact />
+            <AgentRunRecoveryCard
+              notice={recoveryNotice}
+              compact
+              onRetry={retryPrompt ? () => handleSend(retryPrompt) : undefined}
+            />
           )}
 
           {error && (

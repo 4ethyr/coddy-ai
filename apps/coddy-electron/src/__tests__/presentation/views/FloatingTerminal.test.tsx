@@ -148,6 +148,9 @@ describe('FloatingTerminal', () => {
         provider: 'openrouter',
         name: 'deepseek/deepseek-v4-flash',
       },
+      messages: [
+        { id: 'msg-1', role: 'user', text: '  analyze repo with tools  ' },
+      ],
       agent_run: {
         run_id: 'run-1',
         summary: {
@@ -173,6 +176,39 @@ describe('FloatingTerminal', () => {
         'Retry this prompt. If it repeats, reduce context/tool output, refresh OpenRouter routing, or select another provider/model.',
       ),
     ).toBeInTheDocument()
+  })
+
+  it('retries the latest user prompt from recoverable floating failures', async () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      selected_model: {
+        provider: 'openrouter',
+        name: 'deepseek/deepseek-v4-flash',
+      },
+      messages: [
+        { id: 'msg-1', role: 'user', text: 'first prompt' },
+        { id: 'msg-2', role: 'assistant', text: 'partial answer' },
+        { id: 'msg-3', role: 'user', text: '  analyze repo with tools  ' },
+      ],
+      agent_run: {
+        run_id: 'run-2',
+        summary: {
+          goal: 'analyze repo',
+          last_phase: 'Failed',
+          completed_steps: 2,
+          stop_reason: null,
+          failure_code: 'invalid_provider_response',
+          failure_message: 'empty provider response',
+          recoverable_failure: true,
+        },
+      },
+    }
+
+    render(<FloatingTerminal />)
+
+    await userEvent.click(screen.getByRole('button', { name: /retry prompt/i }))
+
+    expect(sessionContext.ask).toHaveBeenCalledWith('analyze repo with tools')
   })
 
   it('renders pending tool approval actions above the input', async () => {
