@@ -45,6 +45,7 @@ const sessionContext = {
   replyPermission: vi.fn(),
   selectWorkspaceFolder: vi.fn(),
   loadConversationHistory: vi.fn(),
+  openConversation: vi.fn(),
 }
 
 vi.mock('@/presentation/hooks', () => ({
@@ -151,7 +152,26 @@ describe('DesktopApp', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Voice input' }))
 
-    expect(sessionContext.captureVoice).toHaveBeenCalledOnce()
+    expect(sessionContext.captureVoice).toHaveBeenCalledWith({
+      speakResponse: false,
+    })
+  })
+
+  it('lets the user enable spoken voice responses from desktop settings', async () => {
+    render(<DesktopApp />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open config' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Spoken responses off' }),
+    )
+
+    expect(screen.getByRole('button', { name: 'Spoken responses on' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(window.localStorage.getItem('coddy:settings')).toContain(
+      '"speakVoiceResponses":true',
+    )
   })
 
   it('renders streaming responses with markdown formatting in desktop mode', () => {
@@ -275,6 +295,12 @@ describe('DesktopApp', () => {
 
     expect(sessionContext.loadConversationHistory).toHaveBeenCalledOnce()
     expect(screen.getByText('Analyze workspace')).toBeInTheDocument()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: /Analyze workspace/i }),
+    )
+
+    expect(sessionContext.openConversation).toHaveBeenCalledWith('session-1')
 
     await userEvent.type(
       screen.getByPlaceholderText('Instruct Coddy agent...'),

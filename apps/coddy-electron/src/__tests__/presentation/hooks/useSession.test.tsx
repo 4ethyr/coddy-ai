@@ -59,6 +59,7 @@ function createClient(overrides: Partial<ReplIpcClient> = {}): ReplIpcClient {
     voiceTurn: vi.fn(),
     stopActiveRun: vi.fn().mockResolvedValue(undefined),
     newSession: vi.fn().mockResolvedValue({ message: 'new session' }),
+    openConversation: vi.fn().mockResolvedValue({ message: 'opened' }),
     stopSpeaking: vi.fn().mockResolvedValue(undefined),
     selectModel: vi.fn(),
     openUi: vi.fn(),
@@ -163,6 +164,38 @@ describe('useSession cancellation errors', () => {
 
     expect(result.current.conversationHistory).toEqual(conversations)
     expect(result.current.conversationHistoryStatus).toBe('succeeded')
+
+    unmount()
+  })
+
+  it('opens a persisted conversation and refreshes the daemon snapshot', async () => {
+    const openConversation = vi.fn().mockResolvedValue({ message: 'opened' })
+    clientRef.current = createClient({ openConversation })
+
+    const { result, unmount } = renderHook(() => useSession())
+    await waitFor(() => expect(result.current.connecting).toBe(false))
+
+    await act(async () => {
+      await result.current.openConversation('session-2')
+    })
+
+    expect(openConversation).toHaveBeenCalledWith('session-2')
+
+    unmount()
+  })
+
+  it('passes voice response options to the capture backend', async () => {
+    const captureVoice = vi.fn().mockResolvedValue({ text: 'voice command' })
+    clientRef.current = createClient({ captureVoice })
+
+    const { result, unmount } = renderHook(() => useSession())
+    await waitFor(() => expect(result.current.connecting).toBe(false))
+
+    await act(async () => {
+      await result.current.captureVoice({ speakResponse: true })
+    })
+
+    expect(captureVoice).toHaveBeenCalledWith({ speakResponse: true })
 
     unmount()
   })

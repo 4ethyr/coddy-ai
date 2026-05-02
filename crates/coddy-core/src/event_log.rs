@@ -70,6 +70,11 @@ impl ReplEventLog {
         envelope
     }
 
+    pub fn reset_session(&mut self, session_id: Uuid) {
+        self.session_id = session_id;
+        self.events.clear();
+    }
+
     pub fn events_after(&self, sequence: u64) -> Vec<ReplEventEnvelope> {
         self.events
             .iter()

@@ -82,6 +82,9 @@ pub enum ReplCommand {
     },
     DismissConfirmation,
     NewSession,
+    OpenConversation {
+        session_id: uuid::Uuid,
+    },
     StopActiveRun,
     StopSpeaking,
 }

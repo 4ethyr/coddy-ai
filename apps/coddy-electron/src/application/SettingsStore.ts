@@ -44,6 +44,7 @@ export interface UserSettings {
   mode: ReplMode
   voiceEnabled: boolean
   voiceMuted: boolean
+  speakVoiceResponses: boolean
   floatingAppearance: FloatingAppearanceSettings
   modelThinking: ModelThinkingSettings
   evalHarness: EvalHarnessSettings
@@ -86,6 +87,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   mode: 'FloatingTerminal',
   voiceEnabled: true,
   voiceMuted: false,
+  speakVoiceResponses: false,
   floatingAppearance: { ...DEFAULT_FLOATING_APPEARANCE },
   modelThinking: { ...DEFAULT_MODEL_THINKING },
   evalHarness: { ...DEFAULT_EVAL_HARNESS },
@@ -109,6 +111,10 @@ export function loadSettings(): UserSettings {
       mode: parsed.mode ?? DEFAULT_SETTINGS.mode,
       voiceEnabled: parsed.voiceEnabled ?? DEFAULT_SETTINGS.voiceEnabled,
       voiceMuted: parsed.voiceMuted ?? DEFAULT_SETTINGS.voiceMuted,
+      speakVoiceResponses:
+        typeof parsed.speakVoiceResponses === 'boolean'
+          ? parsed.speakVoiceResponses
+          : DEFAULT_SETTINGS.speakVoiceResponses,
       floatingAppearance: normalizeFloatingAppearance(parsed.floatingAppearance),
       modelThinking: normalizeModelThinking(parsed.modelThinking),
       evalHarness: normalizeEvalHarness(parsed.evalHarness),

@@ -17,6 +17,7 @@ import type {
   ReplMode,
   ReplSession,
   ReplToolCatalogItem,
+  VoiceCaptureOptions,
   WorkspaceSelectionResult,
   AssessmentPolicy,
   ScreenAssistMode,
@@ -29,6 +30,7 @@ import {
   sendAsk,
   cancelRun,
   cancelSpeech,
+  openConversation,
   startNewSession,
   selectModel,
   openUi,
@@ -81,6 +83,9 @@ export interface UseSessionReturn {
   /** Archive the current conversation and start a clean session */
   newSession: () => Promise<void>
 
+  /** Restore a persisted conversation as the active session */
+  openConversation: (sessionId: string) => Promise<void>
+
   /** Stop TTS playback */
   cancelSpeech: () => Promise<void>
 
@@ -110,7 +115,7 @@ export interface UseSessionReturn {
   openUi: (mode: ReplMode) => Promise<void>
 
   /** Capture one voice turn; the backend dispatches the transcript itself */
-  captureVoice: () => Promise<ReplCommandResult>
+  captureVoice: (options?: VoiceCaptureOptions) => Promise<ReplCommandResult>
 
   /** Cancel the active microphone capture */
   cancelVoiceCapture: () => Promise<void>
@@ -259,6 +264,19 @@ export function useSession(): UseSessionReturn {
     }
   }, [client, init])
 
+  const handleOpenConversation = useCallback(
+    async (sessionId: string) => {
+      try {
+        await openConversation(client, sessionId)
+        setConversationHistoryStatus('idle')
+        init()
+      } catch (err) {
+        setError(actionErrorMessage('Coddy could not open conversation', err))
+      }
+    },
+    [client, init],
+  )
+
   const handleCancelSpeech = useCallback(async () => {
     try {
       await cancelSpeech(client)
@@ -381,15 +399,20 @@ export function useSession(): UseSessionReturn {
     [client],
   )
 
-  const handleCaptureVoice = useCallback(async (): Promise<ReplCommandResult> => {
-    try {
-      return await captureVoice(client)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      setError(message)
-      return { error: { code: 'VOICE_CAPTURE_FAILED', message } }
-    }
-  }, [client])
+  const handleCaptureVoice = useCallback(
+    async (
+      options: VoiceCaptureOptions = {},
+    ): Promise<ReplCommandResult> => {
+      try {
+        return await captureVoice(client, options)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        setError(message)
+        return { error: { code: 'VOICE_CAPTURE_FAILED', message } }
+      }
+    },
+    [client],
+  )
 
   const handleCancelVoiceCapture = useCallback(async () => {
     try {
@@ -454,6 +477,7 @@ export function useSession(): UseSessionReturn {
     ask,
     cancelRun: handleCancelRun,
     newSession: handleNewSession,
+    openConversation: handleOpenConversation,
     cancelSpeech: handleCancelSpeech,
     selectModel: handleSelectModel,
     listProviderModels: handleListProviderModels,

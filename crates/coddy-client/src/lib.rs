@@ -109,6 +109,11 @@ impl CoddyClient {
         self.send_command(ReplCommand::NewSession, false).await
     }
 
+    pub async fn open_conversation(&self, session_id: Uuid) -> Result<CoddyResult> {
+        self.send_command(ReplCommand::OpenConversation { session_id }, false)
+            .await
+    }
+
     pub async fn reply_permission(
         &self,
         request_id: Uuid,

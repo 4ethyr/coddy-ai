@@ -11,6 +11,7 @@ export {
   sendVoiceTurn,
   cancelRun,
   cancelSpeech,
+  openConversation,
   startNewSession,
   selectModel,
   listProviderModels,

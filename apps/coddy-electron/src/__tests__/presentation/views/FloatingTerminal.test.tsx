@@ -44,6 +44,7 @@ const sessionContext = {
   replyPermission: vi.fn(),
   selectWorkspaceFolder: vi.fn(),
   loadConversationHistory: vi.fn(),
+  openConversation: vi.fn(),
 }
 
 vi.mock('@/presentation/hooks', () => ({
@@ -348,6 +349,12 @@ describe('FloatingTerminal', () => {
     expect(sessionContext.loadConversationHistory).toHaveBeenCalledOnce()
     expect(screen.getByText('Review Coddy runtime')).toBeInTheDocument()
 
+    await userEvent.click(
+      screen.getByRole('button', { name: /Review Coddy runtime/i }),
+    )
+
+    expect(sessionContext.openConversation).toHaveBeenCalledWith('session-1')
+
     await userEvent.type(
       screen.getByPlaceholderText('Enter command or prompt...'),
       '/new',
@@ -355,5 +362,25 @@ describe('FloatingTerminal', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Send' }))
 
     expect(sessionContext.newSession).toHaveBeenCalledOnce()
+  })
+
+  it('persists /speak preference and passes it to voice capture', async () => {
+    sessionContext.captureVoice.mockResolvedValue({ text: 'voice command' })
+    render(<FloatingTerminal />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Enter command or prompt...'),
+      '/speak on',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Voice input' }))
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(window.localStorage.getItem('coddy:settings')).toContain(
+      '"speakVoiceResponses":true',
+    )
+    expect(sessionContext.captureVoice).toHaveBeenCalledWith({
+      speakResponse: true,
+    })
   })
 })

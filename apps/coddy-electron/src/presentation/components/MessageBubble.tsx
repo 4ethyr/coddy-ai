@@ -125,6 +125,39 @@ function MarkdownText({ text }: { text: string }): JSX.Element {
           )
         }
 
+        if (block.type === 'table') {
+          return (
+            <div key={index} className="overflow-x-auto rounded border border-white/10">
+              <table className="min-w-full border-collapse text-left text-sm">
+                <thead className="bg-surface-container-high/60 text-on-surface">
+                  <tr>
+                    {block.headers.map((header, headerIndex) => (
+                      <th
+                        key={headerIndex}
+                        scope="col"
+                        className="border-b border-white/10 px-3 py-2 font-semibold"
+                      >
+                        {renderInlineMarkdown(header)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {block.rows.map((row, rowIndex) => (
+                    <tr key={rowIndex} className="border-t border-white/5">
+                      {block.headers.map((_, cellIndex) => (
+                        <td key={cellIndex} className="px-3 py-2 align-top">
+                          {renderInlineMarkdown(row[cellIndex] ?? '')}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        }
+
         return (
           <p key={index} className="whitespace-pre-wrap break-words">
             {renderInlineMarkdown(block.content)}
@@ -141,6 +174,7 @@ type MarkdownBlock =
   | { type: 'ordered-list'; items: string[] }
   | { type: 'unordered-list'; items: string[] }
   | { type: 'quote'; content: string }
+  | { type: 'table'; headers: string[]; rows: string[][] }
 
 function parseMarkdownBlocks(text: string): MarkdownBlock[] {
   const blocks: MarkdownBlock[] = []
@@ -163,6 +197,20 @@ function parseMarkdownBlocks(text: string): MarkdownBlock[] {
         content: heading[2]!.trim(),
       })
       index += 1
+      continue
+    }
+
+    if (isMarkdownTableStart(lines, index)) {
+      const headers = parseMarkdownTableRow(trimmed)
+      index += 2
+      const rows: string[][] = []
+      while (index < lines.length) {
+        const rowLine = (lines[index] ?? '').trim()
+        if (!rowLine || !looksLikeMarkdownTableRow(rowLine)) break
+        rows.push(parseMarkdownTableRow(rowLine))
+        index += 1
+      }
+      blocks.push({ type: 'table', headers, rows })
       continue
     }
 
@@ -215,6 +263,7 @@ function parseMarkdownBlocks(text: string): MarkdownBlock[] {
         || /^\d+[.)]\s+/.test(candidateTrimmed)
         || /^[-*+]\s+/.test(candidateTrimmed)
         || /^>\s?/.test(candidateTrimmed)
+        || isMarkdownTableStart(lines, index)
       ) {
         break
       }
@@ -225,6 +274,28 @@ function parseMarkdownBlocks(text: string): MarkdownBlock[] {
   }
 
   return blocks
+}
+
+function isMarkdownTableStart(lines: string[], index: number): boolean {
+  const header = (lines[index] ?? '').trim()
+  const separator = (lines[index + 1] ?? '').trim()
+  if (!looksLikeMarkdownTableRow(header)) return false
+  const cells = parseMarkdownTableRow(header)
+  if (cells.length < 2) return false
+  const separatorCells = parseMarkdownTableRow(separator)
+  if (separatorCells.length < cells.length) return false
+  return separatorCells.every((cell) =>
+    /^:?-{3,}:?$/.test(cell),
+  )
+}
+
+function looksLikeMarkdownTableRow(line: string): boolean {
+  return line.includes('|') && parseMarkdownTableRow(line).length >= 2
+}
+
+function parseMarkdownTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '')
+  return trimmed.split('|').map((cell) => cell.trim())
 }
 
 function renderInlineMarkdown(text: string): ReactNode[] {

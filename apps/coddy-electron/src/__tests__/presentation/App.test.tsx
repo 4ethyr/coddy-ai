@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
     conversationHistoryError: null,
     ask: vi.fn(),
     newSession: vi.fn(),
+    openConversation: vi.fn(),
     cancelRun: vi.fn(),
     cancelSpeech: vi.fn(),
     reconnect: vi.fn(),

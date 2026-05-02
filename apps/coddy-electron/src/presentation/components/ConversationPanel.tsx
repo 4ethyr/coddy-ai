@@ -26,6 +26,7 @@ interface Props {
   historyRecords?: ConversationRecord[]
   historyStatus?: 'idle' | 'running' | 'succeeded' | 'failed'
   historyError?: string | null
+  onOpenHistoryItem?: (sessionId: string) => void
   onCloseHistory?: () => void
 }
 
@@ -38,6 +39,7 @@ export function ConversationPanel({
   historyRecords = [],
   historyStatus = 'idle',
   historyError = null,
+  onOpenHistoryItem,
   onCloseHistory,
 }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -65,6 +67,7 @@ export function ConversationPanel({
               records={historyRecords}
               status={historyStatus}
               error={historyError}
+              onSelect={onOpenHistoryItem}
               onClose={onCloseHistory ?? (() => {})}
             />
           )}

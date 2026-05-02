@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::{
     env, fmt, fs,
     fs::OpenOptions,
+    io,
     io::Write,
     path::{Path, PathBuf},
     process::Command,
@@ -111,16 +112,30 @@ impl VoiceShortcutLock {
             })?;
         }
 
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .with_context(|| {
-                format!(
-                    "Coddy voice shortcut is already active or lock is stale at {}",
-                    path.display()
-                )
-            })?;
+        let mut file = match create_lock_file(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                if !lock_owner_is_running(&path) {
+                    let _ = fs::remove_file(&path);
+                    create_lock_file(&path).with_context(|| {
+                        format!(
+                            "failed to reclaim stale Coddy voice lock at {}",
+                            path.display()
+                        )
+                    })?
+                } else {
+                    anyhow::bail!(
+                        "Coddy voice shortcut is already active at {}",
+                        path.display()
+                    );
+                }
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to create Coddy voice lock at {}", path.display())
+                });
+            }
+        };
         writeln!(file, "pid={}", std::process::id())?;
 
         Ok(Self { path })
@@ -129,6 +144,31 @@ impl VoiceShortcutLock {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+fn create_lock_file(path: &Path) -> io::Result<fs::File> {
+    OpenOptions::new().write(true).create_new(true).open(path)
+}
+
+fn lock_owner_is_running(path: &Path) -> bool {
+    let Some(pid) = fs::read_to_string(path).ok().and_then(|content| {
+        content
+            .lines()
+            .find_map(|line| line.strip_prefix("pid="))
+            .and_then(|value| value.trim().parse::<u32>().ok())
+    }) else {
+        return false;
+    };
+
+    process_is_running(pid)
+}
+
+fn process_is_running(pid: u32) -> bool {
+    let proc_root = Path::new("/proc");
+    if !proc_root.exists() {
+        return true;
+    }
+    proc_root.join(pid.to_string()).exists()
 }
 
 impl Drop for VoiceShortcutLock {
@@ -477,6 +517,20 @@ mod tests {
         drop(lock);
         assert!(!path.exists());
 
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn stale_lock_with_dead_pid_is_reclaimed() {
+        let path = unique_lock_path();
+        fs::write(&path, "pid=999999999\n").expect("write stale lock");
+
+        let lock = VoiceShortcutLock::acquire(path.clone()).expect("reclaim stale lock");
+
+        assert_eq!(lock.path(), path.as_path());
+        assert!(path.exists());
+
+        drop(lock);
         let _ = fs::remove_file(path);
     }
 

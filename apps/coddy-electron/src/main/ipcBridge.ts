@@ -86,6 +86,10 @@ type ReplCommandResult = {
   error?: { code: string; message: string }
 }
 
+type VoiceCapturePayload = {
+  speakResponse?: boolean
+}
+
 type WorkspaceSelectionResult = {
   path: string | null
   cancelled?: boolean
@@ -345,7 +349,7 @@ export function registerIpcHandlers(): void {
   })
 
   // ---- Voice: capture + transcribe via coddy CLI ----
-  ipcMain.handle('voice:capture', async () => {
+  ipcMain.handle('voice:capture', async (_event, payload?: VoiceCapturePayload) => {
     if (activeVoiceCapture) {
       return {
         error: {
@@ -358,8 +362,9 @@ export function registerIpcHandlers(): void {
     const credentialEnv = await runtimeCredentialEnvironmentForActiveModel(
       credentialStore,
     )
+    const args = voiceCaptureArgs(payload)
     const child = coddySpawn(
-      ['voice', '--overlay'],
+      args,
       credentialEnv,
       { detached: true },
     )
@@ -382,7 +387,7 @@ export function registerIpcHandlers(): void {
           },
         }
       }
-      return { error: { code: 'VOICE_CAPTURE_FAILED', message: String(err) } }
+      return normalizeVoiceCaptureFailure(err)
     } finally {
       if (activeVoiceCapture === child) {
         activeVoiceCapture = null
@@ -425,6 +430,11 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('repl:new-session', async () => {
     activeRunCommands.terminateActive()
     return runCoddyCommand(['session', 'new'])
+  })
+
+  ipcMain.handle('repl:open-conversation', async (_event, sessionId: string) => {
+    activeRunCommands.terminateActive()
+    return runCoddyCommand(['session', 'open', '--id', sessionId])
   })
 
   ipcMain.handle(
@@ -658,6 +668,26 @@ function normalizeCommandResult(raw: unknown): ReplCommandResult {
     return { text: JSON.stringify(raw) }
   }
   return { text: String(raw) }
+}
+
+export function voiceCaptureArgs(payload?: VoiceCapturePayload): string[] {
+  return payload?.speakResponse
+    ? ['--speak', 'voice', '--overlay']
+    : ['voice', '--overlay']
+}
+
+function normalizeVoiceCaptureFailure(error: unknown): ReplCommandResult {
+  const message = error instanceof Error ? error.message : String(error)
+  if (/coddy-voice\.lock|voice shortcut is already active|File exists/i.test(message)) {
+    return {
+      error: {
+        code: 'VOICE_LOCK_ACTIVE',
+        message:
+          'Coddy voice capture is already active, or the previous recording left a stale lock. Try again; Coddy now clears stale locks automatically when the owning process is gone.',
+      },
+    }
+  }
+  return { error: { code: 'VOICE_CAPTURE_FAILED', message } }
 }
 
 async function runCoddyCommand(

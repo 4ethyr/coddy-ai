@@ -36,6 +36,7 @@ export function FloatingTerminal() {
     error,
     ask,
     newSession,
+    openConversation,
     reconnect,
     selectModel,
     listProviderModels,
@@ -60,6 +61,9 @@ export function FloatingTerminal() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
     () => loadSettings().floatingAppearance,
+  )
+  const [speakVoiceResponses, setSpeakVoiceResponses] = useState(
+    () => loadSettings().speakVoiceResponses,
   )
   const [thinkingAnimation] = useState(
     () => loadSettings().modelThinking.animation,
@@ -131,6 +135,12 @@ export function FloatingTerminal() {
         return
       }
 
+      if (command.kind === 'set-speak') {
+        setSpeakVoiceResponses(command.enabled)
+        saveSettings({ speakVoiceResponses: command.enabled })
+        return
+      }
+
       if (command.kind === 'open-history') {
         setHistoryOpen(true)
         void loadConversationHistory()
@@ -141,6 +151,19 @@ export function FloatingTerminal() {
       void openUi('DesktopApp')
     },
     [ask, loadConversationHistory, newSession, openUi],
+  )
+
+  const handleOpenConversation = useCallback(
+    (sessionId: string) => {
+      setHistoryOpen(false)
+      void openConversation(sessionId)
+    },
+    [openConversation],
+  )
+
+  const handleCaptureVoice = useCallback(
+    () => captureVoice({ speakResponse: speakVoiceResponses }),
+    [captureVoice, speakVoiceResponses],
   )
 
   const terminalStyle = {
@@ -358,6 +381,7 @@ export function FloatingTerminal() {
               records={conversationHistory}
               status={conversationHistoryStatus}
               error={conversationHistoryError}
+              onSelect={handleOpenConversation}
               onClose={() => setHistoryOpen(false)}
             />
           )}
@@ -438,7 +462,7 @@ export function FloatingTerminal() {
           />
         </div>
         <VoiceButton
-          onCapture={captureVoice}
+          onCapture={handleCaptureVoice}
           onCancel={cancelVoiceCapture}
           disabled={connecting}
         />

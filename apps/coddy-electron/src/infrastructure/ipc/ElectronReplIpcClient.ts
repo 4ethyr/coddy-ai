@@ -6,6 +6,7 @@ import type {
   ReplIpcClient,
   ReplCommandResult,
   ReplEventsBatch,
+  VoiceCaptureOptions,
   WorkspaceSelectionResult,
 } from '@/domain'
 import type {
@@ -240,6 +241,13 @@ export class ElectronReplIpcClient implements ReplIpcClient {
     )) as ReplCommandResult
   }
 
+  async openConversation(sessionId: string): Promise<ReplCommandResult> {
+    return (await window.replApi.invoke(
+      'repl:open-conversation',
+      sessionId,
+    )) as ReplCommandResult
+  }
+
   async stopSpeaking(): Promise<void> {
     await window.replApi.invoke('repl:stop-speaking')
   }
@@ -292,9 +300,12 @@ export class ElectronReplIpcClient implements ReplIpcClient {
     )) as ReplCommandResult
   }
 
-  async captureVoice(): Promise<ReplCommandResult> {
+  async captureVoice(
+    options: VoiceCaptureOptions = {},
+  ): Promise<ReplCommandResult> {
     return (await window.replApi.invoke(
       'voice:capture',
+      options,
     )) as ReplCommandResult
   }
 

@@ -4,5 +4,6 @@ export type {
   ReplIpcClient,
   ReplCommandResult,
   ReplEventsBatch,
+  VoiceCaptureOptions,
   WorkspaceSelectionResult,
 } from './ReplIpcClient'

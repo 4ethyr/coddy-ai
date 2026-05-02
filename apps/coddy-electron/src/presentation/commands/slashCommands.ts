@@ -5,6 +5,7 @@ export type UiSlashCommand =
   | { kind: 'open-desktop-tab'; tab: DesktopTab }
   | { kind: 'open-history' }
   | { kind: 'new-session' }
+  | { kind: 'set-speak'; enabled: boolean }
   | { kind: 'agent-workflow'; prompt: string }
 
 export type UiSlashCommandSuggestion = {
@@ -86,6 +87,13 @@ export const UI_SLASH_COMMAND_SUGGESTIONS: UiSlashCommandSuggestion[] = [
     description: 'Archive this chat and start a clean session.',
     insertText: '/new',
   },
+  {
+    command: '/speak',
+    title: 'Voice response speech',
+    description: 'Use /speak on or /speak off for spoken replies after voice input.',
+    insertText: '/speak ',
+    requiresArgument: true,
+  },
 ]
 
 export function resolveUiSlashCommand(input: string): UiSlashCommand | null {
@@ -106,6 +114,17 @@ export function resolveUiSlashCommand(input: string): UiSlashCommand | null {
 
   if (command === 'new') {
     return { kind: 'new-session' }
+  }
+
+  if (command === 'speak') {
+    const value = goalParts[0]?.toLowerCase()
+    if (value === 'on' || value === 'true' || value === 'yes') {
+      return { kind: 'set-speak', enabled: true }
+    }
+    if (value === 'off' || value === 'false' || value === 'no') {
+      return { kind: 'set-speak', enabled: false }
+    }
+    return null
   }
 
   const tab = TAB_COMMANDS[command]

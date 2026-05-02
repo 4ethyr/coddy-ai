@@ -36,6 +36,18 @@ describe('slashCommands', () => {
     })
   })
 
+  it('routes speak commands to voice response settings', () => {
+    expect(resolveUiSlashCommand('/speak on')).toEqual({
+      kind: 'set-speak',
+      enabled: true,
+    })
+    expect(resolveUiSlashCommand('/speak off')).toEqual({
+      kind: 'set-speak',
+      enabled: false,
+    })
+    expect(resolveUiSlashCommand('/speak')).toBeNull()
+  })
+
   it('expands coding workflow commands into guarded agent prompts', () => {
     expect(resolveUiSlashCommand('/plan add workspace picker')).toMatchObject({
       kind: 'agent-workflow',

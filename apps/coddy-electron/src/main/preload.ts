@@ -21,6 +21,7 @@ const replApi = {
       'repl:stop-speaking',
       'repl:stop-active-run',
       'repl:new-session',
+      'repl:open-conversation',
       'repl:select-model',
       'repl:open-ui',
       'repl:capture-and-explain',

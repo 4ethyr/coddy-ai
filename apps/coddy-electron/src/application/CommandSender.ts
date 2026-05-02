@@ -17,6 +17,7 @@ import type {
   ReplCommandResult,
   ReplMode,
   ScreenAssistMode,
+  VoiceCaptureOptions,
   WorkspaceSelectionResult,
 } from '@/domain'
 
@@ -65,6 +66,13 @@ export async function startNewSession(
   client: ReplIpcClient,
 ): Promise<ReplCommandResult> {
   return assertCommandSucceeded(await client.newSession())
+}
+
+export async function openConversation(
+  client: ReplIpcClient,
+  sessionId: string,
+): Promise<ReplCommandResult> {
+  return assertCommandSucceeded(await client.openConversation(sessionId))
 }
 
 /**
@@ -156,8 +164,9 @@ export async function openUi(
  */
 export async function captureVoice(
   client: ReplIpcClient,
+  options: VoiceCaptureOptions = {},
 ): Promise<ReplCommandResult> {
-  return client.captureVoice()
+  return client.captureVoice(options)
 }
 
 /**

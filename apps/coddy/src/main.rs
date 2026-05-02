@@ -266,6 +266,10 @@ impl From<CliReplMode> for ReplMode {
 enum SessionCommand {
     Snapshot,
     New,
+    Open {
+        #[arg(long)]
+        id: uuid::Uuid,
+    },
     History {
         #[arg(long)]
         limit: Option<usize>,
@@ -484,6 +488,12 @@ async fn main() -> Result<()> {
             print_job_result(result)
         }
         Some(Command::Session {
+            command: SessionCommand::Open { id },
+        }) => {
+            let result = coddy_client(&config)?.open_conversation(id).await?;
+            print_job_result(result)
+        }
+        Some(Command::Session {
             command: SessionCommand::History { limit },
         }) => run_session_history(&config, limit).await,
         Some(Command::Session {
@@ -520,7 +530,7 @@ async fn main() -> Result<()> {
             command: RuntimeCommand::Serve { socket },
         }) => run_runtime_serve(&config, socket).await,
         None => {
-            println!("Use `coddy repl`, `coddy ask`, `coddy voice`, `coddy screen explain`, `coddy permission reply`, `coddy model select`, `coddy ui open`, `coddy stop-speaking`, `coddy stop-active-run`, `coddy session snapshot`, `coddy runtime serve`, `coddy shortcuts test` ou `coddy doctor shortcuts`.");
+            println!("Use `coddy repl`, `coddy ask`, `coddy voice`, `coddy screen explain`, `coddy permission reply`, `coddy model select`, `coddy ui open`, `coddy stop-speaking`, `coddy stop-active-run`, `coddy session snapshot`, `coddy session open`, `coddy runtime serve`, `coddy shortcuts test` ou `coddy doctor shortcuts`.");
             Ok(())
         }
     }
@@ -1490,6 +1500,17 @@ mod tests {
                 command: SessionCommand::New
             })
         ));
+
+        let session_id = uuid::Uuid::new_v4();
+        let open =
+            Cli::try_parse_from(["coddy", "session", "open", "--id", &session_id.to_string()])
+                .expect("parse session open");
+        match open.command {
+            Some(Command::Session {
+                command: SessionCommand::Open { id },
+            }) => assert_eq!(id, session_id),
+            _ => panic!("unexpected open command"),
+        }
     }
 
     #[test]

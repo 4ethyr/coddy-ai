@@ -48,6 +48,7 @@ function createClient(): ReplIpcClient {
     voiceTurn: () => new Promise(() => {}),
     stopActiveRun: () => Promise.resolve(),
     newSession: () => Promise.resolve({}),
+    openConversation: () => Promise.resolve({}),
     stopSpeaking: () => Promise.resolve(),
     selectModel: () => Promise.resolve({}),
     openUi: () => Promise.resolve({}),

@@ -32,6 +32,7 @@ function clientWith(
     voiceTurn: vi.fn(),
     stopActiveRun: vi.fn(),
     newSession: vi.fn(),
+    openConversation: vi.fn(),
     stopSpeaking: vi.fn(),
     selectModel: vi.fn(),
     openUi: vi.fn(),
