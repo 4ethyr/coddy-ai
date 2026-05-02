@@ -23,6 +23,8 @@ history, deterministic quality evals and early runtime streaming. Advanced
 capabilities such as isolated executable subagents and MCP are planned or
 partially scaffolded and should be evolved incrementally with tests.
 
+Last full validation recorded in this branch: 2026-05-02.
+
 ## Main Features
 
 - Rust CLI with commands for REPL, ask, voice, model selection, UI mode,
@@ -57,6 +59,35 @@ partially scaffolded and should be evolved incrementally with tests.
   in the Rust agent crate.
 - Voice input and optional overlay support.
 - Repository-boundary tests to support the Coddy/VisionClip split.
+
+## Current Coding-Agent Readiness
+
+Coddy is ready for assisted coding workflows where the user keeps review control
+and validation is run locally. It should not yet be treated as a fully
+autonomous merge/release agent.
+
+| Area | Current level | Notes |
+| --- | --- | --- |
+| Codebase analysis | Strong | Local filesystem tools, search tools, workspace selection and session context are wired through the Rust runtime and Electron UI. |
+| Coding workflow | Strong for assisted work | `/code`, `/plan`, `/review` and `/test` steer the model toward inspect-plan-edit-validate behavior with evidence requirements. |
+| Tool governance | Strong foundation | Tool registry metadata, risk levels, permissions, command guard and redaction are implemented for the local tool surface. |
+| Subagents | Medium-high | Subagent registry, routing, preparation, team planning and reducer contracts are deterministic and evaluated; isolated executable subagent sessions are still pending. |
+| Provider reliability | Medium-high | OpenAI-compatible runtime, OpenRouter, Gemini API, Azure OpenAI, Ollama and Vertex Claude paths exist; routed providers can still fail or return empty assistant messages. |
+| Evals and metrics | Strong foundation | Multiagent evals, quality evals and prompt batteries are available from the CLI and Electron IPC, including live provider sampling. |
+| MCP and external tools | Planned | MCP readiness is documented and surfaced in UI commands, but the runtime MCP adapter and permission bridge are not complete yet. |
+| Autonomous PR/release flow | Planned | Coddy can assist with commits and PR descriptions through local workflows, but it does not yet run isolated branch workers with PR lifecycle automation. |
+
+Recent secure live eval against OpenRouter using
+`deepseek/deepseek-v4-flash`, with the API key loaded locally and not printed:
+
+- 50 prompts.
+- 47 passed.
+- Guarded score: 94.
+- Member recall: 94.
+- Model error rate: 6%.
+
+See [docs/coding-agent-capability-review.md](docs/coding-agent-capability-review.md)
+for the deeper comparison against current coding-agent systems.
 
 ## Important Provider Notes
 
@@ -389,6 +420,39 @@ Open UI modes through the runtime:
 ./target/debug/coddy ui open --mode desktop-app
 ```
 
+## Desktop, Workspace and Slash Commands
+
+Coddy Desktop exposes the same runtime concepts through FloatingTerminal and
+Desktop mode. The workspace flow lets the user select a folder and keep Coddy
+bound to that project, which mirrors terminal-based agents that start inside a
+repository directory.
+
+Supported local slash commands in the Electron UI:
+
+| Command | Purpose |
+| --- | --- |
+| `/help` or `/?` | Show local command help without contacting the model. |
+| `/code <goal>` or `/implement <goal>` | Start an implementation workflow with exploration, plan, incremental edits and validation guidance. |
+| `/plan <goal>` | Produce a read-only implementation plan with assumptions, risks and validation steps. |
+| `/review <scope>` | Review a diff, file or area for bugs, regressions, security issues and missing tests. |
+| `/test <goal>` or `/tests <goal>` | Choose and run or recommend the smallest useful validation. |
+| `/workspace`, `/workspaces`, `/files` | Open workspace/file context and related tools. |
+| `/tools` or `/tool` | Inspect tool catalog, risk levels and eval readiness. |
+| `/subagents`, `/subagent`, `/agents` | Inspect subagent contracts and orchestration state. |
+| `/mcp` | Inspect MCP readiness and external-tool integration status. |
+| `/quality`, `/eval`, `/evals`, `/metrics` | Open or run quality gates and evals. Use `/quality run` to execute the local quality flow. |
+| `/models` or `/model` | Open provider/model selection and runtime readiness. |
+| `/settings`, `/setting`, `/settins`, `/config` | Open settings, including appearance, provider preference and speech response options. |
+| `/history` | Show persisted, redacted conversation history. |
+| `/new` | Start a clean session while preserving safe model/workspace settings. |
+| `/status` | Show current session, model, workspace and active run state. |
+| `/capabilities`, `/agent`, `/readiness` | Show coding-agent readiness and known gaps. |
+| `/speak on` or `/speak off` | Enable or disable spoken replies after voice input. |
+
+Conversation history is stored without provider secrets. API keys pasted in the
+UI are request-scoped unless the user explicitly enables secure remembering,
+which uses Electron `safeStorage` when OS-backed encryption is available.
+
 ## Model Configuration
 
 Model credentials are request-scoped by default. If the user enables secure
@@ -527,6 +591,18 @@ selected provider:
   --concurrency 4
 ```
 
+Latest validated local suite on this branch:
+
+- `cargo fmt --check`.
+- `cargo test --workspace -- --test-threads=1`.
+- `cargo clippy --workspace --all-targets -- -D warnings`.
+- `npm test -- --run` in `apps/coddy-electron`: 42 files, 328 tests.
+- `npm run typecheck`.
+- `npm run lint`.
+- `npm run build`.
+- `git diff --check`.
+- `./scripts/guard_no_secrets.sh`.
+
 ## Security Model
 
 Coddy is designed around explicit boundaries:
@@ -540,6 +616,25 @@ Coddy is designed around explicit boundaries:
 
 Security-sensitive changes should include tests and should not print secrets in
 logs or terminal output.
+
+## Known Limitations
+
+- Isolated executable subagent sessions are not complete yet; current subagent
+  behavior is strongest for deterministic routing, planning, readiness and
+  reducer evaluation.
+- MCP is documented and planned, but runtime MCP discovery, execution and
+  permission bridging still need implementation.
+- Live provider reliability depends on the selected provider and routed model.
+  OpenRouter empty assistant responses are retried when recognized, but repeated
+  provider-side failures can still surface to the user.
+- Adaptive context compaction and per-run tool budgeting are improving, but
+  broad prompts over large repositories still need tighter summarization and
+  retrieval ranking.
+- Coddy does not yet automate the full cloud-agent flow of creating isolated
+  branches, pushing commits and opening PRs from a background worker.
+- Voice capture and speech response flows require Linux desktop/audio
+  validation on target machines because hardware, permissions and audio
+  backends vary.
 
 ## Documentation
 
