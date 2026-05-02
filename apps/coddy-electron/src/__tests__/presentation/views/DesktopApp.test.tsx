@@ -62,6 +62,7 @@ describe('DesktopApp', () => {
     sessionContext.session = {
       ...sessionContext.session,
       status: 'Idle',
+      selected_model: { provider: 'vertex', name: 'claude-sonnet-test' },
       subagent_activity: [],
       tool_activity: [],
       pending_permission: null,
@@ -98,6 +99,29 @@ describe('DesktopApp', () => {
     expect(
       screen.getByText(/Gemini API-key models execute through generateContent/i),
     ).toBeInTheDocument()
+  })
+
+  it('separates the selected chat model from the speech fallback route', async () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      selected_model: {
+        provider: 'openrouter',
+        name: 'deepseek/deepseek-v4-flash',
+      },
+    }
+
+    render(<DesktopApp />)
+
+    await userEvent.click(screen.getByRole('button', { name: /Neural_Link/ }))
+
+    expect(screen.getByText('SPEECH ROUTE')).toBeInTheDocument()
+    expect(screen.getByText('Needs fallback')).toBeInTheDocument()
+    expect(screen.getByText('Chat model')).toBeInTheDocument()
+    expect(screen.getByText('Configured speech fallback')).toBeInTheDocument()
+    expect(
+      screen.getByText('chat model is text-only; use a dedicated TTS route'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('FALLBACK TTS')).not.toBeInTheDocument()
   })
 
   it('keeps desktop navigation above the model catalog popover', async () => {

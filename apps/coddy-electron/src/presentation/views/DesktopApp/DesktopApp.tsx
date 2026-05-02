@@ -452,6 +452,8 @@ function ModelsTab({
     runtimeChat.status === 'supported' ? 'text-primary' : 'text-yellow-200'
   const pipelineValue =
     runtimeChat.status === 'supported' ? 'Runtime' : 'Discovery'
+  const speechRouteValue =
+    runtimeTts.route === 'native' ? 'Native' : 'Needs fallback'
 
   return (
     <div className="h-full overflow-y-auto p-5 sm:p-8">
@@ -480,7 +482,7 @@ function ModelsTab({
         <div className="grid gap-4 md:grid-cols-3">
           <MetricCard label="CPU CORE" value="Nominal" icon="cpu" tone="primary" />
           <MetricCard label="PIPELINE" value={pipelineValue} icon="sensors" tone="secondary" />
-          <MetricCard label="TTS ROUTE" value={runtimeTts.route} icon="cloud" tone="neutral" />
+          <MetricCard label="SPEECH ROUTE" value={speechRouteValue} icon="cloud" tone="neutral" />
         </div>
 
         <section className="desktop-glass-panel overflow-hidden rounded-xl">
@@ -516,6 +518,28 @@ function ModelsTab({
                 </div>
               </div>
               <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-primary">
+                Chat model
+              </span>
+            </div>
+            <div className="flex items-center justify-between rounded-lg border border-white/5 bg-surface-container-low/70 p-4">
+              <div className="flex items-center gap-4">
+                <span className="flex h-8 w-8 items-center justify-center rounded-full border border-secondary/20 text-secondary">
+                  <Icon name="cloud" className="h-4 w-4" />
+                </span>
+                <div>
+                  <p className="font-display text-base text-on-surface">
+                    {runtimeTts.route === 'native'
+                      ? 'Native speech synthesis'
+                      : 'Configured speech fallback'}
+                  </p>
+                  <p className="mt-1 font-mono text-xs text-on-surface-variant/60">
+                    {runtimeTts.route === 'native'
+                      ? `provider=${model.provider}; model=${model.name}`
+                      : 'chat model is text-only; use a dedicated TTS route'}
+                  </p>
+                </div>
+              </div>
+              <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-secondary">
                 {runtimeTts.label}
               </span>
             </div>
