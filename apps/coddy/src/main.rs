@@ -9,6 +9,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use coddy_agent::{
     default_prompt_battery_cases, run_default_prompt_battery, run_live_prompt_battery_cases,
     DefaultChatModelClient, MultiagentEvalCase, MultiagentEvalRunner, MultiagentEvalSuiteReport,
+    PromptBatteryReport,
 };
 use coddy_client::CoddyClient;
 use coddy_core::redact_conversation_text;
@@ -290,6 +291,10 @@ enum SessionCommand {
 
 #[derive(Debug, Subcommand)]
 enum EvalCommand {
+    Quality {
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
     Multiagent {
         #[arg(long)]
         baseline: Option<PathBuf>,
@@ -505,6 +510,9 @@ async fn main() -> Result<()> {
         Some(Command::Session {
             command: SessionCommand::Watch { after, limit },
         }) => run_session_watch(&config, after, limit).await,
+        Some(Command::Eval {
+            command: EvalCommand::Quality { json },
+        }) => run_eval_quality(json),
         Some(Command::Eval {
             command:
                 EvalCommand::Multiagent {
@@ -900,6 +908,101 @@ async fn run_session_watch(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QualityEvalStatus {
+    Passed,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QualityEvalReport {
+    status: QualityEvalStatus,
+    score: u8,
+    multiagent: MultiagentEvalSuiteReport,
+    prompt_battery: PromptBatteryReport,
+}
+
+impl QualityEvalReport {
+    fn new(multiagent: MultiagentEvalSuiteReport, prompt_battery: PromptBatteryReport) -> Self {
+        let score = multiagent.score.min(prompt_battery.score);
+        let status = if multiagent.is_success() && prompt_battery.is_success() && score == 100 {
+            QualityEvalStatus::Passed
+        } else {
+            QualityEvalStatus::Failed
+        };
+
+        Self {
+            status,
+            score,
+            multiagent,
+            prompt_battery,
+        }
+    }
+
+    fn is_success(&self) -> bool {
+        self.status == QualityEvalStatus::Passed
+    }
+
+    fn public_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "coddy.qualityEval",
+            "version": 1,
+            "status": quality_eval_status_label(self.status),
+            "passed": self.is_success(),
+            "score": self.score,
+            "checks": [
+                {
+                    "name": "multiagent",
+                    "status": quality_check_status_label(self.multiagent.is_success(), self.multiagent.score),
+                    "score": self.multiagent.score,
+                    "passed": self.multiagent.passed,
+                    "failed": self.multiagent.failed,
+                },
+                {
+                    "name": "prompt-battery",
+                    "status": quality_check_status_label(self.prompt_battery.is_success(), self.prompt_battery.score),
+                    "score": self.prompt_battery.score,
+                    "promptCount": self.prompt_battery.prompt_count,
+                    "passed": self.prompt_battery.passed,
+                    "failed": self.prompt_battery.failed,
+                },
+            ],
+            "multiagent": self.multiagent.public_metadata(),
+            "promptBattery": self.prompt_battery.public_metadata(),
+        })
+    }
+}
+
+fn run_eval_quality(json: bool) -> Result<()> {
+    let report = default_quality_eval_report();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report.public_metadata())?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "Quality eval: {} | score {}",
+        quality_eval_status_label(report.status),
+        report.score
+    );
+    println!(
+        "- Multiagent: score {} | passed {} | failed {}",
+        report.multiagent.score, report.multiagent.passed, report.multiagent.failed
+    );
+    println!(
+        "- Prompt battery: score {} | prompts {} | passed {} | failed {}",
+        report.prompt_battery.score,
+        report.prompt_battery.prompt_count,
+        report.prompt_battery.passed,
+        report.prompt_battery.failed
+    );
+    Ok(())
+}
+
 fn run_eval_multiagent(
     baseline: Option<PathBuf>,
     write_baseline: Option<PathBuf>,
@@ -1208,6 +1311,28 @@ fn default_multiagent_eval_suite() -> MultiagentEvalSuiteReport {
         .max_blocked(0)
         .validate_execution_reducer(),
     ])
+}
+
+fn default_quality_eval_report() -> QualityEvalReport {
+    QualityEvalReport::new(
+        default_multiagent_eval_suite(),
+        run_default_prompt_battery(),
+    )
+}
+
+fn quality_check_status_label(is_success: bool, score: u8) -> &'static str {
+    if is_success && score == 100 {
+        "passed"
+    } else {
+        "failed"
+    }
+}
+
+fn quality_eval_status_label(status: QualityEvalStatus) -> &'static str {
+    match status {
+        QualityEvalStatus::Passed => "passed",
+        QualityEvalStatus::Failed => "failed",
+    }
 }
 
 fn eval_status_label(status: &coddy_agent::EvalStatus) -> &'static str {
@@ -1563,6 +1688,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_eval_quality_command() {
+        let cli =
+            Cli::try_parse_from(["coddy", "eval", "quality", "--json"]).expect("parse quality");
+
+        match cli.command {
+            Some(Command::Eval {
+                command: EvalCommand::Quality { json },
+            }) => assert!(json),
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
     fn default_multiagent_eval_suite_is_ci_ready() {
         let suite = default_multiagent_eval_suite();
 
@@ -1581,6 +1719,34 @@ mod tests {
         assert!(suite.reports.iter().any(|report| {
             report.case_name == "execution-reducer-contracts" && report.execution_metrics.is_some()
         }));
+    }
+
+    #[test]
+    fn default_quality_eval_report_is_ci_ready() {
+        let report = default_quality_eval_report();
+
+        assert!(report.is_success());
+        assert_eq!(report.status, QualityEvalStatus::Passed);
+        assert_eq!(report.score, 100);
+        assert_eq!(report.multiagent.passed, 3);
+        assert_eq!(report.multiagent.failed, 0);
+        assert_eq!(report.prompt_battery.prompt_count, 1200);
+        assert_eq!(report.prompt_battery.failed, 0);
+
+        let metadata = report.public_metadata();
+        assert_eq!(metadata["kind"], serde_json::json!("coddy.qualityEval"));
+        assert_eq!(metadata["version"], serde_json::json!(1));
+        assert_eq!(metadata["status"], serde_json::json!("passed"));
+        assert_eq!(metadata["passed"], serde_json::json!(true));
+        assert_eq!(metadata["score"], serde_json::json!(100));
+        assert_eq!(
+            metadata["checks"][0]["name"],
+            serde_json::json!("multiagent")
+        );
+        assert_eq!(
+            metadata["checks"][1]["name"],
+            serde_json::json!("prompt-battery")
+        );
     }
 
     #[test]
