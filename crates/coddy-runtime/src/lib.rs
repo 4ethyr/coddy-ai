@@ -801,7 +801,13 @@ impl CoddyRuntime {
             context.goal.clone(),
         );
         let mut messages = vec![
-            ChatMessage::system(build_tool_followup_system_prompt(context.system_prompt)),
+            ChatMessage::system(build_tool_followup_system_prompt(
+                context.system_prompt,
+                context
+                    .tool_use_policy
+                    .max_tool_calls
+                    .is_none_or(|remaining| remaining > 0),
+            )),
             ChatMessage::user(context.goal.clone()),
         ];
         let mut response = response;
@@ -832,11 +838,16 @@ impl CoddyRuntime {
             }
             messages.push(ChatMessage::tool(round.response.text.clone()));
 
+            let tools_enabled = remaining_tool_calls.is_none_or(|remaining| remaining > 0);
+            messages[0] = ChatMessage::system(build_tool_followup_system_prompt(
+                context.system_prompt,
+                tools_enabled,
+            ));
             let next_response = match self.complete_after_tool_messages(
                 context.selected_model,
                 context.model_credential.clone(),
                 messages.clone(),
-                remaining_tool_calls.is_none_or(|remaining| remaining > 0),
+                tools_enabled,
             ) {
                 Ok(response) => response,
                 Err(error) => {
@@ -1807,13 +1818,30 @@ fn build_model_system_prompt(
     sections.join("\n\n")
 }
 
-fn build_tool_followup_system_prompt(base_prompt: &str) -> String {
+fn build_tool_followup_system_prompt(base_prompt: &str, tools_enabled: bool) -> String {
+    let tool_status = if tools_enabled {
+        [
+            "Runtime tools for this follow-up: enabled.",
+            "- Request another native structured tool call only when the current observations are insufficient for a grounded answer.",
+            "- Prefer one focused next inspection step over broad exploration.",
+        ]
+        .join("\n")
+    } else {
+        [
+            "Runtime tools for this follow-up: disabled.",
+            "- The user-requested tool budget is exhausted for this turn.",
+            "- Synthesize the best answer now from the existing tool observations and state any remaining uncertainty.",
+            "- Do not request, describe, or print additional tool calls.",
+        ]
+        .join("\n")
+    };
     let followup = [
         "Tool observation follow-up:",
         "- Treat tool observations as the latest grounded evidence.",
         "- Do not claim files changed unless an edit/apply tool succeeded.",
         "- If observations are incomplete or redacted, state the limitation briefly.",
         "- Keep the final answer concise and include validation status when relevant.",
+        &tool_status,
     ]
     .join("\n");
     format!("{base_prompt}\n\n{followup}")
@@ -4359,6 +4387,10 @@ mod tests {
                     .content
                     .contains("reached the user-requested tool budget")
         }));
+        let followup_system_prompt = &captured_requests[1].messages[0].content;
+        assert!(followup_system_prompt.contains("Runtime tools for this follow-up: disabled."));
+        assert!(followup_system_prompt
+            .contains("Synthesize the best answer now from the existing tool observations"));
     }
 
     #[test]
@@ -4827,6 +4859,9 @@ mod tests {
 
         assert_eq!(text, "The entrypoint prints hi from main.");
         assert_eq!(captured_requests.len(), 3);
+        assert!(captured_requests[1].messages[0]
+            .content
+            .contains("Runtime tools for this follow-up: enabled."));
         assert!(captured_requests[2]
             .tools
             .iter()
