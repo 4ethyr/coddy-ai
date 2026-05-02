@@ -10,6 +10,7 @@ import type {
   ReplToolCatalogItem,
   ToolRiskLevel,
 } from '@/domain'
+import { summarizeToolSafety } from '@/domain'
 import type { EvalRunStatus } from '@/presentation/hooks/useSession'
 import { Icon } from './Icon'
 
@@ -64,6 +65,7 @@ export function WorkspacePanel({
   onRunQualityEval,
 }: Props) {
   const workspaceBusy = workspaceStatus === 'running'
+  const toolSafety = summarizeToolSafety(tools)
 
   return (
     <div className="h-full overflow-y-auto p-5 sm:p-8">
@@ -187,11 +189,26 @@ export function WorkspacePanel({
           {tools.length === 0 ? (
             <ContextPill label="No tools loaded yet" muted />
           ) : (
-            <div className="grid gap-3 xl:grid-cols-2">
-              {tools.map((tool) => (
-                <ToolRow key={tool.name} tool={tool} />
-              ))}
-            </div>
+            <>
+              <div
+                className="flex flex-wrap gap-2"
+                aria-label="Tool safety summary"
+              >
+                <MetaPill label={`auto-approved: ${toolSafety.autoApproved}`} />
+                <MetaPill
+                  label={`approval required: ${toolSafety.approvalRequired}`}
+                />
+                <MetaPill label={`denied: ${toolSafety.denied}`} />
+                <MetaPill
+                  label={`highest risk: ${toolSafety.highestRisk ?? 'none'}`}
+                />
+              </div>
+              <div className="grid gap-3 xl:grid-cols-2">
+                {tools.map((tool) => (
+                  <ToolRow key={tool.name} tool={tool} />
+                ))}
+              </div>
+            </>
           )}
         </section>
       </div>

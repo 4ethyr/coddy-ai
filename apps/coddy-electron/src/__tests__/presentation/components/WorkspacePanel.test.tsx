@@ -42,6 +42,9 @@ describe('WorkspacePanel', () => {
     expect(screen.getByText('Low')).toBeInTheDocument()
     expect(screen.getByText('AskOnUse')).toBeInTheDocument()
     expect(screen.getByText('ExecuteCommand')).toBeInTheDocument()
+    expect(screen.getByText('auto-approved: 1')).toBeInTheDocument()
+    expect(screen.getByText('approval required: 1')).toBeInTheDocument()
+    expect(screen.getByText('highest risk: Medium')).toBeInTheDocument()
   })
 
   it('keeps an empty state when no tools are available yet', () => {
