@@ -1,7 +1,12 @@
 // ConversationPanel: chat messages + input bar for DesktopApp.
 
 import { useRef, useEffect } from 'react'
-import type { ReplSession } from '@/domain'
+import type {
+  ConversationRecord,
+  PermissionReply,
+  ReplSession,
+  ReplToolCatalogItem,
+} from '@/domain'
 import {
   MarkdownContent,
   MessageBubble,
@@ -18,7 +23,6 @@ import {
   type ThinkingAnimation,
 } from '@/presentation/components/ThinkingIndicator'
 import { Icon } from '@/presentation/components/Icon'
-import type { ConversationRecord, PermissionReply } from '@/domain'
 
 interface Props {
   session: ReplSession
@@ -37,7 +41,7 @@ interface Props {
   onCloseStatus?: () => void
   capabilitiesOpen?: boolean
   capabilitiesWorkspacePath?: string | null
-  capabilitiesToolCount?: number
+  capabilitiesTools?: ReplToolCatalogItem[]
   onCloseCapabilities?: () => void
   helpOpen?: boolean
   onCloseHelp?: () => void
@@ -60,7 +64,7 @@ export function ConversationPanel({
   onCloseStatus,
   capabilitiesOpen = false,
   capabilitiesWorkspacePath = null,
-  capabilitiesToolCount = 0,
+  capabilitiesTools = [],
   onCloseCapabilities,
   helpOpen = false,
   onCloseHelp,
@@ -102,7 +106,7 @@ export function ConversationPanel({
             <CodingAgentCapabilitiesPanel
               session={session}
               workspacePath={capabilitiesWorkspacePath}
-              toolCount={capabilitiesToolCount}
+              tools={capabilitiesTools}
               onClose={onCloseCapabilities ?? (() => {})}
             />
           )}

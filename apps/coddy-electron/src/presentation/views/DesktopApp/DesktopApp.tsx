@@ -347,7 +347,7 @@ export function DesktopApp() {
               onCloseStatus={() => setStatusOpen(false)}
               capabilitiesOpen={capabilitiesOpen}
               capabilitiesWorkspacePath={activeWorkspacePath}
-              capabilitiesToolCount={toolCatalog.length}
+              capabilitiesTools={toolCatalog}
               onCloseCapabilities={() => setCapabilitiesOpen(false)}
               helpOpen={helpOpen}
               onCloseHelp={() => setHelpOpen(false)}

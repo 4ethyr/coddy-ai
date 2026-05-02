@@ -1,10 +1,10 @@
-import type { ReplSession } from '@/domain'
+import type { ReplSession, ReplToolCatalogItem } from '@/domain'
 import { Icon, type IconName } from './Icon'
 
 interface Props {
   session: ReplSession
   workspacePath?: string | null
-  toolCount?: number
+  tools?: ReplToolCatalogItem[]
   onClose: () => void
 }
 
@@ -25,13 +25,14 @@ type CapabilityGroup = {
 export function CodingAgentCapabilitiesPanel({
   session,
   workspacePath = null,
-  toolCount = 0,
+  tools = [],
   onClose,
 }: Props) {
   const selectedWorkspace = workspacePath?.trim() || null
   const activeRun = session.active_run ?? 'none'
   const model = `${session.selected_model.provider}/${session.selected_model.name}`
   const subagentCount = session.subagent_activity.length
+  const toolSummary = summarizeTools(tools)
 
   const groups: CapabilityGroup[] = [
     {
@@ -64,8 +65,23 @@ export function CodingAgentCapabilitiesPanel({
       rows: [
         {
           label: 'Tool registry',
-          detail: `${toolCount} registered tools are visible to the current session.`,
-          tone: toolCount > 0 ? 'ready' : 'watch',
+          detail: `${toolSummary.total} registered tools are visible to the current session.`,
+          tone: toolSummary.total > 0 ? 'ready' : 'watch',
+        },
+        {
+          label: 'Approval routing',
+          detail: `${toolSummary.autoApproved} auto-approved, ${toolSummary.approvalRequired} require approval, ${toolSummary.denied} denied.`,
+          tone:
+            toolSummary.total === 0
+              ? 'watch'
+              : toolSummary.denied > 0 || toolSummary.approvalRequired > 0
+                ? 'ready'
+                : 'watch',
+        },
+        {
+          label: 'Risk envelope',
+          detail: `${toolSummary.lowRisk} low, ${toolSummary.mediumRisk} medium, ${toolSummary.highRisk} high/critical.`,
+          tone: toolSummary.highRisk > 0 ? 'gap' : 'ready',
         },
         {
           label: 'Provider-safe names',
@@ -188,6 +204,24 @@ export function CodingAgentCapabilitiesPanel({
       </div>
     </section>
   )
+}
+
+function summarizeTools(tools: ReplToolCatalogItem[]) {
+  return {
+    total: tools.length,
+    autoApproved: tools.filter((tool) => tool.approval_policy === 'AutoApprove')
+      .length,
+    approvalRequired: tools.filter((tool) =>
+      tool.approval_policy === 'AskOnUse'
+      || tool.approval_policy === 'AlwaysAsk',
+    ).length,
+    denied: tools.filter((tool) => tool.approval_policy === 'Deny').length,
+    lowRisk: tools.filter((tool) => tool.risk_level === 'Low').length,
+    mediumRisk: tools.filter((tool) => tool.risk_level === 'Medium').length,
+    highRisk: tools.filter((tool) =>
+      tool.risk_level === 'High' || tool.risk_level === 'Critical',
+    ).length,
+  }
 }
 
 function ReadinessBadge({ tone }: { tone: ReadinessTone }) {

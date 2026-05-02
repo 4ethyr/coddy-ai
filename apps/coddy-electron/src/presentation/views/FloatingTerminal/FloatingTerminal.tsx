@@ -454,7 +454,7 @@ export function FloatingTerminal() {
             <CodingAgentCapabilitiesPanel
               session={session}
               workspacePath={activeWorkspacePath}
-              toolCount={toolCatalog?.length ?? 0}
+              tools={toolCatalog ?? []}
               onClose={() => setCapabilitiesOpen(false)}
             />
           )}
