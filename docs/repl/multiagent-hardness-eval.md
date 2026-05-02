@@ -633,6 +633,56 @@ Validation:
 - `cargo test -p coddy-agent treats_openrouter_generic_provider_returned_error_as_retryable -- --test-threads=1`: passed.
 - `cargo test -p coddy-runtime ask_command_retries_recoverable_tool_followup_model_errors -- --test-threads=1`: passed.
 
+### Battery 26: Evidence Requirements For Coding Claims
+
+Goal: prevent Coddy from claiming tests, files or implementations are missing without inspecting
+the relevant paths in the current turn.
+
+Implemented result:
+
+- The default coding-agent system prompt now requires evidence before claims about missing tests,
+  missing coverage, absent files or implementation gaps.
+- Final answers must cite inspected file paths and test names when making test/coverage claims.
+- The rule is intentionally scoped to model behavior and does not weaken tool safety or approvals.
+
+Validation:
+
+- `cargo test -p coddy-agent default_system_prompt_requires_evidence_tdd_and_validation -- --test-threads=1`: passed.
+- `cargo test --workspace -- --test-threads=1`: passed.
+
+### Battery 27: Empty Provider Response Recovery
+
+Goal: reduce failures where OpenRouter/DeepSeek returns an empty assistant response after a valid
+request or after tool observations.
+
+Implemented result:
+
+- Runtime model requests now allow four bounded attempts for recoverable errors.
+- Empty assistant responses are detected as a specific retryable shape.
+- Retries after an empty response add a short internal guidance message asking for non-empty
+  assistant content or the requested JSON shape for routing tasks.
+- Transport timeouts remain excluded from retry past the client budget.
+- The live prompt-battery runner uses the same empty-response retry guidance.
+
+Validation:
+
+- `cargo test -p coddy-runtime ask_command_recovers_after_repeated_empty_tool_followup_responses -- --test-threads=1`: passed.
+- `cargo test -p coddy-agent live_prompt_battery_retries_repeated_empty_provider_responses -- --test-threads=1`: passed.
+- `cargo test --workspace -- --test-threads=1`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+
+Live OpenRouter/DeepSeek V4 Flash comparison:
+
+| Run | Prompt count | Passed | Score | Member recall | Model error rate |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Before retry hardening | 50 | 43 | 86 | 84 | 14 |
+| Extra bounded retry | 50 | 44 | 88 | 89 | 12 |
+| Empty-response retry guidance | 50 | 47 | 94 | 94 | 6 |
+
+Residual failures were still the same provider response class:
+`response did not include assistant content or tool calls`. This indicates the remaining issue is
+mostly provider/routing availability, not local tool-registry rejection or secret handling.
+
 ## Current Assessment
 
 The multiagent harness is now measurable before execution. It can compose a team plan, expose
@@ -650,7 +700,9 @@ approval and subagent-activity path, using the production React app and IPC clie
 a simulated backend. Sensitive workspace reads now require approval before file access, then still
 pass through source-level redaction after approval. A combined `coddy eval quality` gate now bundles
 the default multiagent and prompt-battery signals into one deterministic report for local, CI and
-desktop Workspace checks.
+desktop Workspace checks. Live provider sampling is now usable as a separate quality signal: in the
+latest OpenRouter/DeepSeek V4 Flash run, the guarded score reached 94/100 with a 6% provider error
+rate after retry hardening.
 
 Remaining gaps:
 
@@ -661,13 +713,15 @@ Remaining gaps:
   with the real binary process attached.
 - broad prompts can still consume the full bounded tool budget; the runtime now reports evidence,
   but the next improvement should add adaptive tool budgeting and observation compaction.
-- live model answer quality still needs a sampled harness on top of the deterministic routing
-  corpus, with secrets-safe credentials and explicit user approval for API spend.
+- live model answer quality now has a sampled harness, but it still needs persisted baselines,
+  provider comparison reports and explicit user approval controls for API spend.
 
 ## Next Improvements
 
-1. Add a sampled live-model eval runner that reuses the 300-prompt corpus with configurable sample
-   size, budget controls and redacted telemetry.
+1. Add live-model eval baselines by provider/model, including model error rate, raw score, guarded
+   score and member recall trends over time.
 2. Connect the subagent execution reducer to isolated runtime sessions so accepted outputs come from
    real subagent runs instead of test fixtures.
-3. Add optional explicit approval before reading sensitive paths, even when output redaction is enabled.
+3. Add optional explicit approval before reading sensitive paths, even when output redaction is
+   enabled.
+4. Add adaptive tool budgeting and observation compaction for broad codebase-analysis prompts.

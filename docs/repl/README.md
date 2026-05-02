@@ -48,6 +48,8 @@ O foco é auxiliar dúvidas técnicas, estudo, depuração, explicação de cód
 - [Plano de Implementação](implementation-plan.md): fases TDD, entregáveis, milestones, riscos e critérios de aceite.
 - [Qualidade e Testes](quality-plan.md): estratégia de testes, mocks, métricas, acessibilidade, performance e observabilidade.
 - [Pesquisa e Referências](research-notes.md): síntese das pesquisas externas usadas nesta especificação.
+- [Análise de Referências para Coding Agent](coding-agent-reference-analysis.md): comparação com agentes top-tier, arquitetura alvo, tool loop, segurança e roadmap técnico.
+- [Multiagent Hardness Eval](multiagent-hardness-eval.md): histórico das baterias de eval, métricas, quality gate, prompt battery e validação live com providers.
 
 ## Decisão de Produto
 

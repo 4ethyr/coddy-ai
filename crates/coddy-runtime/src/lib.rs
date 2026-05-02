@@ -1,5 +1,6 @@
 use coddy_agent::{
-    decode_provider_safe_tool_name, model_tool_call_may_run as agent_model_tool_call_may_run,
+    decode_provider_safe_tool_name, is_empty_assistant_response_error,
+    model_tool_call_may_run as agent_model_tool_call_may_run, with_empty_response_retry_guidance,
     AgentRunAction, AgentRunStopReason, AgentRunSummary, AgentRunV2, AgentToolRegistry,
     ChatMessage, ChatModelClient, ChatModelError, ChatModelResult, ChatRequest, ChatResponse,
     ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, SubagentExecutionGate,
@@ -34,7 +35,7 @@ use tokio::net::UnixListener;
 use uuid::Uuid;
 
 const MAX_MODEL_TOOL_ROUNDS: usize = 5;
-const MAX_MODEL_REQUEST_ATTEMPTS: usize = 3;
+const MAX_MODEL_REQUEST_ATTEMPTS: usize = 4;
 const MODEL_RETRY_BASE_DELAY_MS: u64 = 250;
 
 #[derive(Debug, Clone)]
@@ -1210,13 +1211,20 @@ impl CoddyRuntime {
 
     fn complete_model_request_with_retry(&self, request: ChatRequest) -> ChatModelResult {
         let mut last_error = None;
+        let mut should_add_empty_response_guidance = false;
         for attempt in 0..MAX_MODEL_REQUEST_ATTEMPTS {
-            match self.chat_client.complete(request.clone()) {
+            let attempt_request = if should_add_empty_response_guidance {
+                with_empty_response_retry_guidance(request.clone())
+            } else {
+                request.clone()
+            };
+            match self.chat_client.complete(attempt_request) {
                 Ok(response) => return Ok(response),
                 Err(error)
                     if attempt + 1 < MAX_MODEL_REQUEST_ATTEMPTS
                         && should_retry_model_request_error(&error) =>
                 {
+                    should_add_empty_response_guidance = is_empty_assistant_response_error(&error);
                     last_error = Some(error);
                     sleep_before_model_retry(attempt);
                 }
@@ -1801,6 +1809,14 @@ fn build_model_system_prompt(
             "- Do not expose secrets, tokens, credentials, or hidden configuration values.",
         ]
         .join("\n"),
+        [
+            "Evidence rules:",
+            "- When reviewing tests or coverage, cite the inspected test file paths and test names.",
+            "- Do not claim tests, coverage, files, or implementations are missing unless you searched or read the relevant paths in this turn.",
+            "- If the evidence is incomplete, say what was inspected and label the conclusion as unverified.",
+            "- Prefer precise uncertainty over broad unsupported criticism.",
+        ]
+        .join("\n"),
         format!("Context policy: {context_policy:?}"),
     ];
 
@@ -1811,11 +1827,28 @@ fn build_model_system_prompt(
     if tool_use_policy.max_tool_calls == Some(0) {
         sections.push(format_no_tools_context_boundary(&session.messages));
     } else {
+        sections.push(format_tool_budget_context(tool_use_policy));
         sections.push(format_workspace_context(&session.workspace_context));
         sections.push(format_recent_session_messages(&session.messages));
         sections.push(format_tool_context(tool_definitions));
     }
     sections.join("\n\n")
+}
+
+fn format_tool_budget_context(tool_use_policy: ToolUsePolicy) -> String {
+    match tool_use_policy.max_tool_calls {
+        Some(limit) => [
+            format!("Tool-use budget: at most {limit} runtime tool calls this turn."),
+            "Pick the highest-signal inspection first; prefer files or searches that directly answer the user's request.".to_string(),
+            "When the budget is exhausted, synthesize the best grounded answer from gathered observations and state remaining uncertainty.".to_string(),
+        ]
+        .join("\n"),
+        None => [
+            "Tool-use budget: bounded by Coddy runtime safeguards.",
+            "Use focused tools only when they add evidence, and synthesize once the relevant context is sufficient.",
+        ]
+        .join("\n"),
+    }
 }
 
 fn build_tool_followup_system_prompt(base_prompt: &str, tools_enabled: bool) -> String {
@@ -2762,6 +2795,13 @@ mod tests {
         }
     }
 
+    fn request_has_empty_response_retry_guidance(request: &ChatRequest) -> bool {
+        request
+            .messages
+            .iter()
+            .any(|message| message.content.contains("empty assistant content"))
+    }
+
     #[derive(Debug)]
     struct RecordingChatClient {
         requests: Arc<Mutex<Vec<ChatRequest>>>,
@@ -3481,8 +3521,15 @@ mod tests {
 
         assert!(system_prompt.contains("Agent loop:"));
         assert!(system_prompt.contains("Security rules:"));
+        assert!(system_prompt.contains("Evidence rules:"));
         assert!(system_prompt.contains("native structured tool_calls field only"));
         assert!(system_prompt.contains("Never print textual tool-call markup"));
+        assert!(system_prompt.contains(
+            "When reviewing tests or coverage, cite the inspected test file paths and test names"
+        ));
+        assert!(system_prompt.contains(
+            "Do not claim tests, coverage, files, or implementations are missing unless you searched or read the relevant paths in this turn"
+        ));
         assert!(system_prompt.contains("Context policy: ScreenAndWorkspace"));
         assert!(system_prompt.contains("Recent session messages before this turn:"));
         assert!(system_prompt.contains("sk-[REDACTED]"));
@@ -3494,6 +3541,44 @@ mod tests {
             captured_requests[0].messages[1].content,
             "continue the implementation"
         );
+    }
+
+    #[test]
+    fn ask_command_injects_user_requested_tool_budget_guidance() {
+        let request_id = Uuid::new_v4();
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("budget accepted"));
+        let runtime =
+            CoddyRuntime::with_chat_client(AgentToolRegistry::default(), Arc::new(chat_client));
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Use no maximo 2 tools para revisar o modulo.".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let system_prompt = &captured_requests[0].messages[0].content;
+
+        assert!(system_prompt.contains("Tool-use budget: at most 2 runtime tool calls"));
+        assert!(system_prompt.contains("Pick the highest-signal inspection first"));
+        assert!(system_prompt.contains("synthesize the best grounded answer"));
     }
 
     #[test]
@@ -4517,6 +4602,87 @@ mod tests {
                 && message.content.contains("filesystem.list_files")
         }));
         assert_eq!(captured_requests[1], captured_requests[2]);
+    }
+
+    #[test]
+    fn ask_command_recovers_after_repeated_empty_tool_followup_responses() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("src/main.rs", "fn main() {}\n");
+        let recoverable_empty_response = || ChatModelError::InvalidProviderResponse {
+            provider: "openrouter".to_string(),
+            message: "response did not include assistant content or tool calls".to_string(),
+        };
+        let (chat_client, requests) = QueuedChatResultClient::new(vec![
+            Ok(ChatResponse {
+                text: "I will inspect the workspace.".to_string(),
+                deltas: vec!["I will inspect the workspace.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-1".to_string()),
+                    name: LIST_FILES_TOOL.to_string(),
+                    arguments: json!({ "path": ".", "max_entries": 20 }),
+                }],
+            }),
+            Err(recoverable_empty_response()),
+            Err(recoverable_empty_response()),
+            Err(recoverable_empty_response()),
+            Ok(ChatResponse::from_text(
+                "Recovered after repeated empty responses.",
+            )),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openrouter".to_string(),
+                    name: "deepseek/deepseek-v4-flash".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect the workspace".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: Some(ModelCredential {
+                    provider: "openrouter".to_string(),
+                    token: "sk-or-test-token".to_string(),
+                    endpoint: None,
+                    metadata: Default::default(),
+                }),
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+
+        assert_eq!(text, "Recovered after repeated empty responses.");
+        assert_eq!(captured_requests.len(), 5);
+        assert!(!request_has_empty_response_retry_guidance(
+            &captured_requests[1]
+        ));
+        assert!(request_has_empty_response_retry_guidance(
+            &captured_requests[2]
+        ));
+        assert!(request_has_empty_response_retry_guidance(
+            &captured_requests[3]
+        ));
+        assert!(request_has_empty_response_retry_guidance(
+            &captured_requests[4]
+        ));
     }
 
     #[test]

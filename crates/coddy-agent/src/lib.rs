@@ -45,7 +45,8 @@ pub use eval::{
     PromptBatteryReport,
 };
 pub use model::{
-    decode_provider_safe_tool_name, ChatFinishReason, ChatMessage, ChatMessageRole,
+    decode_provider_safe_tool_name, is_empty_assistant_response_error,
+    with_empty_response_retry_guidance, ChatFinishReason, ChatMessage, ChatMessageRole,
     ChatModelClient, ChatModelError, ChatModelResult, ChatRequest, ChatResponse, ChatToolCall,
     ChatToolSpec, DefaultChatModelClient, OllamaChatModelClient, UnavailableChatModelClient,
 };

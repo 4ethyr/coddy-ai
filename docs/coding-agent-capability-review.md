@@ -10,7 +10,8 @@ prompt battery, guardrails de shell e fluxo de approval. A principal diferenca
 em relacao a agentes top-tier esta menos no modelo isolado e mais no harness:
 contexto, plano, ferramentas, permissoes, validacao e registro de evidencias.
 
-Nesta rodada foram aplicadas duas melhorias incrementais:
+Nesta rodada foram aplicadas melhorias incrementais para aproximar o Coddy de
+um harness de coding agent mais previsivel:
 
 - Prompt default do coding agent reforcado para exigir exploracao antes de
   edicao, TDD quando pratico, validacao real e resumo final com arquivos,
@@ -18,6 +19,15 @@ Nesta rodada foram aplicadas duas melhorias incrementais:
 - Novo workflow `/code` e alias `/implement` no REPL e no Electron para
   conduzir tarefas de implementacao com TDD, clean code, clean architecture e
   validacao incremental.
+- Regras de evidencia no prompt default para impedir alegacoes sobre testes,
+  cobertura ou arquivos ausentes sem leitura ou busca feita no proprio turno.
+- Retry model-backed mais robusto para respostas vazias de providers
+  OpenAI-compatible: Coddy tenta novamente de forma limitada e adiciona uma
+  instrucao interna curta pedindo resposta nao vazia quando a falha foi
+  `response did not include assistant content or tool calls`.
+- Bateria live com OpenRouter/DeepSeek V4 Flash validada sem expor a chave:
+  o score subiu de 86 para 94 e a taxa de erro de provider caiu de 14% para 6%
+  em amostra de 50 prompts.
 
 ## Comparacao com agentes e modelos top-tier
 
@@ -99,6 +109,48 @@ Implicacao para Coddy:
    writing, security fix e frontend visual validation.
 6. Memoria persistente segura para convencoes do projeto e comandos de teste.
 7. Melhor separacao entre plan-only, code, review e validation no runtime.
+
+## Estado validado em 2026-05-02
+
+Validacao local executada:
+
+- `cargo fmt --check`.
+- `cargo test --workspace -- --test-threads=1`.
+- `cargo clippy --workspace --all-targets -- -D warnings`.
+- `npm test -- --run` em `apps/coddy-electron`: 42 files, 328 tests.
+- `npm run typecheck`.
+- `npm run lint`.
+- `npm run build`.
+- `git diff --check`.
+- `./scripts/guard_no_secrets.sh`.
+
+Validacao live segura:
+
+```sh
+target/debug/coddy eval prompt-battery --json \
+  --model-provider openrouter \
+  --model-name deepseek/deepseek-v4-flash \
+  --limit 50 \
+  --concurrency 4
+```
+
+Resultado final observado:
+
+- Prompts: 50.
+- Passed: 47.
+- Failed: 3.
+- Score guardado: 94.
+- Raw score: 88.
+- Member recall: 94.
+- Model error rate: 6%.
+
+Interpretacao: o Coddy ja esta apto para uso assistido em analises de
+codebase e tarefas de codificacao com ferramentas locais, desde que o usuario
+mantenha revisao humana para edicoes e aceite que providers roteados pelo
+OpenRouter ainda podem retornar respostas vazias persistentes em uma minoria de
+casos. A proxima melhoria de maior impacto e reduzir dependencia de tentativas
+reativas com roteamento alternativo de provider/modelo e compaction adaptativa
+de observacoes.
 
 ## Fontes pesquisadas
 
