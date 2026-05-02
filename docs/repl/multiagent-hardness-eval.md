@@ -614,6 +614,25 @@ Validation:
 - `cargo test --workspace -- --test-threads=1`: passed.
 - `target/debug/coddy eval quality`: passed, score 100.
 
+### Battery 25: OpenRouter Generic Upstream Error Retry
+
+Goal: make OpenRouter follow-up turns more resilient when a routed provider returns only a generic
+`Provider returned error` payload without HTTP status metadata.
+
+Implemented result:
+
+- Treated OpenRouter `Provider returned error` payloads without explicit status/code as retryable
+  upstream failures.
+- Kept provider-specific behavior scoped to OpenRouter so ordinary OpenAI-compatible invalid
+  request errors are not blindly retried.
+- Verified that the runtime follow-up retry path still retries recoverable model errors after tool
+  observations.
+
+Validation:
+
+- `cargo test -p coddy-agent treats_openrouter_generic_provider_returned_error_as_retryable -- --test-threads=1`: passed.
+- `cargo test -p coddy-runtime ask_command_retries_recoverable_tool_followup_model_errors -- --test-threads=1`: passed.
+
 ## Current Assessment
 
 The multiagent harness is now measurable before execution. It can compose a team plan, expose
