@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import type { ConversationRecord, ReplSession } from '@/domain'
+import type { ConversationRecord, ReplSession, ReplToolCatalogItem } from '@/domain'
 import { DesktopApp } from '@/presentation/views/DesktopApp/DesktopApp'
 
 const sessionContext = {
@@ -22,7 +22,7 @@ const sessionContext = {
     subagent_activity: [],
     streaming_text: '',
   } as ReplSession,
-  toolCatalog: [],
+  toolCatalog: [] as ReplToolCatalogItem[],
   connecting: false,
   reconnecting: false,
   error: null,
@@ -65,6 +65,7 @@ describe('DesktopApp', () => {
       streaming_text: '',
     }
     sessionContext.activeWorkspacePath = null
+    sessionContext.toolCatalog = []
     sessionContext.conversationHistory = []
     sessionContext.conversationHistoryStatus = 'idle'
     sessionContext.conversationHistoryError = null
@@ -231,6 +232,39 @@ describe('DesktopApp', () => {
 
     expect(sessionContext.ask).not.toHaveBeenCalled()
     expect(screen.getAllByText('runtime ready').length).toBeGreaterThan(0)
+  })
+
+  it('shows local session status from the /status slash command', async () => {
+    sessionContext.activeWorkspacePath = '/home/user/coddy'
+    sessionContext.toolCatalog = [
+      {
+        name: 'filesystem.read_file',
+        description: 'Read files',
+        category: 'Filesystem',
+        input_schema: { type: 'object', required: ['path'] },
+        output_schema: { type: 'object' },
+        risk_level: 'Low',
+        approval_policy: 'AutoApprove',
+        timeout_ms: 10000,
+        permissions: ['ReadWorkspace'],
+      },
+    ]
+    render(<DesktopApp />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Instruct Coddy agent...'),
+      '/status',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole('region', { name: 'Session status' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('status=Idle')).toBeInTheDocument()
+    expect(screen.getByText('model=vertex/claude-sonnet-test')).toBeInTheDocument()
+    expect(screen.getByText('workspace=/home/user/coddy')).toBeInTheDocument()
+    expect(screen.getByText('tools=1')).toBeInTheDocument()
   })
 
   it('routes workflow slash commands through the agent prompt instead of tab navigation', async () => {

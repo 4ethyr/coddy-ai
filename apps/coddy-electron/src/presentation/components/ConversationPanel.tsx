@@ -10,6 +10,7 @@ import { InputBar } from '@/presentation/components/InputBar'
 import { ToolApprovalPanel } from '@/presentation/components/ToolApprovalPanel'
 import { SelectionCopyRegion } from '@/presentation/components/SelectionCopyRegion'
 import { ConversationHistoryPanel } from '@/presentation/components/ConversationHistoryPanel'
+import { SessionStatusPanel } from '@/presentation/components/SessionStatusPanel'
 import {
   ThinkingIndicator,
   type ThinkingAnimation,
@@ -28,6 +29,10 @@ interface Props {
   historyError?: string | null
   onOpenHistoryItem?: (sessionId: string) => void
   onCloseHistory?: () => void
+  statusOpen?: boolean
+  statusWorkspacePath?: string | null
+  statusToolCount?: number
+  onCloseStatus?: () => void
 }
 
 export function ConversationPanel({
@@ -41,6 +46,10 @@ export function ConversationPanel({
   historyError = null,
   onOpenHistoryItem,
   onCloseHistory,
+  statusOpen = false,
+  statusWorkspacePath = null,
+  statusToolCount = 0,
+  onCloseStatus,
 }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
@@ -61,6 +70,15 @@ export function ConversationPanel({
           </div>
 
           <PlanOfAttack session={session} />
+
+          {statusOpen && (
+            <SessionStatusPanel
+              session={session}
+              workspacePath={statusWorkspacePath}
+              toolCount={statusToolCount}
+              onClose={onCloseStatus ?? (() => {})}
+            />
+          )}
 
           {historyOpen && (
             <ConversationHistoryPanel

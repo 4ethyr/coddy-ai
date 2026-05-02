@@ -5,6 +5,7 @@ export type UiSlashCommand =
   | { kind: 'open-desktop-tab'; tab: DesktopTab }
   | { kind: 'open-history' }
   | { kind: 'new-session' }
+  | { kind: 'show-status' }
   | { kind: 'set-speak'; enabled: boolean }
   | { kind: 'agent-workflow'; prompt: string }
 
@@ -123,6 +124,12 @@ export const UI_SLASH_COMMAND_SUGGESTIONS: UiSlashCommandSuggestion[] = [
     insertText: '/history',
   },
   {
+    command: '/status',
+    title: 'Show status',
+    description: 'Show current session, model, workspace and activity state.',
+    insertText: '/status',
+  },
+  {
     command: '/new',
     title: 'New session',
     description: 'Archive this chat and start a clean session.',
@@ -155,6 +162,10 @@ export function resolveUiSlashCommand(input: string): UiSlashCommand | null {
 
   if (command === 'new') {
     return { kind: 'new-session' }
+  }
+
+  if (command === 'status') {
+    return { kind: 'show-status' }
   }
 
   if (command === 'speak') {

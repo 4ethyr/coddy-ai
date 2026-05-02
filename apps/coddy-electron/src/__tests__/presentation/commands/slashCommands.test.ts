@@ -46,6 +46,9 @@ describe('slashCommands', () => {
     expect(resolveUiSlashCommand('/new')).toEqual({
       kind: 'new-session',
     })
+    expect(resolveUiSlashCommand('/status')).toEqual({
+      kind: 'show-status',
+    })
   })
 
   it('routes speak commands to voice response settings', () => {
@@ -102,6 +105,9 @@ describe('slashCommands', () => {
     ])
     expect(listUiSlashCommandSuggestions('/hist')).toMatchObject([
       { command: '/history' },
+    ])
+    expect(listUiSlashCommandSuggestions('/stat')).toMatchObject([
+      { command: '/status' },
     ])
     expect(listUiSlashCommandSuggestions('/too')).toMatchObject([
       { command: '/tools' },
