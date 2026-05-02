@@ -69,6 +69,12 @@ describe('slashCommands', () => {
     expect(resolveUiSlashCommand('/status')).toEqual({
       kind: 'show-status',
     })
+    expect(resolveUiSlashCommand('/capabilities')).toEqual({
+      kind: 'show-capabilities',
+    })
+    expect(resolveUiSlashCommand('/agent')).toEqual({
+      kind: 'show-capabilities',
+    })
   })
 
   it('routes speak commands to voice response settings', () => {
@@ -131,6 +137,12 @@ describe('slashCommands', () => {
     ])
     expect(listUiSlashCommandSuggestions('/stat')).toMatchObject([
       { command: '/status' },
+    ])
+    expect(listUiSlashCommandSuggestions('/cap')).toMatchObject([
+      { command: '/capabilities' },
+    ])
+    expect(listUiSlashCommandSuggestions('/read')).toMatchObject([
+      { command: '/capabilities' },
     ])
     expect(listUiSlashCommandSuggestions('/too')).toMatchObject([
       { command: '/tools' },

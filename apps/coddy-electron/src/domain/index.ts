@@ -3,3 +3,4 @@
 export * from './types'
 export * from './reducers'
 export * from './contracts'
+export * from './services'

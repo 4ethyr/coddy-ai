@@ -1,10 +1,11 @@
 use coddy_agent::{
-    model_tool_call_may_run as agent_model_tool_call_may_run, AgentRunAction, AgentRunStopReason,
-    AgentRunSummary, AgentRunV2, AgentToolRegistry, ChatMessage, ChatModelClient, ChatModelError,
-    ChatModelResult, ChatRequest, ChatResponse, ChatToolCall, ChatToolSpec, DefaultChatModelClient,
-    LocalAgentRuntime, SubagentExecutionGate, SubagentExecutionHandoff, SubagentExecutionStartPlan,
-    SubagentExecutionStartStatus, SubagentOutputContract, LIST_FILES_TOOL, READ_FILE_TOOL,
-    SEARCH_FILES_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
+    decode_provider_safe_tool_name, model_tool_call_may_run as agent_model_tool_call_may_run,
+    AgentRunAction, AgentRunStopReason, AgentRunSummary, AgentRunV2, AgentToolRegistry,
+    ChatMessage, ChatModelClient, ChatModelError, ChatModelResult, ChatRequest, ChatResponse,
+    ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, SubagentExecutionGate,
+    SubagentExecutionHandoff, SubagentExecutionStartPlan, SubagentExecutionStartStatus,
+    SubagentOutputContract, LIST_FILES_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL,
+    SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
 };
 use coddy_core::{
     ContextItem, ContextPolicy, ConversationRecord, ModelCredential, ModelRef, ModelRole,
@@ -800,7 +801,13 @@ impl CoddyRuntime {
             context.goal.clone(),
         );
         let mut messages = vec![
-            ChatMessage::system(build_tool_followup_system_prompt(context.system_prompt)),
+            ChatMessage::system(build_tool_followup_system_prompt(
+                context.system_prompt,
+                context
+                    .tool_use_policy
+                    .max_tool_calls
+                    .is_none_or(|remaining| remaining > 0),
+            )),
             ChatMessage::user(context.goal.clone()),
         ];
         let mut response = response;
@@ -831,11 +838,16 @@ impl CoddyRuntime {
             }
             messages.push(ChatMessage::tool(round.response.text.clone()));
 
+            let tools_enabled = remaining_tool_calls.is_none_or(|remaining| remaining > 0);
+            messages[0] = ChatMessage::system(build_tool_followup_system_prompt(
+                context.system_prompt,
+                tools_enabled,
+            ));
             let next_response = match self.complete_after_tool_messages(
                 context.selected_model,
                 context.model_credential.clone(),
                 messages.clone(),
-                remaining_tool_calls.is_none_or(|remaining| remaining > 0),
+                tools_enabled,
             ) {
                 Ok(response) => response,
                 Err(error) => {
@@ -1047,9 +1059,8 @@ impl CoddyRuntime {
         let mut pending_permission = false;
 
         for tool_call in response.tool_calls.iter().take(3) {
-            let decoded_alias = decode_model_tool_name_alias(&tool_call.name);
-            let requested_tool_name = decoded_alias.as_deref().unwrap_or(&tool_call.name);
-            let mut tool_name = match ToolName::new(requested_tool_name) {
+            let requested_tool_name = decode_provider_safe_tool_name(&tool_call.name);
+            let tool_name = match ToolName::new(&requested_tool_name) {
                 Ok(tool_name) => tool_name,
                 Err(error) => {
                     observations.push(format!(
@@ -1067,28 +1078,7 @@ impl CoddyRuntime {
                 continue;
             }
 
-            let mut definition = self.tool_registry.get(&tool_name);
-            if definition.is_none() {
-                if let Some(alias) = decode_model_tool_name_alias(&tool_call.name) {
-                    match ToolName::new(&alias) {
-                        Ok(alias_name) => {
-                            if let Some(alias_definition) = self.tool_registry.get(&alias_name) {
-                                tool_name = alias_name;
-                                definition = Some(alias_definition);
-                            }
-                        }
-                        Err(error) => {
-                            observations.push(format!(
-                                "- `{}` was rejected because the decoded tool alias `{alias}` is invalid: {error}.",
-                                tool_call.name
-                            ));
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            let Some(definition) = definition else {
+            let Some(definition) = self.tool_registry.get(&tool_name) else {
                 observations.push(format!(
                     "- `{tool_name}` was rejected because it is not registered in the local tool registry."
                 ));
@@ -1658,12 +1648,51 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
             "<｜dsml｜invoke",
             "</｜dsml｜invoke",
             "<invoke name=",
+            "<read_file",
+            "</read_file",
+            "<list_files",
+            "</list_files",
+            "<search_files",
+            "</search_files",
+            "<apply_edit",
+            "</apply_edit",
+            "<filesystem.read_file",
+            "</filesystem.read_file",
+            "<filesystem.list_files",
+            "</filesystem.list_files",
+            "<filesystem.search_files",
+            "</filesystem.search_files",
+            "<filesystem.apply_edit",
+            "</filesystem.apply_edit",
         ],
     ) {
         return true;
     }
 
     if normalized.contains("\"tool_calls\"") && normalized.contains("\"arguments\"") {
+        return true;
+    }
+
+    if contains_any(
+        &normalized,
+        &[
+            "tool call:",
+            "tool_call:",
+            "tool-call:",
+            "tool calls:",
+            "requested tool:",
+        ],
+    ) && contains_any(
+        &normalized,
+        &[
+            "filesystem.read_file",
+            "filesystem.list_files",
+            "filesystem.search_files",
+            "filesystem.apply_edit",
+            "shell.run",
+            "subagent.",
+        ],
+    ) {
         return true;
     }
 
@@ -1702,29 +1731,6 @@ fn summarize_chat_tool_calls(tool_calls: &[ChatToolCall]) -> String {
         .map(|call| call.name.as_str())
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn decode_model_tool_name_alias(name: &str) -> Option<String> {
-    let alias = name.strip_prefix("coddy_tool__").unwrap_or(name);
-    let decoded = alias.replace("__dot__", ".").replace("::", ".");
-    if decoded != alias {
-        return Some(decoded);
-    }
-
-    for namespace in ["filesystem", "subagent", "shell"] {
-        if let Some(method) = alias.strip_prefix(&format!("{namespace}._")) {
-            if !method.is_empty() {
-                return Some(format!("{namespace}.{method}"));
-            }
-        }
-        if let Some(method) = alias.strip_prefix(&format!("{namespace}_")) {
-            if !method.is_empty() {
-                return Some(format!("{namespace}.{method}"));
-            }
-        }
-    }
-
-    None
 }
 
 fn normalize_model_initiated_tool_input(
@@ -1812,13 +1818,30 @@ fn build_model_system_prompt(
     sections.join("\n\n")
 }
 
-fn build_tool_followup_system_prompt(base_prompt: &str) -> String {
+fn build_tool_followup_system_prompt(base_prompt: &str, tools_enabled: bool) -> String {
+    let tool_status = if tools_enabled {
+        [
+            "Runtime tools for this follow-up: enabled.",
+            "- Request another native structured tool call only when the current observations are insufficient for a grounded answer.",
+            "- Prefer one focused next inspection step over broad exploration.",
+        ]
+        .join("\n")
+    } else {
+        [
+            "Runtime tools for this follow-up: disabled.",
+            "- The user-requested tool budget is exhausted for this turn.",
+            "- Synthesize the best answer now from the existing tool observations and state any remaining uncertainty.",
+            "- Do not request, describe, or print additional tool calls.",
+        ]
+        .join("\n")
+    };
     let followup = [
         "Tool observation follow-up:",
         "- Treat tool observations as the latest grounded evidence.",
         "- Do not claim files changed unless an edit/apply tool succeeded.",
         "- If observations are incomplete or redacted, state the limitation briefly.",
         "- Keep the final answer concise and include validation status when relevant.",
+        &tool_status,
     ]
     .join("\n");
     format!("{base_prompt}\n\n{followup}")
@@ -3493,6 +3516,44 @@ mod tests {
     }
 
     #[test]
+    fn assistant_response_blocks_simple_xml_tool_markup() {
+        let response = ChatResponse::from_text(
+            r#"Search results show relevant files.
+
+<read_file>
+<path>apps/coddy-electron/src/domain/services/toolSafety.ts</path>
+</read_file>"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("toolSafety.ts"));
+    }
+
+    #[test]
+    fn assistant_response_blocks_markdown_pseudo_tool_calls() {
+        let response = ChatResponse::from_text(
+            r#"### Search 1
+
+**Tool call: `filesystem.search_files`**
+- Query: `Critical`
+- Paths: `crates/`"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("Critical"));
+    }
+
+    #[test]
     fn assistant_response_allows_plain_tool_explanations() {
         let response = ChatResponse::from_text(
             "The filesystem.read_file tool has parameters like path and max_bytes, but this is only documentation.",
@@ -4160,18 +4221,22 @@ mod tests {
     }
 
     #[test]
-    fn model_tool_alias_decoder_accepts_namespace_underscore_aliases() {
+    fn runtime_uses_shared_tool_alias_decoder() {
         assert_eq!(
-            decode_model_tool_name_alias("filesystem_search_files").as_deref(),
-            Some(SEARCH_FILES_TOOL)
+            decode_provider_safe_tool_name("filesystem_search_files"),
+            SEARCH_FILES_TOOL
         );
         assert_eq!(
-            decode_model_tool_name_alias("subagent_team_plan").as_deref(),
-            Some(SUBAGENT_TEAM_PLAN_TOOL)
+            decode_provider_safe_tool_name("subagent_team_plan"),
+            SUBAGENT_TEAM_PLAN_TOOL
         );
         assert_eq!(
-            decode_model_tool_name_alias("unknown_tool").as_deref(),
-            None
+            decode_provider_safe_tool_name("filesystem._list_files"),
+            LIST_FILES_TOOL
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("unknown_tool"),
+            "unknown_tool"
         );
     }
 
@@ -4322,6 +4387,10 @@ mod tests {
                     .content
                     .contains("reached the user-requested tool budget")
         }));
+        let followup_system_prompt = &captured_requests[1].messages[0].content;
+        assert!(followup_system_prompt.contains("Runtime tools for this follow-up: disabled."));
+        assert!(followup_system_prompt
+            .contains("Synthesize the best answer now from the existing tool observations"));
     }
 
     #[test]
@@ -4790,6 +4859,9 @@ mod tests {
 
         assert_eq!(text, "The entrypoint prints hi from main.");
         assert_eq!(captured_requests.len(), 3);
+        assert!(captured_requests[1].messages[0]
+            .content
+            .contains("Runtime tools for this follow-up: enabled."));
         assert!(captured_requests[2]
             .tools
             .iter()

@@ -59,6 +59,8 @@ describe('FloatingTerminal', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     window.localStorage.clear()
+    Reflect.deleteProperty(window, 'speechSynthesis')
+    Reflect.deleteProperty(window, 'SpeechSynthesisUtterance')
     sessionContext.session = {
       ...sessionContext.session,
       status: 'Idle',
@@ -332,6 +334,38 @@ describe('FloatingTerminal', () => {
     expect(screen.getByText('workspace=/home/user/project')).toBeInTheDocument()
   })
 
+  it('shows coding-agent capabilities without switching modes', async () => {
+    sessionContext.activeWorkspacePath = '/home/user/project'
+    sessionContext.toolCatalog = [
+      {
+        name: 'filesystem.search_files',
+        description: 'Search files',
+        category: 'Search',
+        input_schema: { type: 'object' },
+        output_schema: { type: 'object' },
+        risk_level: 'Low',
+        approval_policy: 'AutoApprove',
+        timeout_ms: 10000,
+        permissions: ['ReadWorkspace'],
+      },
+    ]
+    render(<FloatingTerminal />)
+
+    await userEvent.type(
+      screen.getByPlaceholderText('Enter command or prompt...'),
+      '/agent',
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(sessionContext.openUi).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole('region', { name: 'Coding agent capabilities' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('agent.capabilities')).toBeInTheDocument()
+    expect(screen.getByText('/home/user/project')).toBeInTheDocument()
+  })
+
   it('shows local slash command help from the /help slash command', async () => {
     render(<FloatingTerminal />)
 
@@ -427,6 +461,17 @@ describe('FloatingTerminal', () => {
 
   it('persists /speak preference and passes it to voice capture', async () => {
     sessionContext.captureVoice.mockResolvedValue({ text: 'voice command' })
+    const speak = vi.fn()
+    Object.defineProperty(window, 'speechSynthesis', {
+      configurable: true,
+      value: { cancel: vi.fn(), speak },
+    })
+    Object.defineProperty(window, 'SpeechSynthesisUtterance', {
+      configurable: true,
+      value: class {
+        constructor(public text: string) {}
+      },
+    })
     render(<FloatingTerminal />)
 
     await userEvent.type(
@@ -443,5 +488,9 @@ describe('FloatingTerminal', () => {
     expect(sessionContext.captureVoice).toHaveBeenCalledWith({
       speakResponse: true,
     })
+    expect(speak).toHaveBeenCalledOnce()
+    expect(speak).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'voice command' }),
+    )
   })
 })

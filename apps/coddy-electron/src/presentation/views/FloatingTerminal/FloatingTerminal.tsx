@@ -24,11 +24,13 @@ import { SelectionCopyRegion } from '@/presentation/components/SelectionCopyRegi
 import { ConversationHistoryPanel } from '@/presentation/components/ConversationHistoryPanel'
 import { SessionStatusPanel } from '@/presentation/components/SessionStatusPanel'
 import { SlashCommandHelpPanel } from '@/presentation/components/SlashCommandHelpPanel'
+import { CodingAgentCapabilitiesPanel } from '@/presentation/components/CodingAgentCapabilitiesPanel'
 import { Icon } from '@/presentation/components/Icon'
 import {
   persistDesktopTab,
   resolveUiSlashCommand,
 } from '@/presentation/commands/slashCommands'
+import { captureVoiceWithOptionalSpeech } from '@/presentation/services/voiceSpeech'
 
 export function FloatingTerminal() {
   const {
@@ -66,6 +68,7 @@ export function FloatingTerminal() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [statusOpen, setStatusOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
+  const [capabilitiesOpen, setCapabilitiesOpen] = useState(false)
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
     () => loadSettings().floatingAppearance,
   )
@@ -140,6 +143,7 @@ export function FloatingTerminal() {
         setHistoryOpen(false)
         setStatusOpen(false)
         setHelpOpen(false)
+        setCapabilitiesOpen(false)
         void newSession()
         return
       }
@@ -154,6 +158,7 @@ export function FloatingTerminal() {
         setHistoryOpen(false)
         setStatusOpen(false)
         setHelpOpen(false)
+        setCapabilitiesOpen(false)
         persistDesktopTab('workspace')
         void runQualityEval()
         void openUi('DesktopApp')
@@ -163,6 +168,7 @@ export function FloatingTerminal() {
       if (command.kind === 'open-history') {
         setStatusOpen(false)
         setHelpOpen(false)
+        setCapabilitiesOpen(false)
         setHistoryOpen(true)
         void loadConversationHistory()
         return
@@ -171,6 +177,7 @@ export function FloatingTerminal() {
       if (command.kind === 'show-status') {
         setHistoryOpen(false)
         setHelpOpen(false)
+        setCapabilitiesOpen(false)
         setStatusOpen(true)
         return
       }
@@ -178,7 +185,16 @@ export function FloatingTerminal() {
       if (command.kind === 'show-help') {
         setHistoryOpen(false)
         setStatusOpen(false)
+        setCapabilitiesOpen(false)
         setHelpOpen(true)
+        return
+      }
+
+      if (command.kind === 'show-capabilities') {
+        setHistoryOpen(false)
+        setStatusOpen(false)
+        setHelpOpen(false)
+        setCapabilitiesOpen(true)
         return
       }
 
@@ -197,7 +213,7 @@ export function FloatingTerminal() {
   )
 
   const handleCaptureVoice = useCallback(
-    () => captureVoice({ speakResponse: speakVoiceResponses }),
+    () => captureVoiceWithOptionalSpeech(captureVoice, speakVoiceResponses),
     [captureVoice, speakVoiceResponses],
   )
 
@@ -431,6 +447,15 @@ export function FloatingTerminal() {
               workspacePath={activeWorkspacePath}
               toolCount={toolCatalog?.length ?? 0}
               onClose={() => setStatusOpen(false)}
+            />
+          )}
+
+          {capabilitiesOpen && (
+            <CodingAgentCapabilitiesPanel
+              session={session}
+              workspacePath={activeWorkspacePath}
+              tools={toolCatalog ?? []}
+              onClose={() => setCapabilitiesOpen(false)}
             />
           )}
 

@@ -1,7 +1,12 @@
 // ConversationPanel: chat messages + input bar for DesktopApp.
 
 import { useRef, useEffect } from 'react'
-import type { ReplSession } from '@/domain'
+import type {
+  ConversationRecord,
+  PermissionReply,
+  ReplSession,
+  ReplToolCatalogItem,
+} from '@/domain'
 import {
   MarkdownContent,
   MessageBubble,
@@ -12,12 +17,12 @@ import { SelectionCopyRegion } from '@/presentation/components/SelectionCopyRegi
 import { ConversationHistoryPanel } from '@/presentation/components/ConversationHistoryPanel'
 import { SessionStatusPanel } from '@/presentation/components/SessionStatusPanel'
 import { SlashCommandHelpPanel } from '@/presentation/components/SlashCommandHelpPanel'
+import { CodingAgentCapabilitiesPanel } from '@/presentation/components/CodingAgentCapabilitiesPanel'
 import {
   ThinkingIndicator,
   type ThinkingAnimation,
 } from '@/presentation/components/ThinkingIndicator'
 import { Icon } from '@/presentation/components/Icon'
-import type { ConversationRecord, PermissionReply } from '@/domain'
 
 interface Props {
   session: ReplSession
@@ -34,6 +39,10 @@ interface Props {
   statusWorkspacePath?: string | null
   statusToolCount?: number
   onCloseStatus?: () => void
+  capabilitiesOpen?: boolean
+  capabilitiesWorkspacePath?: string | null
+  capabilitiesTools?: ReplToolCatalogItem[]
+  onCloseCapabilities?: () => void
   helpOpen?: boolean
   onCloseHelp?: () => void
 }
@@ -53,6 +62,10 @@ export function ConversationPanel({
   statusWorkspacePath = null,
   statusToolCount = 0,
   onCloseStatus,
+  capabilitiesOpen = false,
+  capabilitiesWorkspacePath = null,
+  capabilitiesTools = [],
+  onCloseCapabilities,
   helpOpen = false,
   onCloseHelp,
 }: Props) {
@@ -86,6 +99,15 @@ export function ConversationPanel({
               workspacePath={statusWorkspacePath}
               toolCount={statusToolCount}
               onClose={onCloseStatus ?? (() => {})}
+            />
+          )}
+
+          {capabilitiesOpen && (
+            <CodingAgentCapabilitiesPanel
+              session={session}
+              workspacePath={capabilitiesWorkspacePath}
+              tools={capabilitiesTools}
+              onClose={onCloseCapabilities ?? (() => {})}
             />
           )}
 

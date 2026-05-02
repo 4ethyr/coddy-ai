@@ -61,6 +61,8 @@ vi.mock('@/presentation/hooks', () => ({
 describe('App keyboard cancellation', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    Reflect.deleteProperty(window, 'speechSynthesis')
+    Reflect.deleteProperty(window, 'SpeechSynthesisUtterance')
     mocks.sessionContext.session = {
       ...mocks.sessionContext.session,
       mode: 'FloatingTerminal',
@@ -137,5 +139,27 @@ describe('App keyboard cancellation', () => {
 
     expect(mocks.sessionContext.cancelRun).not.toHaveBeenCalled()
     expect(window.replApi.invoke).toHaveBeenCalledWith('window:close')
+  })
+
+  it('uses Escape to cancel browser speech fallback before closing', async () => {
+    const speechSynthesis = {
+      speaking: true,
+      pending: false,
+      cancel: vi.fn(),
+    }
+    Object.defineProperty(window, 'speechSynthesis', {
+      configurable: true,
+      value: speechSynthesis,
+    })
+
+    render(<App />)
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+
+    expect(speechSynthesis.cancel).toHaveBeenCalledOnce()
+    await waitFor(() => {
+      expect(mocks.sessionContext.cancelSpeech).toHaveBeenCalledOnce()
+    })
+    expect(window.replApi.invoke).not.toHaveBeenCalledWith('window:close')
   })
 })

@@ -7,6 +7,10 @@ import { FloatingTerminal } from './views/FloatingTerminal'
 import { DesktopApp } from './views/DesktopApp'
 import { SessionProvider, useSessionContext, ModeProvider, useMode } from './hooks'
 import { WindowResizeHandles } from './components'
+import {
+  cancelBrowserSpeech,
+  isBrowserSpeechActive,
+} from './services/voiceSpeech'
 
 /** Inner component that has access to session + mode contexts */
 function AppInner() {
@@ -24,8 +28,9 @@ function AppInner() {
       if (e.key !== 'Escape') return
       const editableTarget = isEditableEscapeTarget(e.target)
 
-      if (session.voice.speaking) {
+      if (session.voice.speaking || isBrowserSpeechActive()) {
         e.preventDefault()
+        cancelBrowserSpeech()
         void cancelSpeech()
         return
       }

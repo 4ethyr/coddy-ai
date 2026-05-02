@@ -30,6 +30,7 @@ import {
   persistDesktopTab,
   resolveUiSlashCommand,
 } from '@/presentation/commands/slashCommands'
+import { captureVoiceWithOptionalSpeech } from '@/presentation/services/voiceSpeech'
 
 export function DesktopApp() {
   const {
@@ -74,6 +75,7 @@ export function DesktopApp() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [statusOpen, setStatusOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
+  const [capabilitiesOpen, setCapabilitiesOpen] = useState(false)
   const [appearance, setAppearance] = useState<FloatingAppearanceSettings>(
     () => loadSettings().floatingAppearance,
   )
@@ -163,6 +165,7 @@ export function DesktopApp() {
         setHistoryOpen(false)
         setStatusOpen(false)
         setHelpOpen(false)
+        setCapabilitiesOpen(false)
         void newSession()
         return
       }
@@ -183,6 +186,7 @@ export function DesktopApp() {
         setActiveTab('chat')
         setStatusOpen(false)
         setHelpOpen(false)
+        setCapabilitiesOpen(false)
         setHistoryOpen(true)
         void loadConversationHistory()
         return
@@ -192,6 +196,7 @@ export function DesktopApp() {
         setActiveTab('chat')
         setHistoryOpen(false)
         setHelpOpen(false)
+        setCapabilitiesOpen(false)
         setStatusOpen(true)
         return
       }
@@ -200,7 +205,17 @@ export function DesktopApp() {
         setActiveTab('chat')
         setHistoryOpen(false)
         setStatusOpen(false)
+        setCapabilitiesOpen(false)
         setHelpOpen(true)
+        return
+      }
+
+      if (command.kind === 'show-capabilities') {
+        setActiveTab('chat')
+        setHistoryOpen(false)
+        setStatusOpen(false)
+        setHelpOpen(false)
+        setCapabilitiesOpen(true)
         return
       }
 
@@ -219,7 +234,7 @@ export function DesktopApp() {
   )
 
   const handleCaptureVoice = useCallback(
-    () => captureVoice({ speakResponse: speakVoiceResponses }),
+    () => captureVoiceWithOptionalSpeech(captureVoice, speakVoiceResponses),
     [captureVoice, speakVoiceResponses],
   )
 
@@ -330,6 +345,10 @@ export function DesktopApp() {
               statusWorkspacePath={activeWorkspacePath}
               statusToolCount={toolCatalog.length}
               onCloseStatus={() => setStatusOpen(false)}
+              capabilitiesOpen={capabilitiesOpen}
+              capabilitiesWorkspacePath={activeWorkspacePath}
+              capabilitiesTools={toolCatalog}
+              onCloseCapabilities={() => setCapabilitiesOpen(false)}
               helpOpen={helpOpen}
               onCloseHelp={() => setHelpOpen(false)}
             />

@@ -1213,9 +1213,12 @@ fn provider_safe_tool_description(tool: &ChatToolSpec) -> String {
     }
 }
 
-pub(crate) fn decode_provider_safe_tool_name(name: &str) -> String {
+pub fn decode_provider_safe_tool_name(name: &str) -> String {
     let alias = name.strip_prefix("coddy_tool__").unwrap_or(name);
-    let decoded = alias.replace("__dot__", ".").replace("::", ".");
+    let decoded = alias
+        .replace("__dot__", ".")
+        .replace(".dot.", ".")
+        .replace("::", ".");
     if decoded != alias {
         return decoded;
     }
@@ -2982,6 +2985,10 @@ mod tests {
         assert_eq!(
             decode_provider_safe_tool_name("filesystem::read_file"),
             "filesystem.read_file"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem.dot.search_files"),
+            "filesystem.search_files"
         );
         assert_eq!(
             decode_provider_safe_tool_name("filesystem_read_file"),

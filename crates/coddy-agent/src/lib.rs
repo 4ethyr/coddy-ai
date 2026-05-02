@@ -45,9 +45,9 @@ pub use eval::{
     PromptBatteryReport,
 };
 pub use model::{
-    ChatFinishReason, ChatMessage, ChatMessageRole, ChatModelClient, ChatModelError,
-    ChatModelResult, ChatRequest, ChatResponse, ChatToolCall, ChatToolSpec, DefaultChatModelClient,
-    OllamaChatModelClient, UnavailableChatModelClient,
+    decode_provider_safe_tool_name, ChatFinishReason, ChatMessage, ChatMessageRole,
+    ChatModelClient, ChatModelError, ChatModelResult, ChatRequest, ChatResponse, ChatToolCall,
+    ChatToolSpec, DefaultChatModelClient, OllamaChatModelClient, UnavailableChatModelClient,
 };
 pub use plan_executor::{
     DeterministicPlanExecutor, DeterministicPlanItem, DeterministicPlanReport,
