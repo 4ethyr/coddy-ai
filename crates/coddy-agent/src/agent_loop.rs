@@ -16,7 +16,7 @@ use crate::model::{
 };
 use crate::{
     AgentRunStatus, AgentStep, AgentStepKind, AgentStepStatus, ChatMessage, ChatModelClient,
-    ChatModelError, ChatRequest, ChatToolCall, ChatToolSpec, LocalAgentRuntime,
+    ChatModelError, ChatRequest, ChatResponse, ChatToolCall, ChatToolSpec, LocalAgentRuntime,
     LocalToolRouteOutcome, RunState, APPLY_EDIT_TOOL, PREVIEW_EDIT_TOOL,
 };
 
@@ -283,6 +283,31 @@ impl<'a> AgenticModelLoop<'a> {
             }
         }
 
+        if let Some(response) = self.complete_after_model_turn_limit(
+            &request,
+            messages.clone(),
+            self.config.max_model_turns,
+        ) {
+            model_turns += 1;
+            for delta in &response.deltas {
+                if !delta.is_empty() {
+                    state.events.push(ReplEvent::TokenDelta {
+                        run_id: state.run_id,
+                        text: delta.clone(),
+                    });
+                }
+            }
+            record_response_step(&mut state, &response.text, AgentStepStatus::Succeeded);
+            self.runtime.complete_run(&mut state);
+            return AgenticLoopOutcome {
+                state,
+                stop: AgenticLoopStop::Completed,
+                final_response: Some(response.text),
+                model_turns,
+                tool_calls,
+            };
+        }
+
         let message = format!(
             "model-driven coding loop exceeded {} model turns",
             self.config.max_model_turns
@@ -372,6 +397,24 @@ impl<'a> AgenticModelLoop<'a> {
         )
     }
 
+    fn complete_after_model_turn_limit(
+        &self,
+        request: &AgenticLoopRequest,
+        mut messages: Vec<ChatMessage>,
+        max_model_turns: usize,
+    ) -> Option<ChatResponse> {
+        messages.push(ChatMessage::user(build_turn_limit_synthesis_prompt(
+            max_model_turns,
+        )));
+        let mut chat_request = self.chat_request(request, messages, Vec::new()).ok()?;
+        chat_request.max_output_tokens = request.max_output_tokens.or(Some(1200));
+        let response = self.complete_model_request_with_retry(chat_request).ok()?;
+        if response.tool_calls.is_empty() && !response.text.trim().is_empty() {
+            return Some(response);
+        }
+        None
+    }
+
     fn fail_model_error(
         &self,
         mut state: RunState,
@@ -404,6 +447,20 @@ fn sleep_before_agentic_model_retry(attempt: usize) {
     thread::sleep(Duration::from_millis(
         MODEL_RETRY_BASE_DELAY_MS * (attempt as u64 + 1),
     ));
+}
+
+fn build_turn_limit_synthesis_prompt(max_model_turns: usize) -> String {
+    [
+        format!(
+            "Coddy reached the model turn limit after {max_model_turns} tool-observation turns."
+        ),
+        "Do not request more tools.".to_string(),
+        "Synthesize the best grounded final answer from the observations already provided."
+            .to_string(),
+        "State what was inspected, what remains uncertain, and what validation was or was not run."
+            .to_string(),
+    ]
+    .join(" ")
 }
 
 impl AgenticLoopStop {
@@ -1211,6 +1268,41 @@ mod tests {
         assert_eq!(outcome.state.status, AgentRunStatus::Failed);
         assert_eq!(outcome.model_turns, 1);
         assert_eq!(outcome.tool_calls, 1);
+    }
+
+    #[test]
+    fn synthesizes_final_response_after_model_turn_limit() {
+        let workspace = TempWorkspace::new();
+        workspace.write("README.md", "# Coddy\n");
+        let runtime = LocalAgentRuntime::new(&workspace.path).expect("runtime");
+        let model = ScriptedModel::new(vec![
+            tool_call_response(READ_FILE_TOOL, json!({ "path": "README.md" })),
+            ChatResponse::from_text("README.md was inspected before the turn limit."),
+        ]);
+        let config = AgenticLoopConfig {
+            max_model_turns: 1,
+            observation_max_chars: 4096,
+        };
+
+        let outcome = AgenticModelLoop::with_config(&runtime, &model, config).run(
+            AgenticLoopRequest::new(Uuid::new_v4(), "Inspect then summarize", test_model_ref()),
+        );
+        let requests = model.requests();
+        let final_request = requests.last().expect("final synthesis request");
+
+        assert_eq!(outcome.stop, AgenticLoopStop::Completed);
+        assert_eq!(
+            outcome.final_response,
+            Some("README.md was inspected before the turn limit.".to_string())
+        );
+        assert_eq!(outcome.model_turns, 2);
+        assert_eq!(outcome.tool_calls, 1);
+        assert_eq!(requests.len(), 2);
+        assert!(final_request.tools.is_empty());
+        assert!(final_request.messages.iter().any(|message| {
+            message.content.contains("model turn limit")
+                && message.content.contains("Do not request more tools")
+        }));
     }
 
     #[test]

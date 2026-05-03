@@ -307,6 +307,14 @@ describe('WorkspacePanel', () => {
               passed: 1200,
               failed: 0,
             },
+            {
+              name: 'grounded-response',
+              status: 'passed',
+              score: 100,
+              caseCount: 3,
+              passed: 3,
+              failed: 0,
+            },
           ],
           multiagent: {
             score: 100,
@@ -324,6 +332,14 @@ describe('WorkspacePanel', () => {
             memberCoverage: { explorer: 1200 },
             failures: [],
           },
+          groundedResponse: {
+            kind: 'coddy.groundedResponseEval',
+            caseCount: 3,
+            passed: 3,
+            failed: 0,
+            score: 100,
+            failures: [],
+          },
         }}
       />,
     )
@@ -332,9 +348,10 @@ describe('WorkspacePanel', () => {
     expect(screen.getByText('status')).toBeInTheDocument()
     expect(screen.getByText('passed')).toBeInTheDocument()
     expect(screen.getByText('checks')).toBeInTheDocument()
-    expect(screen.getByText('2')).toBeInTheDocument()
+    expect(screen.getByText('3')).toBeInTheDocument()
     expect(screen.getByText('multiagent: 100')).toBeInTheDocument()
     expect(screen.getByText('prompt-battery: 100')).toBeInTheDocument()
+    expect(screen.getByText('grounded-response: 100')).toBeInTheDocument()
 
     await userEvent.click(
       screen.getByRole('button', { name: 'Run quality eval' }),

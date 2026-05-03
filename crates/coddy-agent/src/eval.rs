@@ -243,6 +243,28 @@ pub struct PromptBatteryReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroundedResponseCase {
+    pub id: String,
+    pub response: String,
+    pub observed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroundedResponseFailure {
+    pub id: String,
+    pub ungrounded_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroundedResponseReport {
+    pub case_count: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub score: u8,
+    pub failures: Vec<GroundedResponseFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LivePromptBatteryCaseResult {
     pub id: String,
     pub expected_members: Vec<String>,
@@ -262,6 +284,7 @@ pub struct LivePromptBatteryReport {
     pub raw_score: u8,
     pub model_error_count: usize,
     pub model_error_rate: u8,
+    pub model_error_recovery_count: usize,
     pub raw_routing_failure_count: usize,
     pub guard_recovery_count: usize,
     pub raw_matched_member_count: usize,
@@ -891,6 +914,46 @@ impl PromptBatteryFailure {
     }
 }
 
+impl GroundedResponseCase {
+    pub fn new(
+        id: impl Into<String>,
+        response: impl Into<String>,
+        observed_paths: &[&str],
+    ) -> Self {
+        Self {
+            id: id.into(),
+            response: response.into(),
+            observed_paths: observed_paths.iter().map(|path| path.to_string()).collect(),
+        }
+    }
+}
+
+impl GroundedResponseReport {
+    pub fn is_success(&self) -> bool {
+        self.failed == 0
+    }
+
+    pub fn public_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "coddy.groundedResponseEval",
+            "caseCount": self.case_count,
+            "passed": self.passed,
+            "failed": self.failed,
+            "score": self.score,
+            "failures": self.failures.iter().map(GroundedResponseFailure::public_metadata).collect::<Vec<_>>(),
+        })
+    }
+}
+
+impl GroundedResponseFailure {
+    pub fn public_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "ungroundedPaths": self.ungrounded_paths,
+        })
+    }
+}
+
 impl LivePromptBatteryCaseResult {
     pub fn public_metadata(&self) -> serde_json::Value {
         let mut metadata = serde_json::json!({
@@ -922,6 +985,7 @@ impl LivePromptBatteryReport {
             "rawScore": self.raw_score,
             "modelErrorCount": self.model_error_count,
             "modelErrorRate": self.model_error_rate,
+            "modelErrorRecoveryCount": self.model_error_recovery_count,
             "rawRoutingFailureCount": self.raw_routing_failure_count,
             "guardRecoveryCount": self.guard_recovery_count,
             "rawMatchedMemberCount": self.raw_matched_member_count,
@@ -1026,6 +1090,148 @@ pub fn run_prompt_battery(
     }
 }
 
+pub fn default_grounded_response_cases() -> Vec<GroundedResponseCase> {
+    vec![
+        GroundedResponseCase::new(
+            "observed-rust-runtime-citation",
+            "A resposta cita `crates/coddy-runtime/src/lib.rs:1880` e `crates/coddy-agent/src/agent_loop.rs` porque ambos foram observados.",
+            &[
+                "crates/coddy-runtime/src/lib.rs",
+                "crates/coddy-agent/src/agent_loop.rs",
+            ],
+        ),
+        GroundedResponseCase::new(
+            "absolute-path-canonicalization",
+            "A evidencia veio de `/home/aethyr/Documents/coddy/apps/coddy/src/main.rs:976`.",
+            &["apps/coddy/src/main.rs"],
+        ),
+        GroundedResponseCase::new(
+            "no-repository-path-claims",
+            "A evidencia ainda esta incompleta; nao vou citar arquivos especificos sem inspecao.",
+            &[],
+        ),
+    ]
+}
+
+pub fn run_default_grounded_response_eval() -> GroundedResponseReport {
+    run_grounded_response_eval(&default_grounded_response_cases())
+}
+
+pub fn run_grounded_response_eval(cases: &[GroundedResponseCase]) -> GroundedResponseReport {
+    let mut failures = Vec::new();
+
+    for case in cases {
+        let observed_paths = case
+            .observed_paths
+            .iter()
+            .filter_map(|path| canonical_repo_path(path))
+            .collect::<HashSet<_>>();
+        let ungrounded_paths = extract_repository_path_citations(&case.response)
+            .into_iter()
+            .filter(|path| !observed_paths.contains(path))
+            .collect::<Vec<_>>();
+
+        if !ungrounded_paths.is_empty() {
+            failures.push(GroundedResponseFailure {
+                id: case.id.clone(),
+                ungrounded_paths,
+            });
+        }
+    }
+
+    let case_count = cases.len();
+    let failed = failures.len();
+    let passed = case_count.saturating_sub(failed);
+    GroundedResponseReport {
+        case_count,
+        passed,
+        failed,
+        score: percentage_score(passed, case_count),
+        failures,
+    }
+}
+
+pub fn extract_repository_path_citations(text: &str) -> Vec<String> {
+    let mut paths = HashSet::new();
+    for raw_token in text.split_whitespace() {
+        if let Some(path) = canonical_repo_path(raw_token) {
+            paths.insert(path);
+        }
+    }
+    let mut paths = paths.into_iter().collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
+fn canonical_repo_path(raw: &str) -> Option<String> {
+    let mut token = raw.trim_matches(|character: char| {
+        matches!(
+            character,
+            '`' | '\'' | '"' | ',' | '.' | ';' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>'
+        )
+    });
+    if let Some(index) = token.find("](") {
+        token = &token[index + 2..];
+    }
+    token = token
+        .trim_start_matches("file://")
+        .trim_start_matches("./")
+        .trim_start_matches('/');
+
+    if token.starts_with("http://") || token.starts_with("https://") || !token.contains('/') {
+        return None;
+    }
+
+    let token = strip_line_suffix(token);
+    let repo_path = strip_to_repo_root(&token)?;
+    if looks_like_repository_path(repo_path) {
+        Some(repo_path.to_string())
+    } else {
+        None
+    }
+}
+
+fn strip_line_suffix(token: &str) -> String {
+    let Some((path, suffix)) = token.rsplit_once(':') else {
+        return token.to_string();
+    };
+    if !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit()) {
+        path.to_string()
+    } else {
+        token.to_string()
+    }
+}
+
+fn strip_to_repo_root(token: &str) -> Option<&str> {
+    for prefix in [
+        ".agent/", "apps/", "crates/", "docs/", "scripts/", "repl_ui/", "texts/", "target/",
+    ] {
+        if let Some(index) = token.find(prefix) {
+            return Some(&token[index..]);
+        }
+    }
+    None
+}
+
+fn looks_like_repository_path(path: &str) -> bool {
+    if path.contains("..") {
+        return false;
+    }
+    path.ends_with(".rs")
+        || path.ends_with(".ts")
+        || path.ends_with(".tsx")
+        || path.ends_with(".js")
+        || path.ends_with(".jsx")
+        || path.ends_with(".json")
+        || path.ends_with(".toml")
+        || path.ends_with(".md")
+        || path.ends_with(".html")
+        || path.ends_with(".css")
+        || path.ends_with(".sh")
+        || path.ends_with(".yml")
+        || path.ends_with(".yaml")
+}
+
 pub fn run_live_prompt_battery_cases(
     client: &dyn ChatModelClient,
     model: &ModelRef,
@@ -1116,6 +1322,10 @@ fn build_live_prompt_battery_report(
         .iter()
         .filter(|case| case.model_error.is_some())
         .count();
+    let model_error_recovery_count = case_results
+        .iter()
+        .filter(|case| case.model_error.is_some() && case.missing_guarded_members.is_empty())
+        .count();
     let raw_routing_failure_count = case_results
         .iter()
         .filter(|case| case.model_error.is_none() && !case.missing_raw_members.is_empty())
@@ -1147,6 +1357,7 @@ fn build_live_prompt_battery_report(
         raw_score: percentage_score(raw_passed, prompt_count),
         model_error_count,
         model_error_rate: percentage_score(model_error_count, prompt_count),
+        model_error_recovery_count,
         raw_routing_failure_count,
         guard_recovery_count,
         raw_matched_member_count,
@@ -1210,11 +1421,18 @@ fn evaluate_prompt_battery_case_with_model(
     case: &PromptBatteryCase,
 ) -> LivePromptBatteryCaseResult {
     let raw_result = complete_prompt_battery_routing(client, model, credential, case);
-    let (raw_predicted_members, model_error) = match raw_result {
-        Ok(members) => (members, None),
-        Err(error) => (Vec::new(), Some(error.to_string())),
+    let (raw_predicted_members, model_error, allow_guarded_error_recovery) = match raw_result {
+        Ok(members) => (members, None, false),
+        Err(error) => {
+            let allow_guarded_error_recovery = is_empty_assistant_response_error(&error);
+            (
+                Vec::new(),
+                Some(error.to_string()),
+                allow_guarded_error_recovery,
+            )
+        }
     };
-    let guarded_predicted_members = if model_error.is_some() {
+    let guarded_predicted_members = if model_error.is_some() && !allow_guarded_error_recovery {
         raw_predicted_members.clone()
     } else {
         guard_prompt_battery_members(case, &raw_predicted_members)
@@ -1252,7 +1470,7 @@ fn complete_prompt_battery_request_with_retry(
     client: &dyn ChatModelClient,
     request: ChatRequest,
 ) -> ChatModelResult {
-    const MAX_ATTEMPTS: usize = 4;
+    const MAX_ATTEMPTS: usize = 6;
 
     let mut last_error = None;
     let mut should_add_empty_response_guidance = false;
@@ -2418,6 +2636,56 @@ mod tests {
     }
 
     #[test]
+    fn grounded_response_eval_detects_ungrounded_file_citations() {
+        let cases = vec![GroundedResponseCase::new(
+            "hallucinated-runtime-main",
+            "O runtime principal esta em `crates/coddy-runtime/src/main.rs`, mas a evidencia observada foi `crates/coddy-runtime/src/lib.rs`.",
+            &["crates/coddy-runtime/src/lib.rs"],
+        )];
+
+        let report = run_grounded_response_eval(&cases);
+
+        assert_eq!(report.case_count, 1);
+        assert_eq!(report.passed, 0);
+        assert_eq!(report.failed, 1);
+        assert_eq!(report.score, 0);
+        assert_eq!(
+            report.failures[0].ungrounded_paths,
+            vec!["crates/coddy-runtime/src/main.rs".to_string()]
+        );
+    }
+
+    #[test]
+    fn default_grounded_response_eval_is_ci_ready() {
+        let report = run_default_grounded_response_eval();
+        let metadata = report.public_metadata();
+
+        assert!(report.is_success());
+        assert_eq!(report.case_count, 3);
+        assert_eq!(report.passed, 3);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.score, 100);
+        assert_eq!(metadata["kind"], json!("coddy.groundedResponseEval"));
+        assert_eq!(metadata["caseCount"], json!(3));
+        assert_eq!(metadata["score"], json!(100));
+    }
+
+    #[test]
+    fn repository_path_citation_extraction_canonicalizes_common_formats() {
+        let paths = extract_repository_path_citations(
+            "Veja `crates/coddy-runtime/src/lib.rs:42`, [/abs](/home/aethyr/Documents/coddy/apps/coddy/src/main.rs:9), e https://example.com/docs/file.rs.",
+        );
+
+        assert_eq!(
+            paths,
+            vec![
+                "apps/coddy/src/main.rs".to_string(),
+                "crates/coddy-runtime/src/lib.rs".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn prompt_battery_member_extraction_accepts_json_or_text() {
         assert_eq!(
             extract_prompt_battery_members(
@@ -2568,6 +2836,7 @@ mod tests {
         assert_eq!(report.score, 0);
         assert_eq!(report.model_error_count, 1);
         assert_eq!(report.model_error_rate, 100);
+        assert_eq!(report.model_error_recovery_count, 0);
         assert_eq!(report.raw_routing_failure_count, 0);
         assert_eq!(report.guard_recovery_count, 0);
         assert_eq!(report.raw_failures.len(), 1);
@@ -2579,6 +2848,7 @@ mod tests {
         let metadata = report.public_metadata();
         assert_eq!(metadata["modelErrorCount"], 1);
         assert_eq!(metadata["modelErrorRate"], 100);
+        assert_eq!(metadata["modelErrorRecoveryCount"], 0);
         assert_eq!(metadata["rawRoutingFailureCount"], 0);
         assert_eq!(metadata["guardRecoveryCount"], 0);
     }
@@ -2628,7 +2898,7 @@ mod tests {
         let cases = [&case];
         let client = FlakyRoutingClient {
             attempts: std::sync::atomic::AtomicUsize::new(0),
-            failures_before_success: 3,
+            failures_before_success: 5,
             requests: std::sync::Mutex::new(Vec::new()),
         };
 
@@ -2649,7 +2919,7 @@ mod tests {
         );
 
         assert_eq!(report.raw_passed, 1);
-        assert_eq!(client.attempts.load(std::sync::atomic::Ordering::SeqCst), 4);
+        assert_eq!(client.attempts.load(std::sync::atomic::Ordering::SeqCst), 6);
         let captured_requests = client.requests.lock().expect("requests mutex poisoned");
         assert!(!request_has_empty_response_retry_guidance(
             &captured_requests[0]
@@ -2663,6 +2933,69 @@ mod tests {
         assert!(request_has_empty_response_retry_guidance(
             &captured_requests[3]
         ));
+        assert!(request_has_empty_response_retry_guidance(
+            &captured_requests[4]
+        ));
+        assert!(request_has_empty_response_retry_guidance(
+            &captured_requests[5]
+        ));
+    }
+
+    #[test]
+    fn live_prompt_battery_recovers_empty_provider_response_with_policy_guard_after_retry_exhaustion(
+    ) {
+        let case = PromptBatteryCase {
+            id: "case-1".to_string(),
+            stack: "rust".to_string(),
+            knowledge_area: "implementation".to_string(),
+            prompt: "implement fix bug no code com TDD test coverage, preview edit, revise quality e security sandbox"
+                .to_string(),
+            expected_members: vec![
+                "explorer".to_string(),
+                "coder".to_string(),
+                "test-writer".to_string(),
+                "security-reviewer".to_string(),
+                "reviewer".to_string(),
+            ],
+        };
+        let cases = [&case];
+        let client = FlakyRoutingClient {
+            attempts: std::sync::atomic::AtomicUsize::new(0),
+            failures_before_success: usize::MAX,
+            requests: std::sync::Mutex::new(Vec::new()),
+        };
+
+        let report = run_live_prompt_battery_cases(
+            &client,
+            &ModelRef {
+                provider: "openrouter".to_string(),
+                name: "deepseek/deepseek-v4-flash".to_string(),
+            },
+            ModelCredential {
+                provider: "openrouter".to_string(),
+                token: "test-token".to_string(),
+                endpoint: None,
+                metadata: Default::default(),
+            },
+            &cases,
+            1,
+        );
+
+        assert_eq!(report.raw_passed, 0);
+        assert_eq!(report.raw_failed, 1);
+        assert_eq!(report.model_error_count, 1);
+        assert_eq!(report.model_error_recovery_count, 1);
+        assert_eq!(report.passed, 1);
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.score, 100);
+        assert!(report.failures.is_empty());
+        assert_eq!(report.raw_failures.len(), 1);
+        assert_eq!(client.attempts.load(std::sync::atomic::Ordering::SeqCst), 6);
+
+        let metadata = report.public_metadata();
+        assert_eq!(metadata["modelErrorCount"], 1);
+        assert_eq!(metadata["modelErrorRecoveryCount"], 1);
+        assert_eq!(metadata["score"], 100);
     }
 
     fn passing_multiagent_suite() -> MultiagentEvalSuiteReport {

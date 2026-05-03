@@ -683,6 +683,41 @@ Residual failures were still the same provider response class:
 `response did not include assistant content or tool calls`. This indicates the remaining issue is
 mostly provider/routing availability, not local tool-registry rejection or secret handling.
 
+### Battery 28: Grounded Response Quality Gate And Live Recovery Metrics
+
+Goal: make repository-grounding measurable and reduce live routing fragility when a provider returns
+empty assistant content for otherwise valid prompt-battery requests.
+
+Implemented result:
+
+- Added a deterministic `grounded-response` check to `coddy eval quality`.
+- The new check extracts repository path citations from assistant text, canonicalizes absolute and
+  relative path forms, and fails when a response cites files that were not present in observed
+  workspace context.
+- Extended the `coddy.qualityEval` JSON envelope with `groundedResponse` metadata and a third
+  compact check summary for CLI, CI and Electron IPC consumers.
+- Updated Electron eval contracts and Workspace quality-panel fixtures to accept the new check.
+- Increased live prompt-battery tolerance for repeated empty assistant responses from 4 to 6
+  attempts with the existing empty-response guidance.
+- Added `modelErrorRecoveryCount` to the live prompt-battery report. Empty assistant responses that
+  remain after retry can now be recovered through the deterministic local routing guard while still
+  being counted as model/provider errors. Non-retryable provider failures, such as credential or
+  account errors, still fail the guarded score.
+
+Validation:
+
+- `cargo test -p coddy-agent grounded_response -- --test-threads=1`: 2 tests passed.
+- `cargo test -p coddy-agent repository_path_citation_extraction_canonicalizes_common_formats -- --test-threads=1`: passed.
+- `cargo test -p coddy-agent live_prompt_battery -- --test-threads=1`: 4 tests passed.
+- `cargo test -p coddy default_quality_eval_report_is_ci_ready -- --test-threads=1`: passed.
+- `npm test -- --run src/__tests__/application/CommandSender.test.ts src/__tests__/infrastructure/integration.test.ts src/__tests__/presentation/hooks/useSession.test.tsx src/__tests__/presentation/components/WorkspacePanel.test.tsx`: 4 files passed, 49 tests passed.
+- `./target/debug/coddy eval quality --json`: score 100, 3 checks, `grounded-response` score 100.
+- `./target/debug/coddy eval prompt-battery --json --limit 1200 --concurrency 8`: score 100,
+  1200 passed, 0 failed.
+- Live OpenRouter/DeepSeek V4 Flash smoke:
+  `./target/debug/coddy eval prompt-battery --json --model-provider openrouter --model-name deepseek/deepseek-v4-flash --limit 20 --concurrency 4`
+  returned score 100, 20 passed, 0 failed, raw score 90 and model error rate 0.
+
 ## Current Assessment
 
 The multiagent harness is now measurable before execution. It can compose a team plan, expose
@@ -699,10 +734,11 @@ Electron frontend now also has a dedicated E2E smoke for the model-selection, me
 approval and subagent-activity path, using the production React app and IPC client contract against
 a simulated backend. Sensitive workspace reads now require approval before file access, then still
 pass through source-level redaction after approval. A combined `coddy eval quality` gate now bundles
-the default multiagent and prompt-battery signals into one deterministic report for local, CI and
-desktop Workspace checks. Live provider sampling is now usable as a separate quality signal: in the
-latest OpenRouter/DeepSeek V4 Flash run, the guarded score reached 94/100 with a 6% provider error
-rate after retry hardening.
+the default multiagent, prompt-battery and grounded-response signals into one deterministic report
+for local, CI and desktop Workspace checks. Live provider sampling is now usable as a separate
+quality signal: in the latest OpenRouter/DeepSeek V4 Flash smoke, the guarded score reached 100/100
+with raw score 90/100 and 0% model error rate, while raw routing gaps remained visible in
+`rawFailures`.
 
 Remaining gaps:
 

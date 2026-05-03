@@ -63,6 +63,20 @@ export interface PromptBatteryResult {
   failures: PromptBatteryFailure[]
 }
 
+export interface GroundedResponseFailure {
+  id: string
+  ungroundedPaths: string[]
+}
+
+export interface GroundedResponseResult {
+  kind: 'coddy.groundedResponseEval'
+  caseCount: number
+  passed: number
+  failed: number
+  score: number
+  failures: GroundedResponseFailure[]
+}
+
 export interface QualityEvalCheck {
   name: string
   status: 'passed' | 'failed'
@@ -70,6 +84,7 @@ export interface QualityEvalCheck {
   passed?: number
   failed?: number
   promptCount?: number
+  caseCount?: number
 }
 
 export interface QualityEvalResult {
@@ -81,4 +96,5 @@ export interface QualityEvalResult {
   checks: QualityEvalCheck[]
   multiagent: MultiagentEvalSuiteSummary
   promptBattery: PromptBatteryResult
+  groundedResponse?: GroundedResponseResult
 }
