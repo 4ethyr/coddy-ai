@@ -10,7 +10,9 @@ node_modules/
 dist/
 apps/*/node_modules/
 apps/*/dist/
+apps/*/release/
 prints/
+texts/
 .agent/
 AGENT.md
 coddy-architecture-diagram.html
