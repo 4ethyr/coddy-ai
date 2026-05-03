@@ -1,4 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use coddy_core::{
     ApprovalPolicy, ModelCredential, ModelRef, ReplEvent, ToolCall, ToolDefinition, ToolName,
@@ -7,7 +10,10 @@ use coddy_core::{
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::model::decode_provider_safe_tool_name;
+use crate::model::{
+    decode_provider_safe_tool_name, is_empty_assistant_response_error,
+    should_retry_chat_model_request_error, with_empty_response_retry_guidance,
+};
 use crate::{
     AgentRunStatus, AgentStep, AgentStepKind, AgentStepStatus, ChatMessage, ChatModelClient,
     ChatModelError, ChatRequest, ChatToolCall, ChatToolSpec, LocalAgentRuntime,
@@ -15,7 +21,9 @@ use crate::{
 };
 
 const DEFAULT_MAX_MODEL_TURNS: usize = 8;
+const DEFAULT_MAX_MODEL_REQUEST_ATTEMPTS: usize = 4;
 const DEFAULT_OBSERVATION_MAX_CHARS: usize = 16 * 1024;
+const MODEL_RETRY_BASE_DELAY_MS: u64 = 250;
 
 const DEFAULT_CODING_AGENT_SYSTEM_PROMPT: &str = r#"You are Coddy's coding agent.
 Operate like a senior coding agent: inspect before editing, plan briefly, make the smallest coherent change, and validate the result.
@@ -183,7 +191,7 @@ impl<'a> AgenticModelLoop<'a> {
                 }
             };
 
-            let response = match self.model_client.complete(chat_request) {
+            let response = match self.complete_model_request_with_retry(chat_request) {
                 Ok(response) => response,
                 Err(error) => {
                     return self.fail_model_error(state, error, model_turns, tool_calls);
@@ -333,6 +341,37 @@ impl<'a> AgenticModelLoop<'a> {
         })
     }
 
+    fn complete_model_request_with_retry(&self, request: ChatRequest) -> crate::ChatModelResult {
+        let mut last_error = None;
+        let mut should_add_empty_response_guidance = false;
+        for attempt in 0..DEFAULT_MAX_MODEL_REQUEST_ATTEMPTS {
+            let attempt_request = if should_add_empty_response_guidance {
+                with_empty_response_retry_guidance(request.clone())
+            } else {
+                request.clone()
+            };
+            match self.model_client.complete(attempt_request) {
+                Ok(response) => return Ok(response),
+                Err(error)
+                    if attempt + 1 < DEFAULT_MAX_MODEL_REQUEST_ATTEMPTS
+                        && should_retry_chat_model_request_error(&error) =>
+                {
+                    should_add_empty_response_guidance = is_empty_assistant_response_error(&error);
+                    last_error = Some(error);
+                    sleep_before_agentic_model_retry(attempt);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(
+            last_error.unwrap_or_else(|| ChatModelError::InvalidProviderResponse {
+                provider: request.model.provider,
+                message: "model retry exhausted without provider response".to_string(),
+            }),
+        )
+    }
+
     fn fail_model_error(
         &self,
         mut state: RunState,
@@ -356,6 +395,15 @@ impl<'a> AgenticModelLoop<'a> {
             tool_calls,
         }
     }
+}
+
+fn sleep_before_agentic_model_retry(attempt: usize) {
+    if cfg!(test) {
+        return;
+    }
+    thread::sleep(Duration::from_millis(
+        MODEL_RETRY_BASE_DELAY_MS * (attempt as u64 + 1),
+    ));
 }
 
 impl AgenticLoopStop {
@@ -468,23 +516,67 @@ fn tool_observation_message(
     outcome: &LocalToolRouteOutcome,
     max_chars: usize,
 ) -> String {
-    let value = match &outcome.result {
+    let max_chars = max_chars.max(256);
+    let initial_text_budget = max_chars.saturating_sub(512).max(96);
+
+    for include_metadata in [true, false] {
+        let mut text_budget = initial_text_budget;
+        loop {
+            let value = tool_observation_value(tool_call, outcome, text_budget, include_metadata);
+            if let Some(rendered) = render_json_within_budget(&value, max_chars) {
+                return rendered;
+            }
+
+            if text_budget <= 96 {
+                break;
+            }
+            text_budget = (text_budget / 2).max(96);
+        }
+    }
+
+    let value = tool_observation_value(tool_call, outcome, 32, false);
+    serde_json::to_string(&value).unwrap_or_else(|_| value.to_string())
+}
+
+fn tool_observation_value(
+    tool_call: &ToolCall,
+    outcome: &LocalToolRouteOutcome,
+    max_text_chars: usize,
+    include_metadata: bool,
+) -> serde_json::Value {
+    match &outcome.result {
         Some(result) => json!({
             "tool": tool_call.tool_name.as_str(),
             "call_id": tool_call.id,
             "status": format!("{:?}", result.status),
             "output": result.output.as_ref().map(|output| {
+                let (text, compacted, omitted_chars) =
+                    compact_observation_text(&output.text, max_text_chars);
+                let metadata = if include_metadata {
+                    output.metadata.clone()
+                } else {
+                    json!({
+                        "omitted": true,
+                        "reason": "observation_context_budget",
+                    })
+                };
                 json!({
-                    "text": output.text,
-                    "metadata": output.metadata,
+                    "text": text,
+                    "metadata": metadata,
                     "truncated": output.truncated,
+                    "compacted": compacted,
+                    "omitted_chars": omitted_chars,
                 })
             }),
             "error": result.error.as_ref().map(|error| {
+                let (message, compacted, omitted_chars) =
+                    compact_observation_text(&error.message, max_text_chars);
                 json!({
                     "code": error.code,
-                    "message": error.message,
+                    "message": message,
                     "retryable": error.retryable,
+                    "compacted": compacted,
+                    "omitted_chars": omitted_chars,
                 })
             }),
         }),
@@ -493,11 +585,66 @@ fn tool_observation_message(
             "call_id": tool_call.id,
             "status": "PendingApproval",
         }),
-    };
-    truncate_chars(
-        &serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
-        max_chars,
+    }
+}
+
+fn render_json_within_budget(value: &serde_json::Value, max_chars: usize) -> Option<String> {
+    let pretty = serde_json::to_string_pretty(value).ok()?;
+    if pretty.chars().count() <= max_chars {
+        return Some(pretty);
+    }
+
+    let compact = serde_json::to_string(value).ok()?;
+    if compact.chars().count() <= max_chars {
+        Some(compact)
+    } else {
+        None
+    }
+}
+
+fn compact_observation_text(text: &str, max_chars: usize) -> (String, bool, usize) {
+    let total_chars = text.chars().count();
+    if total_chars <= max_chars {
+        return (text.to_string(), false, 0);
+    }
+
+    let marker = format!(
+        "\n[Coddy compacted tool observation: original {total_chars} chars; middle content omitted for context budget.]\n"
+    );
+    let marker_chars = marker.chars().count();
+    if marker_chars >= max_chars {
+        let fallback = format!(
+            "[Coddy compacted tool observation: original {total_chars} chars; content omitted.]"
+        );
+        return (
+            take_chars(&fallback, max_chars),
+            true,
+            total_chars.saturating_sub(max_chars),
+        );
+    }
+
+    let available_chars = max_chars - marker_chars;
+    let head_chars = available_chars / 2;
+    let tail_chars = available_chars - head_chars;
+    let prefix = take_chars(text, head_chars);
+    let suffix = take_last_chars(text, tail_chars);
+    (
+        format!("{prefix}{marker}{suffix}"),
+        true,
+        total_chars.saturating_sub(head_chars + tail_chars),
     )
+}
+
+fn take_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+fn take_last_chars(value: &str, max_chars: usize) -> String {
+    let total_chars = value.chars().count();
+    value
+        .chars()
+        .skip(total_chars.saturating_sub(max_chars))
+        .collect()
 }
 
 fn truncate_chars(value: &str, max_chars: usize) -> String {
@@ -611,6 +758,42 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct ScriptedResultModel {
+        responses: Mutex<Vec<crate::ChatModelResult>>,
+        requests: Mutex<Vec<ChatRequest>>,
+    }
+
+    impl ScriptedResultModel {
+        fn new(responses: Vec<crate::ChatModelResult>) -> Self {
+            let mut responses = responses;
+            responses.reverse();
+            Self {
+                responses: Mutex::new(responses),
+                requests: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn requests(&self) -> Vec<ChatRequest> {
+            self.requests.lock().expect("requests lock").clone()
+        }
+    }
+
+    impl ChatModelClient for ScriptedResultModel {
+        fn complete(&self, request: ChatRequest) -> crate::ChatModelResult {
+            self.requests.lock().expect("requests lock").push(request);
+            self.responses
+                .lock()
+                .expect("responses lock")
+                .pop()
+                .ok_or_else(|| ChatModelError::ProviderError {
+                    provider: "test".to_string(),
+                    message: "script exhausted".to_string(),
+                    retryable: false,
+                })?
+        }
+    }
+
     struct TempWorkspace {
         path: PathBuf,
     }
@@ -701,6 +884,94 @@ mod tests {
     }
 
     #[test]
+    fn retries_recoverable_model_errors_before_failing_direct_agent_loop() {
+        let workspace = TempWorkspace::new();
+        let runtime = LocalAgentRuntime::new(&workspace.path).expect("runtime");
+        let model = ScriptedResultModel::new(vec![
+            Err(ChatModelError::ProviderError {
+                provider: "openrouter".to_string(),
+                message: "Provider returned error (HTTP 502; upstream provider unavailable)"
+                    .to_string(),
+                retryable: true,
+            }),
+            Ok(ChatResponse::from_text("Recovered after retry.")),
+        ]);
+
+        let outcome = AgenticModelLoop::new(&runtime, &model).run(AgenticLoopRequest::new(
+            Uuid::new_v4(),
+            "Summarize the workspace",
+            test_model_ref(),
+        ));
+
+        assert_eq!(outcome.stop, AgenticLoopStop::Completed);
+        assert_eq!(
+            outcome.final_response,
+            Some("Recovered after retry.".to_string())
+        );
+        assert_eq!(model.requests().len(), 2);
+    }
+
+    #[test]
+    fn retries_empty_provider_responses_with_direct_agent_loop_guidance() {
+        let workspace = TempWorkspace::new();
+        let runtime = LocalAgentRuntime::new(&workspace.path).expect("runtime");
+        let empty_response_error = || ChatModelError::InvalidProviderResponse {
+            provider: "openrouter".to_string(),
+            message: "response did not include assistant content or tool calls".to_string(),
+        };
+        let model = ScriptedResultModel::new(vec![
+            Err(empty_response_error()),
+            Ok(ChatResponse::from_text("Recovered after empty response.")),
+        ]);
+
+        let outcome = AgenticModelLoop::new(&runtime, &model).run(AgenticLoopRequest::new(
+            Uuid::new_v4(),
+            "Summarize the workspace",
+            test_model_ref(),
+        ));
+
+        assert_eq!(outcome.stop, AgenticLoopStop::Completed);
+        assert_eq!(
+            outcome.final_response,
+            Some("Recovered after empty response.".to_string())
+        );
+        let requests = model.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(!request_has_empty_response_retry_guidance(&requests[0]));
+        assert!(request_has_empty_response_retry_guidance(&requests[1]));
+    }
+
+    #[test]
+    fn does_not_retry_transport_timeouts_in_direct_agent_loop() {
+        let workspace = TempWorkspace::new();
+        let runtime = LocalAgentRuntime::new(&workspace.path).expect("runtime");
+        let model = ScriptedResultModel::new(vec![
+            Err(ChatModelError::Transport {
+                provider: "openrouter".to_string(),
+                message: "request timed out".to_string(),
+                retryable: true,
+            }),
+            Ok(ChatResponse::from_text("late retry")),
+        ]);
+
+        let outcome = AgenticModelLoop::new(&runtime, &model).run(AgenticLoopRequest::new(
+            Uuid::new_v4(),
+            "Summarize the workspace",
+            test_model_ref(),
+        ));
+
+        assert!(matches!(
+            outcome.stop,
+            AgenticLoopStop::ModelError {
+                ref code,
+                retryable: true,
+                ..
+            } if code == "transport_error"
+        ));
+        assert_eq!(model.requests().len(), 1);
+    }
+
+    #[test]
     fn executes_provider_safe_tool_aliases_and_records_canonical_tool_name() {
         for alias in [
             "filesystem__dot__read_file",
@@ -735,6 +1006,56 @@ mod tests {
                     && observation.text.contains("# Coddy")
             }));
         }
+    }
+
+    #[test]
+    fn compacts_large_tool_observation_as_valid_json_for_next_model_turn() {
+        let workspace = TempWorkspace::new();
+        let large_file = format!("BEGIN_MARKER\n{}\nEND_MARKER\n", "x".repeat(8_000));
+        workspace.write("src/large.rs", &large_file);
+        let runtime = LocalAgentRuntime::new(&workspace.path).expect("runtime");
+        let model = ScriptedModel::new(vec![
+            tool_call_response(
+                READ_FILE_TOOL,
+                json!({ "path": "src/large.rs", "max_bytes": 12_000 }),
+            ),
+            ChatResponse::from_text("done"),
+        ]);
+        let config = AgenticLoopConfig {
+            max_model_turns: 2,
+            observation_max_chars: 1024,
+        };
+
+        let outcome = AgenticModelLoop::with_config(&runtime, &model, config).run(
+            AgenticLoopRequest::new(Uuid::new_v4(), "Inspect the large file", test_model_ref()),
+        );
+
+        assert_eq!(outcome.stop, AgenticLoopStop::Completed);
+        let requests = model.requests();
+        let second_turn_tool_observation = requests[1]
+            .messages
+            .iter()
+            .find(|message| message.role == crate::ChatMessageRole::Tool)
+            .expect("tool observation message");
+        assert!(
+            second_turn_tool_observation.content.chars().count() <= 1024,
+            "tool observation exceeded budget: {} chars",
+            second_turn_tool_observation.content.chars().count()
+        );
+
+        let value: Value = serde_json::from_str(&second_turn_tool_observation.content)
+            .expect("tool observation remains valid JSON after compaction");
+        assert_eq!(value["output"]["compacted"], json!(true));
+        assert!(
+            value["output"]["omitted_chars"]
+                .as_u64()
+                .expect("omitted chars")
+                > 0
+        );
+        let text = value["output"]["text"].as_str().expect("output text");
+        assert!(text.contains("BEGIN_MARKER"));
+        assert!(text.contains("END_MARKER"));
+        assert!(text.contains("Coddy compacted tool observation"));
     }
 
     #[test]
@@ -967,5 +1288,14 @@ mod tests {
         assert!(outcome.state.events.iter().any(
             |event| matches!(event, ReplEvent::RunCompleted { run_id: event_run_id } if *event_run_id == run_id)
         ));
+    }
+
+    fn request_has_empty_response_retry_guidance(request: &ChatRequest) -> bool {
+        request.messages.iter().any(|message| {
+            message.role == crate::ChatMessageRole::User
+                && message
+                    .content
+                    .contains("previous provider attempt returned empty assistant content")
+        })
     }
 }

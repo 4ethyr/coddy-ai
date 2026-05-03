@@ -65,6 +65,9 @@ describe('DesktopApp', () => {
       ...sessionContext.session,
       status: 'Idle',
       selected_model: { provider: 'vertex', name: 'claude-sonnet-test' },
+      messages: [],
+      active_run: null,
+      agent_run: null,
       subagent_activity: [],
       tool_activity: [],
       pending_permission: null,
@@ -291,6 +294,35 @@ describe('DesktopApp', () => {
 
     expect(sessionContext.ask).not.toHaveBeenCalled()
     expect(screen.getAllByText('runtime ready').length).toBeGreaterThan(0)
+  })
+
+  it('opens model routing from a recoverable failure action', async () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      selected_model: {
+        provider: 'openrouter',
+        name: 'deepseek/deepseek-v4-flash',
+      },
+      agent_run: {
+        run_id: 'run-recoverable',
+        summary: {
+          goal: 'analyze repo',
+          last_phase: 'Failed',
+          completed_steps: 2,
+          stop_reason: null,
+          failure_code: 'invalid_provider_response',
+          failure_message: 'empty provider response',
+          recoverable_failure: true,
+        },
+      },
+    }
+
+    render(<DesktopApp />)
+
+    await userEvent.click(screen.getByRole('button', { name: /open models/i }))
+
+    expect(sessionContext.ask).not.toHaveBeenCalled()
+    expect(screen.getByText('Model routing')).toBeInTheDocument()
   })
 
   it('shows local session status from the /status slash command', async () => {

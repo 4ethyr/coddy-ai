@@ -191,6 +191,8 @@ Implicacao para Coddy:
   executados, status e erros normalizados.
 - Adicionar teste de regressao para prompts que pedem analise de codebase e
   garantem que tools registradas usam nomes locais validos.
+- Manter observacoes de tools dentro de budget previsivel para evitar que
+  arquivos grandes dominem a proxima inferencia do modelo.
 
 ### P1: Subagents reais
 
@@ -202,7 +204,9 @@ Implicacao para Coddy:
 
 ### P1: Contexto e pesquisa
 
-- Adicionar resumo automatico de tool outputs longos.
+- Expandir resumo automatico de tool outputs longos para ranking por relevancia,
+  citacoes por trecho e re-leitura focada quando o conteudo omitido for
+  necessario.
 - Criar ranking simples por workspace: manifestos, docs, arquivos recentemente
   tocados, testes relacionados e resultados de busca.
 - Integrar MCP como fonte externa permissionada, preservando redacao de secrets
@@ -214,6 +218,51 @@ Implicacao para Coddy:
 - Rodar bateria pequena em PR e bateria maior sob demanda.
 - Registrar `modelErrorRate`, `toolErrorRate`, `validationPassRate`,
   `secretLeakCount`, `cancelRecoveryRate` e `averageRunLatencyMs`.
+
+## Rodada atual: compactacao de observacoes
+
+Problema validado na codebase: o runtime limitava numero de rounds de tools,
+mas a observacao textual enviada ao follow-up do modelo podia carregar um
+arquivo grande quase inteiro. Isso desperdicava contexto e ia contra o padrao
+observado em agentes top-tier: gerenciamento explicito de janela de contexto,
+compaction e recuperacao focada.
+
+Melhoria implementada:
+
+- limite de 12 Ki chars por observacao de tool enviada ao follow-up do modelo
+  no fluxo `/ask`;
+- compactacao estrutural tambem no loop agentic direto do `coddy-agent`,
+  aplicada antes da serializacao da mensagem `tool`;
+- preservacao de JSON valido apos compactacao, evitando que o follow-up do
+  modelo receba observacoes truncadas fora do formato esperado;
+- preservacao do inicio e do fim do output, para manter imports/cabecalhos e
+  conclusoes/erros finais;
+- marcadores explicitos `Coddy compacted tool output` e
+  `Coddy compacted tool observation` informando que o meio foi omitido por
+  budget de contexto;
+- instrucao para reexecutar leitura/busca mais estreita quando o trecho omitido
+  for necessario;
+- teste de regressao cobrindo arquivo grande, preservacao de `BEGIN_MARKER` e
+  `END_MARKER`, presenca do marcador de compactacao, JSON valido e limite de
+  tamanho.
+- retry controlado tambem no loop agentic direto do `coddy-agent` para erros
+  recuperaveis de provider e respostas vazias, com guidance adicional somente
+  quando o provider retorna sem assistant content/tool calls;
+- timeouts de transporte continuam sem retry automatico para respeitar o budget
+  de latencia da chamada.
+- politica de retry centralizada no modulo de modelo, compartilhada por runtime
+  `/ask`, eval live e loop agentic direto para evitar divergencia de criterios.
+- respostas vazias persistentes do provider agora continuam sendo reportadas
+  como falha, mas o run e os eventos marcam a falha como recuperavel para que UI
+  e usuario possam oferecer retry/troca de provider sem tratar como erro fatal.
+
+Metrica local apos a mudanca:
+
+- `cargo test -p coddy-agent -- --test-threads=1`: 184 passed.
+- `cargo test -p coddy-runtime -- --test-threads=1`: 61 passed.
+- `./target/debug/coddy eval quality --json`: score 100.
+- Multiagent eval: 3/3 passed, score 100.
+- Prompt battery deterministica: 1200/1200 passed, score 100.
 
 ## Estado validado em 2026-05-02
 
@@ -256,6 +305,23 @@ OpenRouter ainda podem retornar respostas vazias persistentes em uma minoria de
 casos. A proxima melhoria de maior impacto e reduzir dependencia de tentativas
 reativas com roteamento alternativo de provider/modelo e compaction adaptativa
 de observacoes.
+
+Smoke live adicional apos a compactacao estrutural do loop agentic direto:
+
+- Comando: `target/debug/coddy eval prompt-battery --json --model-provider openrouter --model-name deepseek/deepseek-v4-flash --limit 20 --concurrency 4`.
+- Resultado mais recente: 19/20 passed, score 95, raw score 90, member recall
+  92.
+- Model error rate: 5%, causado por resposta vazia persistente do provider
+  OpenRouter em um caso.
+- Interpretacao: a mudanca local nao degradou o harness; a principal aresta
+  live continua sendo fallback/roteamento quando o provider retorna resposta
+  vazia sem content/tool calls.
+- Integracao frontend: falhas recuperaveis publicadas no `AgentRunSummary`
+  agora geram um aviso acionavel e redigido no Desktop e no FloatingTerminal,
+  incluindo codigo tecnico, detalhe sem secrets, copia de diagnosticos
+  redigidos, retry do ultimo prompt do usuario quando disponivel, abertura da
+  rota de modelos e proxima acao para reducao de contexto/tool output ou troca
+  de provider/modelo.
 
 ## Fontes pesquisadas
 

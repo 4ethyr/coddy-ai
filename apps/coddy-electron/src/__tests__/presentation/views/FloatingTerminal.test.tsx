@@ -64,7 +64,11 @@ describe('FloatingTerminal', () => {
     sessionContext.session = {
       ...sessionContext.session,
       status: 'Idle',
+      selected_model: { provider: 'ollama', name: 'gemma4-E2B' },
+      active_run: null,
+      agent_run: null,
       pending_permission: null,
+      tool_activity: [],
       subagent_activity: [],
       streaming_text: '',
     }
@@ -135,6 +139,107 @@ describe('FloatingTerminal', () => {
     expect(screen.getByText('eval-runner [evaluation]')).toBeInTheDocument()
     expect(screen.getByText('output: score, passed // strict')).toBeInTheDocument()
     expect(screen.getByText('Prepared // 100')).toBeInTheDocument()
+  })
+
+  it('renders recoverable agent failures with redacted diagnostics', () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      selected_model: {
+        provider: 'openrouter',
+        name: 'deepseek/deepseek-v4-flash',
+      },
+      messages: [
+        { id: 'msg-1', role: 'user', text: '  analyze repo with tools  ' },
+      ],
+      agent_run: {
+        run_id: 'run-1',
+        summary: {
+          goal: 'analyze repo',
+          last_phase: 'Failed',
+          completed_steps: 2,
+          stop_reason: null,
+          failure_code: 'invalid_provider_response',
+          failure_message: 'empty provider response with sk-or-secret-token',
+          recoverable_failure: true,
+        },
+      },
+    }
+
+    render(<FloatingTerminal />)
+
+    expect(screen.getByText('Recoverable model failure')).toBeInTheDocument()
+    expect(
+      screen.getByText('empty provider response with [REDACTED]'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Retry this prompt. If it repeats, reduce context/tool output, refresh OpenRouter routing, or select another provider/model.',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('retries the latest user prompt from recoverable floating failures', async () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      selected_model: {
+        provider: 'openrouter',
+        name: 'deepseek/deepseek-v4-flash',
+      },
+      messages: [
+        { id: 'msg-1', role: 'user', text: 'first prompt' },
+        { id: 'msg-2', role: 'assistant', text: 'partial answer' },
+        { id: 'msg-3', role: 'user', text: '  analyze repo with tools  ' },
+      ],
+      agent_run: {
+        run_id: 'run-2',
+        summary: {
+          goal: 'analyze repo',
+          last_phase: 'Failed',
+          completed_steps: 2,
+          stop_reason: null,
+          failure_code: 'invalid_provider_response',
+          failure_message: 'empty provider response',
+          recoverable_failure: true,
+        },
+      },
+    }
+
+    render(<FloatingTerminal />)
+
+    await userEvent.click(screen.getByRole('button', { name: /retry prompt/i }))
+
+    expect(sessionContext.ask).toHaveBeenCalledWith('analyze repo with tools')
+  })
+
+  it('opens desktop model routing from recoverable floating failures', async () => {
+    sessionContext.session = {
+      ...sessionContext.session,
+      selected_model: {
+        provider: 'openrouter',
+        name: 'deepseek/deepseek-v4-flash',
+      },
+      agent_run: {
+        run_id: 'run-3',
+        summary: {
+          goal: 'analyze repo',
+          last_phase: 'Failed',
+          completed_steps: 2,
+          stop_reason: null,
+          failure_code: 'invalid_provider_response',
+          failure_message: 'empty provider response',
+          recoverable_failure: true,
+        },
+      },
+    }
+
+    render(<FloatingTerminal />)
+
+    await userEvent.click(screen.getByRole('button', { name: /open models/i }))
+
+    expect(window.localStorage.getItem('coddy:desktop-active-tab')).toBe(
+      'models',
+    )
+    expect(sessionContext.openUi).toHaveBeenCalledWith('DesktopApp')
   })
 
   it('renders pending tool approval actions above the input', async () => {

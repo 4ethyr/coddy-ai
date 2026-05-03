@@ -8,6 +8,10 @@ import type {
   ReplToolCatalogItem,
 } from '@/domain'
 import {
+  buildAgentRunRecoveryNotice,
+  resolveAgentRunRetryPrompt,
+} from '@/domain'
+import {
   MarkdownContent,
   MessageBubble,
 } from '@/presentation/components/MessageBubble'
@@ -18,6 +22,7 @@ import { ConversationHistoryPanel } from '@/presentation/components/Conversation
 import { SessionStatusPanel } from '@/presentation/components/SessionStatusPanel'
 import { SlashCommandHelpPanel } from '@/presentation/components/SlashCommandHelpPanel'
 import { CodingAgentCapabilitiesPanel } from '@/presentation/components/CodingAgentCapabilitiesPanel'
+import { AgentRunRecoveryCard } from '@/presentation/components/AgentRunRecoveryCard'
 import {
   ThinkingIndicator,
   type ThinkingAnimation,
@@ -28,6 +33,7 @@ interface Props {
   session: ReplSession
   onSend: (text: string) => void
   onPermissionReply: (requestId: string, reply: PermissionReply) => void
+  onOpenModels?: () => void
   thinkingAnimation?: ThinkingAnimation
   historyOpen?: boolean
   historyRecords?: ConversationRecord[]
@@ -51,6 +57,7 @@ export function ConversationPanel({
   session,
   onSend,
   onPermissionReply,
+  onOpenModels,
   thinkingAnimation = 'scan',
   historyOpen = false,
   historyRecords = [],
@@ -87,7 +94,11 @@ export function ConversationPanel({
             </div>
           </div>
 
-          <PlanOfAttack session={session} />
+          <PlanOfAttack
+            session={session}
+            onRetryPrompt={onSend}
+            onOpenModels={onOpenModels}
+          />
 
           {helpOpen && (
             <SlashCommandHelpPanel onClose={onCloseHelp ?? (() => {})} />
@@ -181,10 +192,24 @@ export function ConversationPanel({
   )
 }
 
-function PlanOfAttack({ session }: { session: ReplSession }) {
+function PlanOfAttack({
+  session,
+  onRetryPrompt,
+  onOpenModels,
+}: {
+  session: ReplSession
+  onRetryPrompt?: (text: string) => void
+  onOpenModels?: () => void
+}) {
   const toolActivity = session.tool_activity ?? []
   const subagentActivity = session.subagent_activity ?? []
   const agentRun = session.agent_run
+  const recoveryNotice = agentRun
+    ? buildAgentRunRecoveryNotice(agentRun.summary, session.selected_model)
+    : null
+  const retryPrompt = recoveryNotice
+    ? resolveAgentRunRetryPrompt(session.messages)
+    : null
   const hasToolActivity = toolActivity.length > 0
   const hasSubagentActivity = subagentActivity.length > 0
 
@@ -212,6 +237,17 @@ function PlanOfAttack({ session }: { session: ReplSession }) {
                     agentRun.summary.recoverable_failure ? 'recoverable' : 'fatal'
                   }`}
                   state="blocked"
+                />
+              )}
+              {recoveryNotice && (
+                <AgentRunRecoveryCard
+                  notice={recoveryNotice}
+                  onRetry={
+                    retryPrompt && onRetryPrompt
+                      ? () => onRetryPrompt(retryPrompt)
+                      : undefined
+                  }
+                  onOpenModels={onOpenModels}
                 />
               )}
               {agentRun.summary.stop_reason && (

@@ -46,9 +46,10 @@ pub use eval::{
 };
 pub use model::{
     decode_provider_safe_tool_name, is_empty_assistant_response_error,
-    with_empty_response_retry_guidance, ChatFinishReason, ChatMessage, ChatMessageRole,
-    ChatModelClient, ChatModelError, ChatModelResult, ChatRequest, ChatResponse, ChatToolCall,
-    ChatToolSpec, DefaultChatModelClient, OllamaChatModelClient, UnavailableChatModelClient,
+    should_retry_chat_model_request_error, with_empty_response_retry_guidance, ChatFinishReason,
+    ChatMessage, ChatMessageRole, ChatModelClient, ChatModelError, ChatModelResult, ChatRequest,
+    ChatResponse, ChatToolCall, ChatToolSpec, DefaultChatModelClient, OllamaChatModelClient,
+    UnavailableChatModelClient,
 };
 pub use plan_executor::{
     DeterministicPlanExecutor, DeterministicPlanItem, DeterministicPlanReport,
