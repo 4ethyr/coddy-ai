@@ -1267,23 +1267,64 @@ pub fn decode_provider_safe_tool_name(name: &str) -> String {
         .replace(".dot.", ".")
         .replace("::", ".");
     if decoded != alias {
-        return decoded;
+        return normalize_provider_tool_method_alias(&decoded);
     }
 
     for namespace in ["filesystem", "subagent", "shell"] {
         if let Some(method) = alias.strip_prefix(&format!("{namespace}._")) {
             if !method.is_empty() {
-                return format!("{namespace}.{method}");
+                return format!("{namespace}.{}", camel_or_kebab_to_snake(method));
+            }
+        }
+        if let Some(method) = alias.strip_prefix(&format!("{namespace}.")) {
+            if !method.is_empty() {
+                return format!("{namespace}.{}", camel_or_kebab_to_snake(method));
             }
         }
         if let Some(method) = alias.strip_prefix(&format!("{namespace}_")) {
             if !method.is_empty() {
-                return format!("{namespace}.{method}");
+                return format!("{namespace}.{}", camel_or_kebab_to_snake(method));
             }
         }
     }
 
     name.to_string()
+}
+
+fn normalize_provider_tool_method_alias(name: &str) -> String {
+    for namespace in ["filesystem", "subagent", "shell"] {
+        if let Some(method) = name.strip_prefix(&format!("{namespace}.")) {
+            if !method.is_empty() {
+                return format!("{namespace}.{}", camel_or_kebab_to_snake(method));
+            }
+        }
+    }
+    name.to_string()
+}
+
+fn camel_or_kebab_to_snake(method: &str) -> String {
+    let mut normalized = String::new();
+    let mut previous_was_separator = true;
+    for character in method.chars() {
+        if matches!(character, '-' | '.' | ' ' | ':') {
+            if !normalized.is_empty() && !previous_was_separator {
+                normalized.push('_');
+                previous_was_separator = true;
+            }
+            continue;
+        }
+        if character.is_ascii_uppercase() {
+            if !normalized.is_empty() && !previous_was_separator {
+                normalized.push('_');
+            }
+            normalized.push(character.to_ascii_lowercase());
+            previous_was_separator = false;
+            continue;
+        }
+        normalized.push(character);
+        previous_was_separator = character == '_';
+    }
+    normalized
 }
 
 fn is_provider_safe_function_name(name: &str) -> bool {
@@ -3082,6 +3123,26 @@ mod tests {
         assert_eq!(
             decode_provider_safe_tool_name("filesystem._list_files"),
             "filesystem.list_files"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem.listFiles"),
+            "filesystem.list_files"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem.readFile"),
+            "filesystem.read_file"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem.searchFiles"),
+            "filesystem.search_files"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem.applyEdit"),
+            "filesystem.apply_edit"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("subagent.teamPlan"),
+            "subagent.team_plan"
         );
     }
 
