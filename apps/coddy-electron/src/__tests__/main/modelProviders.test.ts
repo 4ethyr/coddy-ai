@@ -112,6 +112,82 @@ describe('modelProviders', () => {
     })
   })
 
+  it('lists NVIDIA NIM models with bearer authentication', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: [
+          {
+            id: 'deepseek-ai/deepseek-v4-pro',
+            owned_by: 'deepseek-ai',
+          },
+          {
+            id: 'meta/llama-test',
+            owned_by: 'meta',
+          },
+        ],
+      }),
+    )
+
+    const result = await listProviderModels(
+      { provider: 'nvidia', apiKey: 'nvapi-test' },
+      fetcher,
+    )
+
+    expect(fetcher).toHaveBeenCalledWith(
+      'https://integrate.api.nvidia.com/v1/models',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer nvapi-test',
+        }),
+      }),
+    )
+    expect(result.models).toEqual([
+      expect.objectContaining({
+        model: { provider: 'nvidia', name: 'deepseek-ai/deepseek-v4-pro' },
+        label: 'deepseek-ai/deepseek-v4-pro',
+        tags: ['api', 'deepseek-ai'],
+      }),
+      expect.objectContaining({
+        model: { provider: 'nvidia', name: 'meta/llama-test' },
+      }),
+    ])
+  })
+
+  it('keeps DeepSeek V4 Pro visible when NVIDIA model listing omits it', async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      jsonResponse({
+        data: [{ id: 'meta/llama-test', owned_by: 'meta' }],
+      }),
+    )
+
+    const result = await listProviderModels(
+      { provider: 'nvidia', apiKey: 'nvapi-test' },
+      fetcher,
+    )
+
+    expect(result.models).toContainEqual(
+      expect.objectContaining({
+        model: { provider: 'nvidia', name: 'deepseek-ai/deepseek-v4-pro' },
+        label: 'DeepSeek V4 Pro',
+      }),
+    )
+  })
+
+  it('reports a helpful NVIDIA credential error before network calls', async () => {
+    const fetcher = vi.fn()
+
+    const result = await listProviderModels(
+      { provider: 'nvidia' },
+      fetcher,
+    )
+
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(result.error).toEqual({
+      code: 'MODEL_LIST_FAILED',
+      message: 'NVIDIA API key is required.',
+    })
+  })
+
   it('lists Gemini API models with x-goog-api-key authentication', async () => {
     const fetcher = vi.fn().mockResolvedValue(
       jsonResponse({

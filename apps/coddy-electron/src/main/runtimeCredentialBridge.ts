@@ -125,6 +125,7 @@ function normalizeRuntimeCredentialProvider(
     provider === 'ollama' ||
     provider === 'openai' ||
     provider === 'openrouter' ||
+    provider === 'nvidia' ||
     provider === 'vertex' ||
     provider === 'azure'
   ) {

@@ -74,6 +74,8 @@ pub fn redact_conversation_text(text: &str) -> String {
         "bearer",
         "coddy_ephemeral_model_credential",
         "google_api_key",
+        "nvidia_api_key",
+        "nvidia_nim_api_key",
         "openai_api_key",
         "openrouter_api_key",
         "password",
@@ -85,7 +87,7 @@ pub fn redact_conversation_text(text: &str) -> String {
     }
 
     redacted = redact_bearer_values(&redacted);
-    for prefix in ["sk-or-", "sk-", "AIza", "ya29."] {
+    for prefix in ["sk-or-", "sk-", "nvapi-", "AIza", "ya29."] {
         redacted = redact_prefixed_tokens(&redacted, prefix);
     }
 
@@ -319,11 +321,12 @@ mod tests {
     #[test]
     fn conversation_record_redacts_common_provider_secrets() {
         let secret = "sk-or-secret-openrouter-token";
+        let nvidia_secret = "nvapi-secret-nvidia-token";
         let session = session_with_messages(vec![ReplMessage {
             id: Uuid::new_v4(),
             role: "user".to_string(),
             text: format!(
-                "Use OPENROUTER_API_KEY={secret} and Authorization: Bearer ya29.google-token"
+                "Use OPENROUTER_API_KEY={secret}, NVIDIA_API_KEY={nvidia_secret} and Authorization: Bearer ya29.google-token"
             ),
         }]);
 
@@ -332,6 +335,7 @@ mod tests {
 
         let serialized = serde_json::to_string(&record).expect("serialize record");
         assert!(!serialized.contains(secret));
+        assert!(!serialized.contains(nvidia_secret));
         assert!(!serialized.contains("ya29.google-token"));
         assert!(serialized.contains("[redacted]"));
     }

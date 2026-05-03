@@ -272,4 +272,29 @@ describe('runtimeCredentialBridge', () => {
       token: 'sk-or-test',
     })
   })
+
+  it('forwards stored NVIDIA API keys to the runtime without gcloud metadata', async () => {
+    const store = {
+      get: vi.fn().mockResolvedValue({
+        apiKey: 'nvapi-test',
+      }),
+    }
+    const gcloudTokenProvider = vi.fn().mockResolvedValue('unused-token')
+    const gcloudProjectProvider = vi.fn().mockResolvedValue('coddy-dev')
+
+    const env = await buildRuntimeCredentialEnvironment(
+      { provider: 'nvidia', name: 'deepseek-ai/deepseek-v4-pro' },
+      store,
+      gcloudTokenProvider,
+      gcloudProjectProvider,
+    )
+
+    expect(store.get).toHaveBeenCalledWith('nvidia')
+    expect(gcloudTokenProvider).not.toHaveBeenCalled()
+    expect(gcloudProjectProvider).not.toHaveBeenCalled()
+    expect(JSON.parse(env[CODDY_EPHEMERAL_MODEL_CREDENTIAL_ENV] ?? '{}')).toEqual({
+      provider: 'nvidia',
+      token: 'nvapi-test',
+    })
+  })
 })

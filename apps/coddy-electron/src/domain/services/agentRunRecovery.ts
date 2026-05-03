@@ -55,6 +55,10 @@ function recoveryAction(code: string, provider?: string): string {
     return 'Retry this prompt. If it repeats, reduce context/tool output, refresh OpenRouter routing, or select another provider/model.'
   }
 
+  if (provider === 'nvidia') {
+    return 'Retry this prompt. If it repeats, reduce context/tool output, verify NVIDIA model availability, or select another provider/model.'
+  }
+
   if (code === 'invalid_provider_response') {
     return 'Retry this prompt. If it repeats, reduce context/tool output or select another provider/model.'
   }
@@ -69,6 +73,7 @@ function recoveryAction(code: string, provider?: string): string {
 function redactProviderSecrets(text: string): string {
   return text
     .replace(/\bsk-or-[A-Za-z0-9_-]+/g, '[REDACTED]')
+    .replace(/\bnvapi-[A-Za-z0-9._-]+/g, '[REDACTED]')
     .replace(/\bsk-[A-Za-z0-9_-]+/g, '[REDACTED]')
     .replace(/\bAIza[A-Za-z0-9._-]+/g, '[REDACTED]')
     .replace(/\bya29\.[A-Za-z0-9._-]+/g, '[REDACTED]')

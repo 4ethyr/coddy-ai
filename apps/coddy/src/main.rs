@@ -1339,6 +1339,12 @@ fn provider_api_key_names(provider: &str) -> Option<&'static [&'static str]> {
             "CODDY_OPENROUTER_API_KEY",
             "OPEN_ROUTER_API_KEY",
         ]),
+        "nvidia" => Some(&[
+            "NVIDIA_API_KEY",
+            "CODDY_NVIDIA_API_KEY",
+            "NVIDIA_NIM_API_KEY",
+            "CODDY_NVIDIA_NIM_API_KEY",
+        ]),
         "openai" => Some(&["OPENAI_API_KEY", "CODDY_OPENAI_API_KEY"]),
         "azure" => Some(&["AZURE_OPENAI_API_KEY", "CODDY_AZURE_API_KEY"]),
         _ => None,
@@ -2036,6 +2042,16 @@ mod tests {
     }
 
     #[test]
+    fn nvidia_eval_credentials_accept_nim_dotenv_aliases() {
+        let keys = provider_api_key_names("nvidia").expect("nvidia keys");
+
+        assert!(keys.contains(&"NVIDIA_API_KEY"));
+        assert!(keys.contains(&"CODDY_NVIDIA_API_KEY"));
+        assert!(keys.contains(&"NVIDIA_NIM_API_KEY"));
+        assert!(keys.contains(&"CODDY_NVIDIA_NIM_API_KEY"));
+    }
+
+    #[test]
     fn dotenv_secret_loader_reads_requested_key_without_leaking_other_values() {
         let root = std::env::temp_dir().join(format!("coddy-dotenv-{}", uuid::Uuid::new_v4()));
         let env_file = root.join(".env");
@@ -2068,6 +2084,24 @@ mod tests {
         let debug = format!("{credential:?}");
         assert!(debug.contains("provider: \"openrouter\""));
         assert!(!debug.contains("openrouter-secret"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn provider_dotenv_credential_builds_nvidia_request_scoped_redacted_credential() {
+        let root = std::env::temp_dir().join(format!("coddy-dotenv-{}", uuid::Uuid::new_v4()));
+        let env_file = root.join(".env");
+        std::fs::create_dir_all(&root).expect("create temp dotenv dir");
+        std::fs::write(&env_file, "NVIDIA_API_KEY='nvapi-secret'\n").expect("write temp dotenv");
+
+        let credential = provider_api_key_credential_from_dotenv_file("nvidia", &env_file)
+            .expect("nvidia credential");
+
+        assert_eq!(credential.provider, "nvidia");
+        assert_eq!(credential.token, "nvapi-secret");
+        let debug = format!("{credential:?}");
+        assert!(debug.contains("provider: \"nvidia\""));
+        assert!(!debug.contains("nvapi-secret"));
         let _ = std::fs::remove_dir_all(root);
     }
 

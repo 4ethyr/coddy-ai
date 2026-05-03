@@ -3482,7 +3482,7 @@ fn array_string_values(value: Option<&serde_json::Value>, limit: usize) -> Vec<S
 }
 
 fn redact_context_text(text: &str) -> String {
-    let markers = ["Bearer ", "sk-or-", "ya29.", "sk-"];
+    let markers = ["Bearer ", "sk-or-", "nvapi-", "ya29.", "sk-"];
     let mut output = String::with_capacity(text.len());
     let mut index = 0;
 
@@ -3795,10 +3795,14 @@ fn model_error_message(
 fn model_recovery_hint(provider: &str, retryable: bool) -> &'static str {
     if retryable && provider == "openrouter" {
         " This looks recoverable; retry the request, reduce large tool outputs/context, or switch OpenRouter routing/model. If it persists, check OpenRouter credits, rate limits and provider availability."
+    } else if retryable && provider == "nvidia" {
+        " This looks recoverable; retry the request, reduce large tool outputs/context, or switch NVIDIA model routing. If it persists, check NVIDIA API key, credits, rate limits and model availability."
     } else if retryable {
         " This looks recoverable; retry the request or switch to another model/provider if it persists."
     } else if provider == "openrouter" {
         " Check the OpenRouter API key, account credits, model availability and request compatibility."
+    } else if provider == "nvidia" {
+        " Check the NVIDIA API key, account credits, model availability and request compatibility."
     } else {
         ""
     }
@@ -5306,6 +5310,27 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
 
         assert!(message.contains("sk-or-[REDACTED]"));
         assert!(!message.contains("router-token"));
+    }
+
+    #[test]
+    fn model_error_message_includes_nvidia_recovery_guidance_and_redacts_token() {
+        let model = ModelRef {
+            provider: "nvidia".to_string(),
+            name: "deepseek-ai/deepseek-v4-pro".to_string(),
+        };
+        let message = model_error_message(
+            &ChatModelError::ProviderError {
+                provider: "nvidia".to_string(),
+                message: "provider included nvapi-secret-token in error".to_string(),
+                retryable: false,
+            },
+            &model,
+            11,
+        );
+
+        assert!(message.contains("Check the NVIDIA API key"));
+        assert!(message.contains("nvapi-[REDACTED]"));
+        assert!(!message.contains("secret-token"));
     }
 
     #[test]
