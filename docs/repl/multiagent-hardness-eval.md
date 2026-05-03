@@ -718,6 +718,32 @@ Validation:
   `./target/debug/coddy eval prompt-battery --json --model-provider openrouter --model-name deepseek/deepseek-v4-flash --limit 20 --concurrency 4`
   returned score 100, 20 passed, 0 failed, raw score 90 and model error rate 0.
 
+### Battery 29: Prompt-Battery Baseline Comparison
+
+Goal: make prompt-battery results comparable across runs so local, CI and live provider sampling
+can detect regressions instead of relying only on point-in-time scores.
+
+Implemented result:
+
+- Added `--baseline` and `--write-baseline` to `coddy eval prompt-battery`.
+- Baselines are written as `coddy.promptBatteryBaseline` JSON envelopes with the current report
+  under `report`.
+- The same baseline path works for deterministic prompt-battery and live prompt-battery output.
+- Comparison checks score, prompt count and failed count for deterministic runs.
+- Live comparisons also track raw score, member recall, raw member recall, model error rate, model
+  error count and raw routing failure count.
+- JSON output now includes `comparison` and `baselineWritten` when those flags are used.
+
+Validation:
+
+- `cargo test -p coddy-agent prompt_battery_baseline -- --test-threads=1`: 3 tests passed.
+- `cargo test -p coddy parses_eval_prompt_battery -- --test-threads=1`: 2 tests passed.
+- Live OpenRouter/DeepSeek V4 Flash baseline smoke:
+  `./target/debug/coddy eval prompt-battery --json --model-provider openrouter --model-name deepseek/deepseek-v4-flash --limit 5 --concurrency 2 --write-baseline /tmp/coddy-live-prompt-battery-baseline.json`
+  returned score 100, raw score 100, model error rate 0 and wrote the baseline.
+- Live comparison against that baseline returned `comparison.status = passed`, score delta 0 and
+  prompt count delta 0.
+
 ## Current Assessment
 
 The multiagent harness is now measurable before execution. It can compose a team plan, expose
@@ -738,7 +764,8 @@ the default multiagent, prompt-battery and grounded-response signals into one de
 for local, CI and desktop Workspace checks. Live provider sampling is now usable as a separate
 quality signal: in the latest OpenRouter/DeepSeek V4 Flash smoke, the guarded score reached 100/100
 with raw score 90/100 and 0% model error rate, while raw routing gaps remained visible in
-`rawFailures`.
+`rawFailures`. Prompt-battery runs can now be persisted and compared against JSON baselines for
+deterministic and live-provider regression tracking.
 
 Remaining gaps:
 
@@ -749,13 +776,13 @@ Remaining gaps:
   with the real binary process attached.
 - broad prompts can still consume the full bounded tool budget; the runtime now reports evidence,
   but the next improvement should add adaptive tool budgeting and observation compaction.
-- live model answer quality now has a sampled harness, but it still needs persisted baselines,
-  provider comparison reports and explicit user approval controls for API spend.
+- live model answer quality now has a sampled harness and baseline comparison, but still needs
+  long-running provider trend reports and explicit user approval controls for API spend.
 
 ## Next Improvements
 
-1. Add live-model eval baselines by provider/model, including model error rate, raw score, guarded
-   score and member recall trends over time.
+1. Persist live-model eval reports by provider/model over time, including model error rate, raw
+   score, guarded score and member recall trends.
 2. Connect the subagent execution reducer to isolated runtime sessions so accepted outputs come from
    real subagent runs instead of test fixtures.
 3. Add optional explicit approval before reading sensitive paths, even when output redaction is

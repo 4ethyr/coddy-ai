@@ -306,6 +306,12 @@ enum EvalCommand {
         json: bool,
     },
     PromptBattery {
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+
+        #[arg(long)]
+        write_baseline: Option<PathBuf>,
+
         #[arg(long, default_value_t = false)]
         json: bool,
 
@@ -525,12 +531,22 @@ async fn main() -> Result<()> {
             command:
                 EvalCommand::PromptBattery {
                     json,
+                    baseline,
+                    write_baseline,
                     model_provider,
                     model_name,
                     limit,
                     concurrency,
                 },
-        }) => run_eval_prompt_battery(json, model_provider, model_name, limit, concurrency),
+        }) => run_eval_prompt_battery(
+            json,
+            baseline,
+            write_baseline,
+            model_provider,
+            model_name,
+            limit,
+            concurrency,
+        ),
         Some(Command::Doctor {
             command: DoctorCommand::Shortcuts,
         }) => run_shortcuts_doctor(&config).await,
@@ -1097,22 +1113,44 @@ fn run_eval_multiagent(
 
 fn run_eval_prompt_battery(
     json: bool,
+    baseline: Option<PathBuf>,
+    write_baseline: Option<PathBuf>,
     model_provider: Option<String>,
     model_name: Option<String>,
     limit: usize,
     concurrency: usize,
 ) -> Result<()> {
     if model_provider.is_some() || model_name.is_some() {
-        return run_live_prompt_battery(json, model_provider, model_name, limit, concurrency);
+        return run_live_prompt_battery(
+            json,
+            baseline,
+            write_baseline,
+            model_provider,
+            model_name,
+            limit,
+            concurrency,
+        );
     }
 
     let report = run_default_prompt_battery();
+    let comparison = baseline
+        .as_ref()
+        .map(|path| report.compare_to_baseline_file(path))
+        .transpose()?;
+
+    if let Some(path) = write_baseline.as_ref() {
+        report.write_baseline(path)?;
+    }
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report.public_metadata())?
-        );
+        let mut output = report.public_metadata();
+        if let Some(comparison) = &comparison {
+            output["comparison"] = comparison.public_metadata();
+        }
+        if let Some(path) = write_baseline.as_ref() {
+            output["baselineWritten"] = serde_json::json!(path.display().to_string());
+        }
+        println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
     }
 
@@ -1138,11 +1176,31 @@ fn run_eval_prompt_battery(
             failure.failures.join("; ")
         );
     }
+    if let Some(comparison) = &comparison {
+        println!(
+            "Baseline comparison: {} | previous {} | current {} | delta {}",
+            eval_gate_status_label(comparison.status),
+            comparison.previous_score,
+            comparison.current_score,
+            i16::from(comparison.current_score) - i16::from(comparison.previous_score)
+        );
+        for regression in &comparison.regressions {
+            println!("  regression: {regression}");
+        }
+        for improvement in &comparison.improvements {
+            println!("  improvement: {improvement}");
+        }
+    }
+    if let Some(path) = write_baseline {
+        println!("Baseline written: {}", path.display());
+    }
     Ok(())
 }
 
 fn run_live_prompt_battery(
     json: bool,
+    baseline: Option<PathBuf>,
+    write_baseline: Option<PathBuf>,
     model_provider: Option<String>,
     model_name: Option<String>,
     limit: usize,
@@ -1165,12 +1223,24 @@ fn run_live_prompt_battery(
     let cases = cases.iter().take(limit).collect::<Vec<_>>();
     let client = DefaultChatModelClient::default();
     let report = run_live_prompt_battery_cases(&client, &model, credential, &cases, concurrency);
+    let comparison = baseline
+        .as_ref()
+        .map(|path| report.compare_to_baseline_file(path))
+        .transpose()?;
+
+    if let Some(path) = write_baseline.as_ref() {
+        report.write_baseline(path)?;
+    }
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report.public_metadata())?
-        );
+        let mut output = report.public_metadata();
+        if let Some(comparison) = &comparison {
+            output["comparison"] = comparison.public_metadata();
+        }
+        if let Some(path) = write_baseline.as_ref() {
+            output["baselineWritten"] = serde_json::json!(path.display().to_string());
+        }
+        println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
     }
 
@@ -1187,6 +1257,24 @@ fn run_live_prompt_battery(
         report.failed,
         report.concurrency
     );
+    if let Some(comparison) = &comparison {
+        println!(
+            "Baseline comparison: {} | previous {} | current {} | delta {}",
+            eval_gate_status_label(comparison.status),
+            comparison.previous_score,
+            comparison.current_score,
+            i16::from(comparison.current_score) - i16::from(comparison.previous_score)
+        );
+        for regression in &comparison.regressions {
+            println!("  regression: {regression}");
+        }
+        for improvement in &comparison.improvements {
+            println!("  improvement: {improvement}");
+        }
+    }
+    if let Some(path) = write_baseline {
+        println!("Baseline written: {}", path.display());
+    }
     Ok(())
 }
 
@@ -1799,6 +1887,8 @@ mod tests {
                 command:
                     EvalCommand::PromptBattery {
                         json,
+                        baseline,
+                        write_baseline,
                         model_provider,
                         model_name,
                         limit,
@@ -1806,10 +1896,61 @@ mod tests {
                     },
             }) => {
                 assert!(json);
+                assert_eq!(baseline, None);
+                assert_eq!(write_baseline, None);
                 assert_eq!(model_provider, None);
                 assert_eq!(model_name, None);
                 assert_eq!(limit, 1000);
                 assert_eq!(concurrency, 8);
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_eval_prompt_battery_baseline_options() {
+        let cli = Cli::try_parse_from([
+            "coddy",
+            "eval",
+            "prompt-battery",
+            "--baseline",
+            "/tmp/prompt-baseline.json",
+            "--write-baseline",
+            "/tmp/prompt-current.json",
+            "--model-provider",
+            "openrouter",
+            "--model-name",
+            "deepseek/deepseek-v4-flash",
+            "--limit",
+            "20",
+            "--concurrency",
+            "4",
+        ])
+        .expect("parse prompt battery baseline options");
+
+        match cli.command {
+            Some(Command::Eval {
+                command:
+                    EvalCommand::PromptBattery {
+                        json,
+                        baseline,
+                        write_baseline,
+                        model_provider,
+                        model_name,
+                        limit,
+                        concurrency,
+                    },
+            }) => {
+                assert!(!json);
+                assert_eq!(baseline, Some(PathBuf::from("/tmp/prompt-baseline.json")));
+                assert_eq!(
+                    write_baseline,
+                    Some(PathBuf::from("/tmp/prompt-current.json"))
+                );
+                assert_eq!(model_provider.as_deref(), Some("openrouter"));
+                assert_eq!(model_name.as_deref(), Some("deepseek/deepseek-v4-flash"));
+                assert_eq!(limit, 20);
+                assert_eq!(concurrency, 4);
             }
             _ => panic!("unexpected command"),
         }

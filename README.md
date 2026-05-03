@@ -580,6 +580,16 @@ Agent quality gates:
 ./target/debug/coddy eval quality --json
 ```
 
+Prompt-battery baseline comparison:
+
+```bash
+./target/debug/coddy eval prompt-battery --json \
+  --write-baseline evals/baselines/prompt-battery.json
+
+./target/debug/coddy eval prompt-battery --json \
+  --baseline evals/baselines/prompt-battery.json
+```
+
 Live model routing sample, using the provider credential configured for the
 selected provider:
 

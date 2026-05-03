@@ -44,7 +44,8 @@ pub use eval::{
     GroundedResponseFailure, GroundedResponseReport, LivePromptBatteryCaseResult,
     LivePromptBatteryReport, MultiagentEvalBaselineComparison, MultiagentEvalBaselineError,
     MultiagentEvalCase, MultiagentEvalReport, MultiagentEvalRunner, MultiagentEvalSuiteReport,
-    MultiagentExecutionMetrics, PromptBatteryCase, PromptBatteryFailure, PromptBatteryReport,
+    MultiagentExecutionMetrics, PromptBatteryBaselineComparison, PromptBatteryCase,
+    PromptBatteryFailure, PromptBatteryReport,
 };
 pub use model::{
     decode_provider_safe_tool_name, is_empty_assistant_response_error,
