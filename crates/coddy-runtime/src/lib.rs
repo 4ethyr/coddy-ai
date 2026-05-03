@@ -1769,6 +1769,29 @@ fn normalize_grounding_text(text: &str) -> String {
 
 fn looks_like_textual_tool_call(text: &str) -> bool {
     let normalized = text.to_ascii_lowercase();
+    if contains_numbered_tool_call_header(&normalized)
+        || (contains_any(
+            &normalized,
+            &[
+                "i will now perform",
+                "i will now make",
+                "i will now do",
+                "vou agora realizar",
+                "vou agora fazer",
+            ],
+        ) && contains_any(
+            &normalized,
+            &[
+                "tool call",
+                "tool calls",
+                "chamada de ferramenta",
+                "chamadas de ferramenta",
+            ],
+        ))
+    {
+        return true;
+    }
+
     if contains_any(
         &normalized,
         &[
@@ -1808,6 +1831,7 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
         &normalized,
         &[
             "tool call:",
+            "tool call expired:",
             "tool_call:",
             "tool-call:",
             "tool calls:",
@@ -1856,6 +1880,24 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
         )
 }
 
+fn contains_numbered_tool_call_header(text: &str) -> bool {
+    text.lines().any(|line| {
+        let trimmed = line
+            .trim_start_matches(|character: char| {
+                character.is_whitespace() || matches!(character, '#' | '*' | '-' | '>' | '`')
+            })
+            .trim_start();
+        let Some(rest) = trimmed.strip_prefix("tool call ") else {
+            return false;
+        };
+        let rest = rest.trim_start_matches('#').trim_start();
+        rest.chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit())
+            && rest.contains(':')
+    })
+}
+
 fn summarize_chat_tool_calls(tool_calls: &[ChatToolCall]) -> String {
     tool_calls
         .iter()
@@ -1868,17 +1910,38 @@ fn normalize_model_initiated_tool_input(
     tool_name: &ToolName,
     mut input: serde_json::Value,
 ) -> serde_json::Value {
-    if matches!(
-        tool_name.as_str(),
-        LIST_FILES_TOOL | READ_FILE_TOOL | SEARCH_FILES_TOOL
-    ) {
-        let uses_workspace_root_alias =
-            input.get("path").and_then(serde_json::Value::as_str) == Some("/");
-        if uses_workspace_root_alias {
-            input["path"] = json!(".");
+    match tool_name.as_str() {
+        LIST_FILES_TOOL | READ_FILE_TOOL | SEARCH_FILES_TOOL => {
+            let uses_workspace_root_alias =
+                input.get("path").and_then(serde_json::Value::as_str) == Some("/");
+            if uses_workspace_root_alias {
+                input["path"] = json!(".");
+            }
+
+            match tool_name.as_str() {
+                LIST_FILES_TOOL => coerce_positive_integer_string(&mut input, "max_entries"),
+                READ_FILE_TOOL => coerce_positive_integer_string(&mut input, "max_bytes"),
+                SEARCH_FILES_TOOL => coerce_positive_integer_string(&mut input, "max_matches"),
+                _ => {}
+            }
         }
+        _ => {}
     }
     input
+}
+
+fn coerce_positive_integer_string(input: &mut serde_json::Value, field: &str) {
+    let Some(raw_value) = input.get(field).and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    let trimmed = raw_value.trim();
+    let Ok(value) = trimmed.parse::<u64>() else {
+        return;
+    };
+    if value == 0 {
+        return;
+    }
+    input[field] = json!(value);
 }
 
 fn compact_tool_output_for_model(text: &str) -> (String, bool) {
@@ -2705,12 +2768,47 @@ fn classify_ask_intent(text: &str, action: &AskAction) -> (ReplIntent, f32) {
         return (ReplIntent::ManageContext, 0.88);
     }
 
-    let normalized = text.to_ascii_lowercase();
+    let normalized = normalize_grounding_text(text);
     if contains_any(
         &normalized,
         &["debug", "erro", "error", "stack trace", "falha"],
     ) {
         return (ReplIntent::DebugCode, 0.72);
+    }
+    if contains_any(
+        &normalized,
+        &[
+            "plano tdd",
+            "plan tdd",
+            "plano de implementacao",
+            "implementation plan",
+            "plano para implementar",
+            "crie um plano",
+            "create a plan",
+        ],
+    ) {
+        return (ReplIntent::AgenticCodeChange, 0.73);
+    }
+    if contains_any(
+        &normalized,
+        &[
+            "arquitetura",
+            "architecture",
+            "codebase",
+            "qualidade",
+            "quality",
+            "testabilidade",
+            "testability",
+            "revisao de seguranca",
+            "security review",
+            "seguranca read-only",
+            "security read-only",
+            "analise a arquitetura",
+            "analise minha codebase",
+            "analyze the codebase",
+        ],
+    ) {
+        return (ReplIntent::ExplainCode, 0.74);
     }
     if contains_any(&normalized, &["test", "teste", "spec", "coverage"]) {
         return (ReplIntent::GenerateTestCases, 0.68);
@@ -3502,6 +3600,39 @@ mod tests {
     }
 
     #[test]
+    fn classify_architecture_analysis_as_code_explanation_despite_test_mentions() {
+        let (intent, confidence) = classify_ask_intent(
+            "Analise a arquitetura deste workspace e liste comandos de teste.",
+            &AskAction::ModelBackedResponse,
+        );
+
+        assert_eq!(intent, coddy_core::ReplIntent::ExplainCode);
+        assert!(confidence >= 0.7);
+    }
+
+    #[test]
+    fn classify_tdd_plan_as_agentic_code_change_not_test_generation() {
+        let (intent, confidence) = classify_ask_intent(
+            "Crie um plano TDD para implementar uma melhoria pequena neste projeto.",
+            &AskAction::ModelBackedResponse,
+        );
+
+        assert_eq!(intent, coddy_core::ReplIntent::AgenticCodeChange);
+        assert!(confidence >= 0.7);
+    }
+
+    #[test]
+    fn classify_direct_test_request_as_test_generation() {
+        let (intent, confidence) = classify_ask_intent(
+            "Gere testes unitarios para o parser de comandos.",
+            &AskAction::ModelBackedResponse,
+        );
+
+        assert_eq!(intent, coddy_core::ReplIntent::GenerateTestCases);
+        assert!(confidence >= 0.6);
+    }
+
+    #[test]
     fn ask_command_streams_assistant_text_before_final_message() {
         let request_id = Uuid::new_v4();
         let runtime = CoddyRuntime::default();
@@ -3786,6 +3917,42 @@ mod tests {
             .contains("textual tool-call attempt from the model"));
         assert!(response.text.contains("not executed for safety"));
         assert!(!response.text.contains("Critical"));
+    }
+
+    #[test]
+    fn assistant_response_blocks_numbered_pseudo_tool_calls() {
+        let response = ChatResponse::from_text(
+            r#"I will now perform two additional tool calls within the remaining budget.
+
+**Tool call 4: Search for patterns `password|secret|token` in Rust files**
+
+**Tool call 5: Read `.agent/SECURITY_POLICY.md`**"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("SECURITY_POLICY.md"));
+    }
+
+    #[test]
+    fn assistant_response_blocks_expired_pseudo_tool_calls() {
+        let response = ChatResponse::from_text(
+            r#"Tool call expired: filesystem.read_file (crates/coddy-core/src/tool.rs)
+Status: error
+Reason: tool_budget_exhausted"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("tool_budget_exhausted"));
     }
 
     #[test]
@@ -4482,6 +4649,52 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
         assert_eq!(
             normalize_model_initiated_tool_input(&subagent_route, json!({ "path": "/" }))["path"],
             "/"
+        );
+    }
+
+    #[test]
+    fn model_initiated_filesystem_tool_limits_accept_numeric_strings() {
+        let list_files = ToolName::new(LIST_FILES_TOOL).expect("tool name");
+        let read_file = ToolName::new(READ_FILE_TOOL).expect("tool name");
+        let search_files = ToolName::new(SEARCH_FILES_TOOL).expect("tool name");
+
+        assert_eq!(
+            normalize_model_initiated_tool_input(
+                &list_files,
+                json!({ "path": ".", "max_entries": "20" })
+            )["max_entries"]
+                .as_u64(),
+            Some(20)
+        );
+        assert_eq!(
+            normalize_model_initiated_tool_input(
+                &read_file,
+                json!({ "path": "README.md", "max_bytes": "4000" })
+            )["max_bytes"]
+                .as_u64(),
+            Some(4000)
+        );
+        assert_eq!(
+            normalize_model_initiated_tool_input(
+                &search_files,
+                json!({ "path": ".", "query": "auth", "max_matches": "12" })
+            )["max_matches"]
+                .as_u64(),
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn model_initiated_filesystem_tool_limits_leave_invalid_strings_unchanged() {
+        let list_files = ToolName::new(LIST_FILES_TOOL).expect("tool name");
+
+        assert_eq!(
+            normalize_model_initiated_tool_input(
+                &list_files,
+                json!({ "path": ".", "max_entries": "many" })
+            )["max_entries"]
+                .as_str(),
+            Some("many")
         );
     }
 
