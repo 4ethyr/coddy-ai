@@ -224,6 +224,14 @@ describe('useSession cancellation errors', () => {
           passed: 1200,
           failed: 0,
         },
+        {
+          name: 'grounded-response',
+          status: 'passed' as const,
+          score: 100,
+          caseCount: 3,
+          passed: 3,
+          failed: 0,
+        },
       ],
       multiagent: { score: 100, passed: 3, failed: 0, reports: [] },
       promptBattery: {
@@ -234,6 +242,14 @@ describe('useSession cancellation errors', () => {
         failed: 0,
         score: 100,
         memberCoverage: { explorer: 1200 },
+        failures: [],
+      },
+      groundedResponse: {
+        kind: 'coddy.groundedResponseEval' as const,
+        caseCount: 3,
+        passed: 3,
+        failed: 0,
+        score: 100,
         failures: [],
       },
     }

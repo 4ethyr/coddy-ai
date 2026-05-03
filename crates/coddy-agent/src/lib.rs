@@ -35,14 +35,16 @@ pub use command_guard::{
 };
 pub use context::{ContextObservation, ContextPlanItem, ContextSnapshot, ContextTool};
 pub use eval::{
-    default_prompt_battery_cases, extract_prompt_battery_members, guard_prompt_battery_members,
-    prompt_battery_routing_messages, run_default_prompt_battery, run_live_prompt_battery_cases,
+    default_grounded_response_cases, default_prompt_battery_cases, extract_prompt_battery_members,
+    extract_repository_path_citations, guard_prompt_battery_members,
+    prompt_battery_routing_messages, run_default_grounded_response_eval,
+    run_default_prompt_battery, run_grounded_response_eval, run_live_prompt_battery_cases,
     run_prompt_battery, EvalCase, EvalExpectations, EvalGateReport, EvalGateStatus,
-    EvalQualityGate, EvalReport, EvalRunner, EvalStatus, EvalSuiteReport,
-    LivePromptBatteryCaseResult, LivePromptBatteryReport, MultiagentEvalBaselineComparison,
-    MultiagentEvalBaselineError, MultiagentEvalCase, MultiagentEvalReport, MultiagentEvalRunner,
-    MultiagentEvalSuiteReport, MultiagentExecutionMetrics, PromptBatteryCase, PromptBatteryFailure,
-    PromptBatteryReport,
+    EvalQualityGate, EvalReport, EvalRunner, EvalStatus, EvalSuiteReport, GroundedResponseCase,
+    GroundedResponseFailure, GroundedResponseReport, LivePromptBatteryCaseResult,
+    LivePromptBatteryReport, MultiagentEvalBaselineComparison, MultiagentEvalBaselineError,
+    MultiagentEvalCase, MultiagentEvalReport, MultiagentEvalRunner, MultiagentEvalSuiteReport,
+    MultiagentExecutionMetrics, PromptBatteryCase, PromptBatteryFailure, PromptBatteryReport,
 };
 pub use model::{
     decode_provider_safe_tool_name, is_empty_assistant_response_error,

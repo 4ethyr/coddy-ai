@@ -875,12 +875,51 @@ impl CoddyRuntime {
         }
 
         let tool_summary = summarize_chat_tool_calls(&response.tool_calls);
+        if let Some(final_response) = self.synthesize_after_tool_round_limit(
+            &context,
+            &messages,
+            response.text.trim(),
+            &tool_summary,
+        ) {
+            return final_response;
+        }
+
         let text = build_tool_round_limit_response(
             response.text.trim(),
             &tool_summary,
             last_tool_observations.as_deref(),
         );
         AssistantResponse::from_text(redact_context_text(&text))
+    }
+
+    fn synthesize_after_tool_round_limit(
+        &self,
+        context: &ModelResponseContext<'_>,
+        base_messages: &[ChatMessage],
+        pending_model_text: &str,
+        pending_tool_summary: &str,
+    ) -> Option<AssistantResponse> {
+        let mut messages = base_messages.to_vec();
+        if !pending_model_text.trim().is_empty() {
+            messages.push(ChatMessage::assistant(
+                pending_model_text.trim().to_string(),
+            ));
+        }
+        messages.push(ChatMessage::user(build_tool_round_limit_synthesis_prompt(
+            pending_tool_summary,
+        )));
+        let response = self
+            .complete_after_tool_messages(
+                context.selected_model,
+                context.model_credential.clone(),
+                messages,
+                false,
+            )
+            .ok()?;
+        if response.tool_calls.is_empty() && !response.text.trim().is_empty() {
+            return Some(AssistantResponse::from_chat_response(response));
+        }
+        None
     }
 
     fn prepare_subagent_routing_context(
@@ -1808,6 +1847,19 @@ fn build_tool_round_limit_response(
     sections.join("\n\n")
 }
 
+fn build_tool_round_limit_synthesis_prompt(pending_tool_summary: &str) -> String {
+    [
+        "Coddy reached the tool observation round limit for this turn.".to_string(),
+        format!("Pending model-requested tools were not executed: {pending_tool_summary}."),
+        "Do not request more tools.".to_string(),
+        "Synthesize the best grounded final answer from the tool observations already provided."
+            .to_string(),
+        "State what was inspected, what remains uncertain, and what validation was or was not run."
+            .to_string(),
+    ]
+    .join(" ")
+}
+
 fn build_model_system_prompt(
     context_policy: ContextPolicy,
     session: &ReplSession,
@@ -1838,6 +1890,7 @@ fn build_model_system_prompt(
         [
             "Evidence rules:",
             "- When reviewing tests or coverage, cite the inspected test file paths and test names.",
+            "- Never cite a repository file path unless it appeared in tool observations or workspace context.",
             "- Do not claim tests, coverage, files, or implementations are missing unless you searched or read the relevant paths in this turn.",
             "- If the evidence is incomplete, say what was inspected and label the conclusion as unverified.",
             "- Prefer precise uncertainty over broad unsupported criticism.",
@@ -3528,6 +3581,9 @@ mod tests {
         ));
         assert!(system_prompt.contains(
             "Do not claim tests, coverage, files, or implementations are missing unless you searched or read the relevant paths in this turn"
+        ));
+        assert!(system_prompt.contains(
+            "Never cite a repository file path unless it appeared in tool observations or workspace context"
         ));
         assert!(system_prompt.contains("Context policy: ScreenAndWorkspace"));
         assert!(system_prompt.contains("Recent session messages before this turn:"));
@@ -5351,7 +5407,12 @@ mod tests {
         let captured_requests = requests.lock().expect("requests mutex poisoned");
         let events = runtime.events_after(2).0;
 
-        assert_eq!(captured_requests.len(), MAX_MODEL_TOOL_ROUNDS + 1);
+        assert_eq!(captured_requests.len(), MAX_MODEL_TOOL_ROUNDS + 2);
+        assert!(captured_requests
+            .last()
+            .expect("final fallback synthesis request")
+            .tools
+            .is_empty());
         assert!(text.contains("bounded tool loop limit"));
         assert!(text.contains("filesystem.list_files"));
         assert!(text.contains("Last tool observations:"));
@@ -5363,6 +5424,72 @@ mod tests {
                 .count(),
             MAX_MODEL_TOOL_ROUNDS
         );
+    }
+
+    #[test]
+    fn ask_command_synthesizes_after_safe_tool_loop_limit() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("README.md", "# Coddy\n");
+        let repeated_tool_response = |id: &str| ChatResponse {
+            text: format!("Need another workspace pass {id}."),
+            deltas: vec![format!("Need another workspace pass {id}.")],
+            finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+            tool_calls: vec![ChatToolCall {
+                id: Some(id.to_string()),
+                name: LIST_FILES_TOOL.to_string(),
+                arguments: json!({ "path": ".", "max_entries": 20 }),
+            }],
+        };
+        let mut responses = (1..=(MAX_MODEL_TOOL_ROUNDS + 1))
+            .map(|index| repeated_tool_response(&format!("call-{index}")))
+            .collect::<Vec<_>>();
+        responses.push(ChatResponse::from_text(
+            "README.md is present; further inspection was stopped by the tool budget.",
+        ));
+        let (chat_client, requests) = QueuedChatClient::new(responses);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "keep inspecting but synthesize at the limit".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let final_request = captured_requests.last().expect("final synthesis request");
+
+        assert_eq!(captured_requests.len(), MAX_MODEL_TOOL_ROUNDS + 2);
+        assert!(final_request.tools.is_empty());
+        assert!(final_request.messages.iter().any(|message| {
+            message.content.contains("tool observation round limit")
+                && message.content.contains("Do not request more tools")
+        }));
+        assert!(text.contains("README.md is present"));
+        assert!(!text.contains("bounded tool loop limit"));
     }
 
     #[test]

@@ -47,8 +47,8 @@ Last full validation recorded in this branch: 2026-05-02.
 - Secure token handling through Electron `safeStorage` when available.
 - Agent tool registry, tool metadata, risk levels, permissions and approval
   primitives.
-- Deterministic quality gates for multiagent routing, reducer contracts and the
-  1200-prompt subagent prompt battery.
+- Deterministic quality gates for multiagent routing, reducer contracts,
+  grounded response citations and the 1200-prompt subagent prompt battery.
 - Live prompt-battery execution against selected providers for measuring model
   routing quality and recoverable provider failures without exposing API keys.
 - Declarative subagent registry with explorer, planner, coder, reviewer,
@@ -596,7 +596,7 @@ Latest validated local suite on this branch:
 - `cargo fmt --check`.
 - `cargo test --workspace -- --test-threads=1`.
 - `cargo clippy --workspace --all-targets -- -D warnings`.
-- `npm test -- --run` in `apps/coddy-electron`: 42 files, 328 tests.
+- `npm test -- --run` in `apps/coddy-electron`: 44 files, 344 tests.
 - `npm run typecheck`.
 - `npm run lint`.
 - `npm run build`.

@@ -7,9 +7,9 @@ use crate::config::CoddyRuntimeConfig;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use coddy_agent::{
-    default_prompt_battery_cases, run_default_prompt_battery, run_live_prompt_battery_cases,
-    DefaultChatModelClient, MultiagentEvalCase, MultiagentEvalRunner, MultiagentEvalSuiteReport,
-    PromptBatteryReport,
+    default_prompt_battery_cases, run_default_grounded_response_eval, run_default_prompt_battery,
+    run_live_prompt_battery_cases, DefaultChatModelClient, GroundedResponseReport,
+    MultiagentEvalCase, MultiagentEvalRunner, MultiagentEvalSuiteReport, PromptBatteryReport,
 };
 use coddy_client::CoddyClient;
 use coddy_core::redact_conversation_text;
@@ -920,12 +920,24 @@ struct QualityEvalReport {
     score: u8,
     multiagent: MultiagentEvalSuiteReport,
     prompt_battery: PromptBatteryReport,
+    grounded_response: GroundedResponseReport,
 }
 
 impl QualityEvalReport {
-    fn new(multiagent: MultiagentEvalSuiteReport, prompt_battery: PromptBatteryReport) -> Self {
-        let score = multiagent.score.min(prompt_battery.score);
-        let status = if multiagent.is_success() && prompt_battery.is_success() && score == 100 {
+    fn new(
+        multiagent: MultiagentEvalSuiteReport,
+        prompt_battery: PromptBatteryReport,
+        grounded_response: GroundedResponseReport,
+    ) -> Self {
+        let score = multiagent
+            .score
+            .min(prompt_battery.score)
+            .min(grounded_response.score);
+        let status = if multiagent.is_success()
+            && prompt_battery.is_success()
+            && grounded_response.is_success()
+            && score == 100
+        {
             QualityEvalStatus::Passed
         } else {
             QualityEvalStatus::Failed
@@ -936,6 +948,7 @@ impl QualityEvalReport {
             score,
             multiagent,
             prompt_battery,
+            grounded_response,
         }
     }
 
@@ -966,9 +979,18 @@ impl QualityEvalReport {
                     "passed": self.prompt_battery.passed,
                     "failed": self.prompt_battery.failed,
                 },
+                {
+                    "name": "grounded-response",
+                    "status": quality_check_status_label(self.grounded_response.is_success(), self.grounded_response.score),
+                    "score": self.grounded_response.score,
+                    "caseCount": self.grounded_response.case_count,
+                    "passed": self.grounded_response.passed,
+                    "failed": self.grounded_response.failed,
+                },
             ],
             "multiagent": self.multiagent.public_metadata(),
             "promptBattery": self.prompt_battery.public_metadata(),
+            "groundedResponse": self.grounded_response.public_metadata(),
         })
     }
 }
@@ -999,6 +1021,13 @@ fn run_eval_quality(json: bool) -> Result<()> {
         report.prompt_battery.prompt_count,
         report.prompt_battery.passed,
         report.prompt_battery.failed
+    );
+    println!(
+        "- Grounded response: score {} | cases {} | passed {} | failed {}",
+        report.grounded_response.score,
+        report.grounded_response.case_count,
+        report.grounded_response.passed,
+        report.grounded_response.failed
     );
     Ok(())
 }
@@ -1317,6 +1346,7 @@ fn default_quality_eval_report() -> QualityEvalReport {
     QualityEvalReport::new(
         default_multiagent_eval_suite(),
         run_default_prompt_battery(),
+        run_default_grounded_response_eval(),
     )
 }
 
@@ -1732,6 +1762,8 @@ mod tests {
         assert_eq!(report.multiagent.failed, 0);
         assert_eq!(report.prompt_battery.prompt_count, 1200);
         assert_eq!(report.prompt_battery.failed, 0);
+        assert_eq!(report.grounded_response.case_count, 3);
+        assert_eq!(report.grounded_response.failed, 0);
 
         let metadata = report.public_metadata();
         assert_eq!(metadata["kind"], serde_json::json!("coddy.qualityEval"));
@@ -1746,6 +1778,14 @@ mod tests {
         assert_eq!(
             metadata["checks"][1]["name"],
             serde_json::json!("prompt-battery")
+        );
+        assert_eq!(
+            metadata["checks"][2]["name"],
+            serde_json::json!("grounded-response")
+        );
+        assert_eq!(
+            metadata["groundedResponse"]["score"],
+            serde_json::json!(100)
         );
     }
 

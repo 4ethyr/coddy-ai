@@ -172,6 +172,14 @@ function createSimBridge(daemon: SimDaemon) {
                 passed: 1200,
                 failed: 0,
               },
+              {
+                name: 'grounded-response',
+                status: 'passed',
+                score: 100,
+                caseCount: 3,
+                passed: 3,
+                failed: 0,
+              },
             ],
             multiagent: {
               score: 100,
@@ -189,6 +197,14 @@ function createSimBridge(daemon: SimDaemon) {
               memberCoverage: {
                 explorer: 1200,
               },
+              failures: [],
+            },
+            groundedResponse: {
+              kind: 'coddy.groundedResponseEval',
+              caseCount: 3,
+              passed: 3,
+              failed: 0,
+              score: 100,
               failures: [],
             },
           })
@@ -881,9 +897,10 @@ describe('IPC integration', () => {
         passed: true,
         score: 100,
       })
-      expect(result.checks).toHaveLength(2)
+      expect(result.checks).toHaveLength(3)
       expect(result.multiagent.passed).toBe(3)
       expect(result.promptBattery.promptCount).toBe(1200)
+      expect(result.groundedResponse?.caseCount).toBe(3)
       expect(daemon.commands).toEqual(['eval-quality'])
     })
   })
