@@ -4,6 +4,7 @@ export type ModelProviderId =
   | 'ollama'
   | 'openai'
   | 'openrouter'
+  | 'nvidia'
   | 'vertex'
   | 'azure'
 
@@ -161,6 +162,27 @@ export const MODEL_PROVIDER_CATALOG: readonly ModelProviderOption[] = [
     requiresCredential: true,
     runtimeChat: OPENAI_COMPATIBLE_RUNTIME_CHAT,
     models: [],
+  },
+  {
+    id: 'nvidia',
+    label: 'NVIDIA NIM',
+    shortLabel: 'NVIDIA',
+    description: 'Modelos NVIDIA NIM via API OpenAI-compatible.',
+    connectionLabel: 'api key',
+    routingLabel: 'nim',
+    connectionKind: 'api_key',
+    credentialLabel: 'NVIDIA API key',
+    credentialPlaceholder: 'nvapi-...',
+    requiresCredential: true,
+    runtimeChat: OPENAI_COMPATIBLE_RUNTIME_CHAT,
+    models: [
+      {
+        model: { provider: 'nvidia', name: 'deepseek-ai/deepseek-v4-pro' },
+        label: 'DeepSeek V4 Pro',
+        description: 'DeepSeek V4 Pro served through NVIDIA NIM.',
+        tags: ['api', 'coding'],
+      },
+    ],
   },
   {
     id: 'vertex',

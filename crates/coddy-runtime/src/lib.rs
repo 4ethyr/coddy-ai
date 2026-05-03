@@ -93,6 +93,26 @@ struct ToolRoundOutcome {
     pending_permission: bool,
 }
 
+struct EvidenceBootstrap {
+    context: String,
+    tool_calls_used: usize,
+}
+
+struct EvidenceBootstrapToolRequest<'a> {
+    session_id: Uuid,
+    run_id: Uuid,
+    tool_name: &'a str,
+    input: serde_json::Value,
+    plan_item: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvidenceBootstrapKind {
+    CodingPlan,
+    CodebaseReview,
+    LongContext,
+}
+
 enum OpenConversationError {
     NotFound,
     HistoryWriteFailed(String),
@@ -710,7 +730,19 @@ impl CoddyRuntime {
             user_text,
         } = turn;
 
-        let tool_use_policy = tool_use_policy_from_text(&user_text);
+        let mut tool_use_policy = tool_use_policy_from_text(&user_text);
+        let evidence_bootstrap = if selected_model.name == "unselected"
+            || selected_model.provider == "coddy"
+        {
+            None
+        } else {
+            self.prepare_evidence_bootstrap_context(session_id, run_id, &user_text, tool_use_policy)
+        };
+        if let Some(bootstrap) = &evidence_bootstrap {
+            if let Some(remaining) = tool_use_policy.max_tool_calls.as_mut() {
+                *remaining = remaining.saturating_sub(bootstrap.tool_calls_used);
+            }
+        }
         let mut system_prompt = build_model_system_prompt(
             context_policy,
             session_context,
@@ -720,6 +752,10 @@ impl CoddyRuntime {
         if let Some(task_guidance) = format_task_specific_tool_guidance(&user_text) {
             system_prompt.push_str("\n\n");
             system_prompt.push_str(&task_guidance);
+        }
+        if let Some(bootstrap) = &evidence_bootstrap {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&bootstrap.context);
         }
         if tool_use_policy.max_tool_calls.is_none() {
             if let Some(routing_context) =
@@ -904,12 +940,14 @@ impl CoddyRuntime {
                         Err(error) => {
                             let mut response =
                                 AssistantResponse::from_chat_response(next_response).text;
-                            response.push_str("\n\nCoddy attempted to recover from the textual tool-call response, but the provider did not return a usable recovery step: ");
-                            response.push_str(&model_error_message(
+                            append_recovery_failure_context(
+                                &mut response,
+                                "Coddy attempted to recover from the textual tool-call response, but the provider did not return a usable recovery step:",
                                 &error,
                                 context.selected_model,
                                 self.tool_registry.definitions().len(),
-                            ));
+                                last_tool_observations.as_deref(),
+                            );
                             return AssistantResponse::from_text(redact_context_text(&response));
                         }
                     }
@@ -941,12 +979,14 @@ impl CoddyRuntime {
                         Err(error) => {
                             let mut response =
                                 AssistantResponse::from_chat_response(next_response).text;
-                            response.push_str("\n\nCoddy attempted to recover from an incomplete action promise, but the provider did not return a usable recovery step: ");
-                            response.push_str(&model_error_message(
+                            append_recovery_failure_context(
+                                &mut response,
+                                "Coddy attempted to recover from an incomplete action promise, but the provider did not return a usable recovery step:",
                                 &error,
                                 context.selected_model,
                                 self.tool_registry.definitions().len(),
-                            ));
+                                last_tool_observations.as_deref(),
+                            );
                             return AssistantResponse::from_text(redact_context_text(&response));
                         }
                     }
@@ -979,12 +1019,14 @@ impl CoddyRuntime {
                         Err(error) => {
                             let mut response =
                                 AssistantResponse::from_chat_response(next_response).text;
-                            response.push_str("\n\nCoddy attempted an active grounding recovery, but the provider did not return a usable recovery step: ");
-                            response.push_str(&model_error_message(
+                            append_recovery_failure_context(
+                                &mut response,
+                                "Coddy attempted an active grounding recovery, but the provider did not return a usable recovery step:",
                                 &error,
                                 context.selected_model,
                                 self.tool_registry.definitions().len(),
-                            ));
+                                last_tool_observations.as_deref(),
+                            );
                             return AssistantResponse::from_text(redact_context_text(&response));
                         }
                     }
@@ -1206,6 +1248,168 @@ impl CoddyRuntime {
             .collect::<Vec<_>>()
             .join("\n\n"),
         )
+    }
+
+    fn prepare_evidence_bootstrap_context(
+        &self,
+        session_id: Uuid,
+        run_id: Uuid,
+        goal: &str,
+        tool_use_policy: ToolUsePolicy,
+    ) -> Option<EvidenceBootstrap> {
+        let kind = classify_evidence_bootstrap_goal(goal)?;
+        let max_tool_calls = evidence_bootstrap_tool_budget(kind, tool_use_policy)?;
+        let agent_runtime = self.agent_runtime.as_ref()?;
+        let mut state =
+            agent_runtime.start_run_with_id(session_id, run_id, "Prepare evidence bootstrap");
+        let mut observations = Vec::new();
+        let mut tool_calls_used = 0_usize;
+
+        if tool_calls_used < max_tool_calls {
+            if let Some(observation) = self.execute_evidence_bootstrap_tool(
+                agent_runtime,
+                &mut state,
+                EvidenceBootstrapToolRequest {
+                    session_id,
+                    run_id,
+                    tool_name: LIST_FILES_TOOL,
+                    input: json!({ "path": ".", "max_entries": 80 }),
+                    plan_item: "List workspace root for deterministic evidence bootstrap",
+                },
+            ) {
+                tool_calls_used += 1;
+                observations.push(observation);
+            }
+        }
+
+        let read_budget = max_tool_calls.saturating_sub(tool_calls_used);
+        for path in evidence_bootstrap_read_candidates(agent_runtime.workspace().path(), kind)
+            .into_iter()
+            .take(read_budget)
+        {
+            if let Some(observation) = self.execute_evidence_bootstrap_tool(
+                agent_runtime,
+                &mut state,
+                EvidenceBootstrapToolRequest {
+                    session_id,
+                    run_id,
+                    tool_name: READ_FILE_TOOL,
+                    input: json!({ "path": path, "max_bytes": 4_000 }),
+                    plan_item: "Read high-signal evidence file before model planning",
+                },
+            ) {
+                tool_calls_used += 1;
+                observations.push(observation);
+            }
+        }
+
+        if observations.is_empty() {
+            return None;
+        }
+
+        let remaining_budget = tool_use_policy
+            .max_tool_calls
+            .map(|limit| limit.saturating_sub(tool_calls_used).to_string())
+            .unwrap_or_else(|| "bounded by Coddy runtime".to_string());
+        let context = [
+            "Deterministic evidence bootstrap:".to_string(),
+            format!(
+                "- Bootstrap type: {}.",
+                evidence_bootstrap_kind_label(kind)
+            ),
+            format!("- Bootstrap tool calls used before model turn: {tool_calls_used}."),
+            format!("- Remaining model-requested tool budget: {remaining_budget}."),
+            "- Use this as grounded starting evidence, not as a substitute for additional focused inspection when needed.".to_string(),
+            "Bootstrap observations:".to_string(),
+            observations.join("\n"),
+        ]
+        .join("\n");
+
+        Some(EvidenceBootstrap {
+            context: redact_context_text(&context),
+            tool_calls_used,
+        })
+    }
+
+    fn execute_evidence_bootstrap_tool(
+        &self,
+        agent_runtime: &LocalAgentRuntime,
+        state: &mut coddy_agent::RunState,
+        request: EvidenceBootstrapToolRequest<'_>,
+    ) -> Option<String> {
+        let tool_name = ToolName::new(request.tool_name).expect("built-in tool name");
+        agent_runtime.add_plan_item(
+            state,
+            request.plan_item.to_string(),
+            Some(tool_name.clone()),
+        );
+        let call = ToolCall::new(
+            request.session_id,
+            request.run_id,
+            tool_name.clone(),
+            request.input.clone(),
+            unix_ms_now(),
+        );
+        let outcome = agent_runtime.execute_tool_call(state, &call);
+        for event in outcome.events {
+            self.publish_event_with_run_now(event, request.run_id);
+        }
+
+        if outcome.permission_request.is_some() && outcome.result.is_none() {
+            let path = request
+                .input
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(".");
+            return Some(format!(
+                "- `{tool_name}` `{path}` requires approval and was not read during bootstrap."
+            ));
+        }
+
+        let result = outcome.result?;
+        match result.status {
+            ToolResultStatus::Succeeded => {
+                let output = result.output.as_ref()?;
+                if let Some(item) = context_item_from_tool_output(&tool_name, output) {
+                    self.publish_event_with_run_now(
+                        ReplEvent::ContextItemAdded { item },
+                        request.run_id,
+                    );
+                }
+                let path = output
+                    .metadata
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .or_else(|| {
+                        request
+                            .input
+                            .get("path")
+                            .and_then(serde_json::Value::as_str)
+                    })
+                    .unwrap_or(".");
+                let (mut text, compacted) = compact_tool_output_for_model(&output.text);
+                text = text.trim().to_string();
+                if compacted {
+                    text.push_str("\n  Tool output compacted for model context.");
+                }
+                if output.truncated {
+                    text.push_str("\n  Source tool result truncated by executor.");
+                }
+                Some(format!("- `{tool_name}` `{path}` succeeded:\n{text}"))
+            }
+            ToolResultStatus::Failed | ToolResultStatus::Cancelled | ToolResultStatus::Denied => {
+                let path = request
+                    .input
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(".");
+                let message = result
+                    .error
+                    .map(|error| error.message)
+                    .unwrap_or_else(|| "unknown tool failure".to_string());
+                Some(format!("- `{tool_name}` `{path}` failed: {message}"))
+            }
+        }
     }
 
     fn execute_model_tool_round(
@@ -1914,6 +2118,34 @@ fn build_textual_tool_call_recovery_prompt(unsafe_answer: &str) -> String {
     .join("\n")
 }
 
+fn append_recovery_failure_context(
+    response: &mut String,
+    failure_intro: &str,
+    error: &ChatModelError,
+    selected_model: &ModelRef,
+    tool_count: usize,
+    last_tool_observations: Option<&str>,
+) {
+    response.push_str("\n\n");
+    response.push_str(failure_intro);
+    response.push(' ');
+    response.push_str(&model_error_message(error, selected_model, tool_count));
+
+    if let Some(observations) = last_tool_observations
+        .map(str::trim)
+        .filter(|observations| !observations.is_empty())
+    {
+        response.push_str("\n\nGrounded partial evidence captured before recovery failed:\n");
+        response.push_str(&truncate_context_text(
+            &redact_context_text(observations),
+            4_000,
+        ));
+        response.push_str(
+            "\n\nThis is partial evidence only; retry with a narrower prompt for a synthesized final answer.",
+        );
+    }
+}
+
 fn build_action_promise_recovery_prompt(incomplete_answer: &str, tools_enabled: bool) -> String {
     let excerpt = truncate_context_text(&redact_context_text(incomplete_answer), 1200);
     let tool_instruction = if tools_enabled {
@@ -2121,6 +2353,311 @@ fn looks_like_unexecuted_tool_action_promise(text: &str) -> bool {
             ".py",
         ],
     )
+}
+
+fn classify_evidence_bootstrap_goal(goal: &str) -> Option<EvidenceBootstrapKind> {
+    let normalized = normalize_grounding_text(goal);
+    let repository_scoped = contains_any(
+        &normalized,
+        &[
+            "codebase",
+            "workspace",
+            "repo",
+            "repositorio",
+            "projeto",
+            "arquitetura",
+            "architecture",
+            "fonte",
+            "source",
+            "test",
+            "tests",
+            "arquivo",
+            "files",
+            "contexto longo",
+            "long context",
+        ],
+    );
+    if !repository_scoped {
+        return None;
+    }
+
+    if contains_any(
+        &normalized,
+        &[
+            "plano tdd",
+            "plan tdd",
+            "tdd",
+            "implementation plan",
+            "plano de implementacao",
+            "coding plan",
+            "implementar",
+            "implementacao",
+            "codificar",
+        ],
+    ) {
+        return Some(EvidenceBootstrapKind::CodingPlan);
+    }
+
+    if contains_any(
+        &normalized,
+        &[
+            "review",
+            "revisao",
+            "refator",
+            "arquitetura",
+            "architecture",
+            "seguranca",
+            "security",
+            "qualidade",
+            "quality",
+            "analise",
+            "analisar",
+        ],
+    ) {
+        return Some(EvidenceBootstrapKind::CodebaseReview);
+    }
+
+    if contains_any(
+        &normalized,
+        &[
+            "contexto longo",
+            "contextos longos",
+            "long context",
+            "complexo",
+            "complex",
+            "codebase grande",
+            "large codebase",
+        ],
+    ) {
+        return Some(EvidenceBootstrapKind::LongContext);
+    }
+
+    None
+}
+
+fn evidence_bootstrap_tool_budget(
+    kind: EvidenceBootstrapKind,
+    tool_use_policy: ToolUsePolicy,
+) -> Option<usize> {
+    let desired = match kind {
+        EvidenceBootstrapKind::CodingPlan | EvidenceBootstrapKind::CodebaseReview => 4,
+        EvidenceBootstrapKind::LongContext => 3,
+    };
+    let budget = tool_use_policy
+        .max_tool_calls
+        .map(|limit| limit.min(desired))
+        .unwrap_or(desired);
+    (budget > 0).then_some(budget)
+}
+
+fn evidence_bootstrap_kind_label(kind: EvidenceBootstrapKind) -> &'static str {
+    match kind {
+        EvidenceBootstrapKind::CodingPlan => "coding-plan",
+        EvidenceBootstrapKind::CodebaseReview => "codebase-review",
+        EvidenceBootstrapKind::LongContext => "long-context",
+    }
+}
+
+fn evidence_bootstrap_read_candidates(
+    workspace_root: &Path,
+    kind: EvidenceBootstrapKind,
+) -> Vec<String> {
+    let mut files = Vec::new();
+    collect_evidence_bootstrap_files(workspace_root, workspace_root, 0, &mut files);
+    files.sort();
+
+    let mut selected = Vec::new();
+    push_first_matching(&files, &mut selected, is_evidence_manifest_file);
+    push_first_matching(&files, &mut selected, is_evidence_source_file);
+    if matches!(
+        kind,
+        EvidenceBootstrapKind::CodingPlan | EvidenceBootstrapKind::CodebaseReview
+    ) {
+        push_first_matching(&files, &mut selected, is_evidence_test_file);
+    }
+    if selected.is_empty() {
+        push_first_matching(&files, &mut selected, is_evidence_readme_file);
+    }
+    selected
+}
+
+fn collect_evidence_bootstrap_files(
+    workspace_root: &Path,
+    directory: &Path,
+    depth: usize,
+    files: &mut Vec<String>,
+) {
+    const MAX_DEPTH: usize = 5;
+    const MAX_FILES: usize = 700;
+    if depth > MAX_DEPTH || files.len() >= MAX_FILES {
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        if files.len() >= MAX_FILES {
+            return;
+        }
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if path.is_dir() {
+            if !is_evidence_ignored_dir(&name) {
+                collect_evidence_bootstrap_files(workspace_root, &path, depth + 1, files);
+            }
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(workspace_root) else {
+            continue;
+        };
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if !is_evidence_sensitive_path(&relative)
+            && (is_evidence_manifest_file(&relative)
+                || is_evidence_source_file(&relative)
+                || is_evidence_test_file(&relative)
+                || is_evidence_readme_file(&relative))
+        {
+            files.push(relative);
+        }
+    }
+}
+
+fn push_first_matching(files: &[String], selected: &mut Vec<String>, predicate: fn(&str) -> bool) {
+    if let Some(path) = files
+        .iter()
+        .filter(|path| !selected.iter().any(|selected| selected == *path))
+        .filter(|path| predicate(path))
+        .min_by_key(|path| evidence_path_score(path))
+    {
+        selected.push(path.clone());
+    }
+}
+
+fn evidence_path_score(path: &str) -> usize {
+    let path = path.to_ascii_lowercase();
+    if matches!(
+        path.as_str(),
+        "cargo.toml" | "package.json" | "pyproject.toml" | "go.mod"
+    ) {
+        return 0;
+    }
+    if path == "src/lib.rs" || path == "src/main.rs" {
+        return 1;
+    }
+    if path.contains("/src/lib.rs") || path.contains("/src/main.rs") {
+        return 2;
+    }
+    if path.contains("/tests/") || path.starts_with("tests/") {
+        return 3;
+    }
+    if path.contains("__tests__") || path.contains(".test.") || path.contains("_test.") {
+        return 4;
+    }
+    if path.eq_ignore_ascii_case("readme.md") {
+        return 5;
+    }
+    10 + path.matches('/').count()
+}
+
+fn is_evidence_manifest_file(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "cargo.toml"
+            | "package.json"
+            | "pyproject.toml"
+            | "go.mod"
+            | "pom.xml"
+            | "build.gradle"
+            | "settings.gradle"
+            | "tsconfig.json"
+            | "vite.config.ts"
+            | "next.config.js"
+            | "next.config.mjs"
+    )
+}
+
+fn is_evidence_source_file(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    (lower.contains("/src/") || lower.starts_with("src/") || lower.starts_with("crates/"))
+        && matches!(
+            Path::new(&lower)
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some(
+                "rs" | "ts"
+                    | "tsx"
+                    | "js"
+                    | "jsx"
+                    | "py"
+                    | "go"
+                    | "java"
+                    | "kt"
+                    | "cpp"
+                    | "c"
+                    | "h"
+                    | "hpp"
+            )
+        )
+}
+
+fn is_evidence_test_file(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    (lower.contains("/tests/")
+        || lower.starts_with("tests/")
+        || lower.contains("__tests__")
+        || lower.contains(".test.")
+        || lower.contains(".spec.")
+        || lower.contains("_test."))
+        && matches!(
+            Path::new(&lower)
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some("rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "java")
+        )
+}
+
+fn is_evidence_readme_file(path: &str) -> bool {
+    path.eq_ignore_ascii_case("README.md") || path.eq_ignore_ascii_case("readme.md")
+}
+
+fn is_evidence_ignored_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | ".next"
+            | ".turbo"
+            | ".cache"
+            | "build"
+            | "coverage"
+            | "dist"
+            | "node_modules"
+            | "out"
+            | "release"
+            | "target"
+            | "texts"
+    )
+}
+
+fn is_evidence_sensitive_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower == ".env"
+        || lower.starts_with(".env.")
+        || lower.contains("/.env")
+        || lower.contains("id_rsa")
+        || lower.contains("id_ed25519")
+        || lower.ends_with(".pem")
+        || lower.ends_with(".key")
+        || lower.contains("credential")
+        || lower.contains("secret")
+        || lower.contains("token")
 }
 
 fn contains_numbered_tool_call_header(text: &str) -> bool {
@@ -2945,7 +3482,7 @@ fn array_string_values(value: Option<&serde_json::Value>, limit: usize) -> Vec<S
 }
 
 fn redact_context_text(text: &str) -> String {
-    let markers = ["Bearer ", "sk-or-", "ya29.", "sk-"];
+    let markers = ["Bearer ", "sk-or-", "nvapi-", "ya29.", "sk-"];
     let mut output = String::with_capacity(text.len());
     let mut index = 0;
 
@@ -3258,10 +3795,14 @@ fn model_error_message(
 fn model_recovery_hint(provider: &str, retryable: bool) -> &'static str {
     if retryable && provider == "openrouter" {
         " This looks recoverable; retry the request, reduce large tool outputs/context, or switch OpenRouter routing/model. If it persists, check OpenRouter credits, rate limits and provider availability."
+    } else if retryable && provider == "nvidia" {
+        " This looks recoverable; retry the request, reduce large tool outputs/context, or switch NVIDIA model routing. If it persists, check NVIDIA API key, credits, rate limits and model availability."
     } else if retryable {
         " This looks recoverable; retry the request or switch to another model/provider if it persists."
     } else if provider == "openrouter" {
         " Check the OpenRouter API key, account credits, model availability and request compatibility."
+    } else if provider == "nvidia" {
+        " Check the NVIDIA API key, account credits, model availability and request compatibility."
     } else {
         ""
     }
@@ -4197,6 +4738,124 @@ mod tests {
     }
 
     #[test]
+    fn ask_command_bootstraps_tdd_codebase_plan_with_source_and_test_evidence() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write(
+            "Cargo.toml",
+            "[package]\nname = \"bootstrap-demo\"\nversion = \"0.1.0\"\n",
+        );
+        workspace.write(
+            "src/lib.rs",
+            "pub fn parse(value: &str) -> &str { value }\n",
+        );
+        workspace.write(
+            "tests/parser_test.rs",
+            "#[test]\nfn parses_values() { assert_eq!(\"ok\", \"ok\"); }\n",
+        );
+        workspace.write(".env", "OPENROUTER_API_KEY=secret\n");
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("bootstrapped plan accepted"));
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Crie um plano TDD para esta codebase. Use no maximo 6 tools.".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let system_prompt = &captured_requests[0].messages[0].content;
+        let events = runtime.events_after(0).0;
+
+        assert!(system_prompt.contains("Deterministic evidence bootstrap:"));
+        assert!(system_prompt.contains("Bootstrap type: coding-plan"));
+        assert!(system_prompt.contains("Bootstrap tool calls used before model turn: 4"));
+        assert!(system_prompt.contains("Remaining model-requested tool budget: 2"));
+        assert!(system_prompt.contains("`filesystem.read_file` `Cargo.toml` succeeded"));
+        assert!(system_prompt.contains("`filesystem.read_file` `src/lib.rs` succeeded"));
+        assert!(system_prompt.contains("`filesystem.read_file` `tests/parser_test.rs` succeeded"));
+        assert!(!system_prompt.contains("OPENROUTER_API_KEY"));
+        assert!(!system_prompt.contains("OPENROUTER_API_KEY=secret"));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(&event.event, ReplEvent::ToolStarted { name } if name == LIST_FILES_TOOL || name == READ_FILE_TOOL))
+                .count(),
+            4
+        );
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ContextItemAdded { item }
+                if item.label == "filesystem.read_file: src/lib.rs"
+        )));
+    }
+
+    #[test]
+    fn ask_command_does_not_bootstrap_without_selected_model() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write(
+            "Cargo.toml",
+            "[package]\nname = \"bootstrap-demo\"\nversion = \"0.1.0\"\n",
+        );
+        workspace.write(
+            "src/lib.rs",
+            "pub fn parse(value: &str) -> &str { value }\n",
+        );
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("no model bootstrap"));
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Crie um plano TDD para esta codebase. Use no maximo 6 tools.".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let system_prompt = &captured_requests[0].messages[0].content;
+        let events = runtime.events_after(0).0;
+
+        assert!(!system_prompt.contains("Deterministic evidence bootstrap:"));
+        assert!(!events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolStarted { name } if name == LIST_FILES_TOOL || name == READ_FILE_TOOL
+        )));
+    }
+
+    #[test]
     fn assistant_response_blocks_textual_tool_call_markup() {
         let response = ChatResponse::from_text(
             r#"Let me call<｜DSML｜tool_calls>
@@ -4651,6 +5310,27 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
 
         assert!(message.contains("sk-or-[REDACTED]"));
         assert!(!message.contains("router-token"));
+    }
+
+    #[test]
+    fn model_error_message_includes_nvidia_recovery_guidance_and_redacts_token() {
+        let model = ModelRef {
+            provider: "nvidia".to_string(),
+            name: "deepseek-ai/deepseek-v4-pro".to_string(),
+        };
+        let message = model_error_message(
+            &ChatModelError::ProviderError {
+                provider: "nvidia".to_string(),
+                message: "provider included nvapi-secret-token in error".to_string(),
+                retryable: false,
+            },
+            &model,
+            11,
+        );
+
+        assert!(message.contains("Check the NVIDIA API key"));
+        assert!(message.contains("nvapi-[REDACTED]"));
+        assert!(!message.contains("secret-token"));
     }
 
     #[test]
@@ -6352,6 +7032,77 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
     }
 
     #[test]
+    fn ask_command_returns_tool_evidence_when_textual_recovery_provider_fails() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write(
+            "src/lib.rs",
+            "pub fn normalize(value: &str) -> String { value.trim().to_lowercase() }\n",
+        );
+        workspace.write(".env", "OPENROUTER_API_KEY=secret\n");
+        let (chat_client, requests) = QueuedChatResultClient::new(vec![
+            Ok(ChatResponse {
+                text: "I will inspect source first.".to_string(),
+                deltas: vec!["I will inspect source first.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-read-source".to_string()),
+                    name: READ_FILE_TOOL.to_string(),
+                    arguments: json!({ "path": "src/lib.rs", "max_bytes": 400 }),
+                }],
+            }),
+            Ok(ChatResponse::from_text(
+                "Tool observations:\n\nfilesystem.read_file succeeded:\nI inspected src/lib.rs and will call another tool now.",
+            )),
+            Err(ChatModelError::Transport {
+                provider: "openrouter".to_string(),
+                message: "timed out reading response".to_string(),
+                retryable: true,
+            }),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openrouter".to_string(),
+                    name: "deepseek/deepseek-v4-flash".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Analise src/lib.rs com tools.".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+
+        assert_eq!(captured_requests.len(), 3);
+        assert!(text.contains("textual tool-call attempt"));
+        assert!(text.contains("timed out reading response"));
+        assert!(text.contains("Grounded partial evidence captured before recovery failed"));
+        assert!(text.contains("filesystem.read_file"));
+        assert!(text.contains("normalize"));
+        assert!(!text.contains("OPENROUTER_API_KEY=secret"));
+    }
+
+    #[test]
     fn ask_command_recovers_action_promise_after_tool_budget_exhaustion() {
         let request_id = Uuid::new_v4();
         let workspace = TempWorkspace::new();
@@ -6398,7 +7149,7 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
         let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
             request_id,
             command: ReplCommand::Ask {
-                text: "Analise o projeto. Use no maximo 1 tool.".to_string(),
+                text: "Responda com base em uma ferramenta. Use no maximo 1 tool.".to_string(),
                 context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
                 model_credential: None,
             },

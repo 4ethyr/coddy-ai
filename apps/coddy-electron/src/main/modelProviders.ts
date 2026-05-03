@@ -8,6 +8,7 @@ export type ModelProviderId =
   | 'ollama'
   | 'openai'
   | 'openrouter'
+  | 'nvidia'
   | 'vertex'
   | 'azure'
 
@@ -105,6 +106,7 @@ const VERTEX_ADC_NOTICE =
 const VERTEX_GCLOUD_NOTICE =
   'Using local gcloud OAuth credentials for Vertex AI publisher models. The access token is short-lived and is not stored by Coddy.'
 const DEFAULT_AZURE_API_VERSION = '2024-10-21'
+const NVIDIA_MODELS_ENDPOINT = 'https://integrate.api.nvidia.com/v1/models'
 const VERTEX_PUBLISHERS = [
   {
     id: 'google',
@@ -139,6 +141,8 @@ export async function listProviderModels(
         return await listOpenAiModels(request, fetcher)
       case 'openrouter':
         return await listOpenRouterModels(request, fetcher)
+      case 'nvidia':
+        return await listNvidiaModels(request, fetcher)
       case 'vertex':
         return await listGoogleModels(request, fetcher, googleAccessTokenProvider)
       case 'azure':
@@ -236,6 +240,50 @@ async function listOpenRouterModels(
     .filter((item): item is ModelCatalogEntryPayload => Boolean(item))
 
   return successResult('openrouter', 'api', models)
+}
+
+async function listNvidiaModels(
+  request: ModelProviderListPayload,
+  fetcher: Fetcher,
+): Promise<ModelProviderListPayloadResult> {
+  const apiKey = requireCredential(request)
+  const data = await fetchJson(
+    NVIDIA_MODELS_ENDPOINT,
+    {
+      Authorization: `Bearer ${apiKey}`,
+    },
+    fetcher,
+  )
+  const models = asArray(getObject(data).data)
+    .map((item) => {
+      const object = getObject(item)
+      const id = getString(object.id)
+      if (!id) return null
+      const label = getString(object.name) || id
+      const owner = getString(object.owned_by)
+      return modelEntry(
+        'nvidia',
+        id,
+        label,
+        owner ? `NVIDIA NIM model owned by ${owner}.` : 'NVIDIA NIM model.',
+        ['api', owner],
+      )
+    })
+    .filter((item): item is ModelCatalogEntryPayload => Boolean(item))
+
+  if (!models.some((item) => item.model.name === 'deepseek-ai/deepseek-v4-pro')) {
+    models.push(
+      modelEntry(
+        'nvidia',
+        'deepseek-ai/deepseek-v4-pro',
+        'DeepSeek V4 Pro',
+        'DeepSeek V4 Pro served through NVIDIA NIM.',
+        ['api', 'coding'],
+      ),
+    )
+  }
+
+  return successResult('nvidia', 'api', models)
 }
 
 async function listGoogleModels(
@@ -548,6 +596,8 @@ function credentialLabel(provider: ModelProviderId): string {
       return 'OpenAI API key'
     case 'openrouter':
       return 'OpenRouter API key'
+    case 'nvidia':
+      return 'NVIDIA API key'
     case 'azure':
       return 'Azure OpenAI API key'
     case 'vertex':
@@ -966,6 +1016,7 @@ function isModelProviderId(value: string): value is ModelProviderId {
     value === 'ollama' ||
     value === 'openai' ||
     value === 'openrouter' ||
+    value === 'nvidia' ||
     value === 'vertex' ||
     value === 'azure'
   )

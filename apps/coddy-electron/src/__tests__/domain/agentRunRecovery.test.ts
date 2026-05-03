@@ -41,14 +41,32 @@ describe('agent run recovery notices', () => {
     const notice = buildAgentRunRecoveryNotice(
       failedRun({
         failure_message:
-          'Bearer ya29.oauth-token and api-key: sk-live-secret failed.',
+          'Bearer ya29.oauth-token, NVIDIA nvapi-secret-token and api-key: sk-live-secret failed.',
       }),
       { provider: 'openai', name: 'gpt-test' },
     )
 
     expect(notice?.message).toBe(
-      'Bearer [REDACTED] and api-key: [REDACTED] failed.',
+      'Bearer [REDACTED], NVIDIA [REDACTED] and api-key: [REDACTED] failed.',
     )
+  })
+
+  it('turns recoverable NVIDIA failures into actionable guidance', () => {
+    const notice = buildAgentRunRecoveryNotice(
+      failedRun({
+        failure_message:
+          'NVIDIA request failed with nvapi-secret-token.',
+      }),
+      { provider: 'nvidia', name: 'deepseek-ai/deepseek-v4-pro' },
+    )
+
+    expect(notice).toEqual({
+      title: 'Recoverable model failure',
+      technicalCode: 'invalid_provider_response',
+      message: 'NVIDIA request failed with [REDACTED]',
+      action:
+        'Retry this prompt. If it repeats, reduce context/tool output, verify NVIDIA model availability, or select another provider/model.',
+    })
   })
 
   it('formats clipboard diagnostics without leaking provider secrets', () => {

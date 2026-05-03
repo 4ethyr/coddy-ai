@@ -38,6 +38,18 @@ function modelLoader(
                 tags: ['api', 'router'],
               },
             ]
+        : request.provider === 'nvidia'
+          ? [
+              {
+                model: {
+                  provider: 'nvidia',
+                  name: 'deepseek-ai/deepseek-v4-pro',
+                },
+                label: 'DeepSeek V4 Pro',
+                description: 'NVIDIA NIM model.',
+                tags: ['api', 'coding'],
+              },
+            ]
         : []
 
   return Promise.resolve({
@@ -119,6 +131,7 @@ describe('ModelSelector', () => {
     expect(screen.getByText('Local Ollama')).toBeInTheDocument()
     expect(screen.getByText('OpenAI')).toBeInTheDocument()
     expect(screen.getByText('OpenRouter')).toBeInTheDocument()
+    expect(screen.getByText('NVIDIA NIM')).toBeInTheDocument()
     expect(screen.getByText('Google Vertex')).toBeInTheDocument()
     expect(screen.getByText('Azure OpenAI')).toBeInTheDocument()
   })
@@ -135,6 +148,7 @@ describe('ModelSelector', () => {
     expect(within(providerGroup('Local Ollama')).getByText('runtime ready')).toBeInTheDocument()
     expect(within(providerGroup('OpenAI')).getByText('runtime ready')).toBeInTheDocument()
     expect(within(providerGroup('OpenRouter')).getByText('runtime ready')).toBeInTheDocument()
+    expect(within(providerGroup('NVIDIA NIM')).getAllByText('runtime ready').length).toBeGreaterThan(0)
     expect(within(providerGroup('Google Vertex')).getByText('runtime ready')).toBeInTheDocument()
     expect(within(providerGroup('Azure OpenAI')).getByText('runtime ready')).toBeInTheDocument()
   })
@@ -272,6 +286,47 @@ describe('ModelSelector', () => {
     expect(onSelect).toHaveBeenCalledWith({
       provider: 'openrouter',
       name: 'anthropic/claude-sonnet-4.5',
+    })
+  })
+
+  it('connects NVIDIA NIM with an API key and emits DeepSeek V4 Pro', async () => {
+    const onLoadModels = vi.fn(modelLoader)
+    const onSelect = vi.fn()
+    render(
+      <ModelSelector
+        model={{ provider: 'ollama', name: 'gemma4-E2B' }}
+        onLoadModels={onLoadModels}
+        onSelect={onSelect}
+      />,
+    )
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Active model ollama/gemma4-E2B' }),
+    )
+
+    const nvidiaGroup = providerGroup('NVIDIA NIM')
+    await userEvent.type(
+      within(nvidiaGroup).getByPlaceholderText('nvapi-...'),
+      'nvapi-test',
+    )
+    await userEvent.click(
+      within(nvidiaGroup).getByRole('button', { name: 'Refresh' }),
+    )
+
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: 'Select DeepSeek V4 Pro via NVIDIA NIM',
+      }),
+    )
+
+    expect(onLoadModels).toHaveBeenCalledWith({
+      provider: 'nvidia',
+      apiKey: 'nvapi-test',
+      endpoint: undefined,
+    })
+    expect(onSelect).toHaveBeenCalledWith({
+      provider: 'nvidia',
+      name: 'deepseek-ai/deepseek-v4-pro',
     })
   })
 

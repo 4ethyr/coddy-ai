@@ -9,6 +9,9 @@ use coddy_core::{ApprovalPolicy, ModelCredential, ModelRef, ToolDefinition, Tool
 use serde_json::Value;
 use thiserror::Error;
 
+const DEFAULT_OPENAI_COMPATIBLE_TIMEOUT: Duration = Duration::from_secs(120);
+const NVIDIA_OPENAI_COMPATIBLE_TIMEOUT: Duration = Duration::from_secs(300);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatMessageRole {
     System,
@@ -112,6 +115,7 @@ pub struct DefaultChatModelClient {
     ollama: OllamaChatModelClient,
     openai: OpenAiCompatibleChatModelClient,
     openrouter: OpenAiCompatibleChatModelClient,
+    nvidia: OpenAiCompatibleChatModelClient,
     gemini_api: GeminiApiChatModelClient,
     vertex_gemini: VertexGeminiChatModelClient,
     vertex_anthropic: VertexAnthropicChatModelClient,
@@ -409,6 +413,7 @@ impl Default for DefaultChatModelClient {
             ollama: OllamaChatModelClient::default(),
             openai: OpenAiCompatibleChatModelClient::openai(),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            nvidia: OpenAiCompatibleChatModelClient::nvidia(),
             gemini_api: GeminiApiChatModelClient::default(),
             vertex_gemini: VertexGeminiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::default(),
@@ -463,6 +468,16 @@ impl OpenAiCompatibleChatModelClient {
         )
     }
 
+    pub fn nvidia() -> Self {
+        Self::new(
+            "nvidia",
+            "https://integrate.api.nvidia.com/v1",
+            Arc::new(HttpOpenAiCompatibleTransport::with_timeout(
+                NVIDIA_OPENAI_COMPATIBLE_TIMEOUT,
+            )),
+        )
+    }
+
     fn new(
         provider: impl Into<String>,
         default_base_url: impl Into<String>,
@@ -487,9 +502,11 @@ impl OpenAiCompatibleChatModelClient {
 
 impl HttpOpenAiCompatibleTransport {
     fn new() -> Self {
-        Self {
-            timeout: Duration::from_secs(120),
-        }
+        Self::with_timeout(DEFAULT_OPENAI_COMPATIBLE_TIMEOUT)
+    }
+
+    fn with_timeout(timeout: Duration) -> Self {
+        Self { timeout }
     }
 }
 
@@ -611,6 +628,7 @@ impl ChatModelClient for DefaultChatModelClient {
             "ollama" => self.ollama.complete(request),
             "openai" => self.openai.complete(request),
             "openrouter" => self.openrouter.complete(request),
+            "nvidia" => self.nvidia.complete(request),
             "vertex" if is_vertex_anthropic_model(&request.model.name) => {
                 self.vertex_anthropic.complete(request)
             }
@@ -2104,7 +2122,7 @@ fn truncate_provider_error_detail(text: &str, max_chars: usize) -> String {
 }
 
 fn redact_provider_error_text(text: &str) -> String {
-    let markers = ["Bearer ", "sk-or-", "ya29.", "sk-"];
+    let markers = ["Bearer ", "sk-or-", "nvapi-", "ya29.", "sk-"];
     let mut output = String::with_capacity(text.len());
     let mut index = 0;
 
@@ -2945,6 +2963,7 @@ mod tests {
                 }),
             ),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            nvidia: OpenAiCompatibleChatModelClient::nvidia(),
             gemini_api: GeminiApiChatModelClient::default(),
             vertex_gemini: VertexGeminiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::default(),
@@ -2996,6 +3015,7 @@ mod tests {
                     response: Ok(ChatResponse::from_text("hi from openrouter")),
                 }),
             ),
+            nvidia: OpenAiCompatibleChatModelClient::nvidia(),
             gemini_api: GeminiApiChatModelClient::default(),
             vertex_gemini: VertexGeminiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::default(),
@@ -3022,6 +3042,67 @@ mod tests {
             client.complete(request),
             Ok(ChatResponse::from_text("hi from openrouter"))
         );
+    }
+
+    #[test]
+    fn default_client_routes_nvidia_requests_to_openai_compatible_adapter() {
+        let expected_body = serde_json::json!({
+            "model": "deepseek-ai/deepseek-v4-pro",
+            "messages": [
+                { "role": "user", "content": "hello" }
+            ],
+            "stream": false
+        });
+        let client = DefaultChatModelClient {
+            ollama: OllamaChatModelClient::default(),
+            openai: OpenAiCompatibleChatModelClient::openai(),
+            openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            nvidia: OpenAiCompatibleChatModelClient::with_transport(
+                "nvidia",
+                "https://integrate.api.nvidia.com/v1",
+                Arc::new(StaticOpenAiCompatibleTransport {
+                    provider: "nvidia".to_string(),
+                    endpoint: "https://integrate.api.nvidia.com/v1/chat/completions".to_string(),
+                    token: "nvapi-secret-token".to_string(),
+                    body: expected_body,
+                    response: Ok(ChatResponse::from_text("hi from nvidia")),
+                }),
+            ),
+            gemini_api: GeminiApiChatModelClient::default(),
+            vertex_gemini: VertexGeminiChatModelClient::default(),
+            vertex_anthropic: VertexAnthropicChatModelClient::default(),
+            azure_openai: AzureOpenAiChatModelClient::default(),
+            unavailable: UnavailableChatModelClient,
+        };
+        let request = ChatRequest::new(
+            ModelRef {
+                provider: "nvidia".to_string(),
+                name: "deepseek-ai/deepseek-v4-pro".to_string(),
+            },
+            vec![ChatMessage::user("hello")],
+        )
+        .expect("request")
+        .with_model_credential(Some(ModelCredential {
+            provider: "nvidia".to_string(),
+            token: "nvapi-secret-token".to_string(),
+            endpoint: None,
+            metadata: Default::default(),
+        }))
+        .expect("credential");
+
+        assert_eq!(
+            client.complete(request),
+            Ok(ChatResponse::from_text("hi from nvidia"))
+        );
+    }
+
+    #[test]
+    fn nvidia_openai_compatible_timeout_is_extended_for_large_models() {
+        let transport =
+            HttpOpenAiCompatibleTransport::with_timeout(NVIDIA_OPENAI_COMPATIBLE_TIMEOUT);
+
+        assert!(NVIDIA_OPENAI_COMPATIBLE_TIMEOUT > DEFAULT_OPENAI_COMPATIBLE_TIMEOUT);
+        assert_eq!(transport.timeout, Duration::from_secs(300));
     }
 
     #[test]
@@ -3180,6 +3261,7 @@ mod tests {
             ollama: OllamaChatModelClient::default(),
             openai: OpenAiCompatibleChatModelClient::openai(),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            nvidia: OpenAiCompatibleChatModelClient::nvidia(),
             gemini_api: GeminiApiChatModelClient::default(),
             vertex_gemini: VertexGeminiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::default(),
@@ -3350,6 +3432,7 @@ mod tests {
             ollama: OllamaChatModelClient::default(),
             openai: OpenAiCompatibleChatModelClient::openai(),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            nvidia: OpenAiCompatibleChatModelClient::nvidia(),
             gemini_api: GeminiApiChatModelClient::with_transport(
                 "https://generativelanguage.googleapis.com/v1beta",
                 Arc::new(StaticGeminiApiTransport {
@@ -3407,6 +3490,7 @@ mod tests {
             ollama: OllamaChatModelClient::default(),
             openai: OpenAiCompatibleChatModelClient::openai(),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            nvidia: OpenAiCompatibleChatModelClient::nvidia(),
             gemini_api: GeminiApiChatModelClient::default(),
             vertex_gemini: VertexGeminiChatModelClient::with_transport(Arc::new(
                 StaticVertexGeminiTransport {
@@ -3667,6 +3751,7 @@ mod tests {
             ollama: OllamaChatModelClient::default(),
             openai: OpenAiCompatibleChatModelClient::openai(),
             openrouter: OpenAiCompatibleChatModelClient::openrouter(),
+            nvidia: OpenAiCompatibleChatModelClient::nvidia(),
             gemini_api: GeminiApiChatModelClient::default(),
             vertex_gemini: VertexGeminiChatModelClient::default(),
             vertex_anthropic: VertexAnthropicChatModelClient::with_transport(Arc::new(
@@ -4040,6 +4125,18 @@ mod tests {
         assert!(message.contains("upstream detail: upstream overloaded"));
         assert!(message.contains("sk-or-[REDACTED]"));
         assert!(!message.contains("secret-token"));
+    }
+
+    #[test]
+    fn provider_error_redaction_handles_nvidia_api_tokens() {
+        let redacted = redact_provider_error_text(
+            "NVIDIA returned nvapi-secret-token and Authorization: Bearer abc.DEF_123",
+        );
+
+        assert!(redacted.contains("nvapi-[REDACTED]"));
+        assert!(redacted.contains("Bearer [REDACTED]"));
+        assert!(!redacted.contains("secret-token"));
+        assert!(!redacted.contains("abc.DEF_123"));
     }
 
     #[test]
