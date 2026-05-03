@@ -11,7 +11,7 @@ use coddy_agent::{
     run_live_prompt_battery_cases, DefaultChatModelClient, GroundedResponseReport,
     MultiagentEvalCase, MultiagentEvalRunner, MultiagentEvalSuiteReport, PromptBatteryReport,
 };
-use coddy_client::CoddyClient;
+use coddy_client::{CoddyClient, CoddyClientOptions};
 use coddy_core::redact_conversation_text;
 use coddy_core::{
     AssessmentPolicy, ContextPolicy, ModelCredential, ModelRef, ModelRole, PermissionReply,
@@ -1513,7 +1513,10 @@ fn prepare_runtime_socket_path(socket_path: &std::path::Path) -> Result<()> {
 }
 
 fn coddy_client(config: &CoddyRuntimeConfig) -> Result<CoddyClient> {
-    Ok(CoddyClient::new(config.socket_path()?))
+    Ok(CoddyClient::with_options(
+        config.socket_path()?,
+        CoddyClientOptions::from_env()?,
+    ))
 }
 
 fn acquire_voice_shortcut_lock(config: &CoddyRuntimeConfig) -> Result<shortcut::VoiceShortcutLock> {

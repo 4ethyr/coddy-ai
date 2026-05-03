@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -15,6 +16,8 @@ use coddy_ipc::{
 use tokio::net::UnixStream;
 use tokio::time::{sleep, timeout};
 use uuid::Uuid;
+
+pub const CLIENT_REQUEST_TIMEOUT_MS_ENV: &str = "CODDY_CLIENT_REQUEST_TIMEOUT_MS";
 
 #[derive(Debug, Clone)]
 pub struct CoddyClient {
@@ -39,6 +42,34 @@ impl Default for CoddyClientOptions {
             reconnect_max_delay: Duration::from_secs(2),
         }
     }
+}
+
+impl CoddyClientOptions {
+    pub fn from_env() -> Result<Self> {
+        Self::from_env_request_timeout_value(std::env::var_os(CLIENT_REQUEST_TIMEOUT_MS_ENV))
+    }
+
+    fn from_env_request_timeout_value(value: Option<OsString>) -> Result<Self> {
+        let mut options = Self::default();
+        if let Some(value) = value {
+            options.request_timeout = parse_timeout_ms(CLIENT_REQUEST_TIMEOUT_MS_ENV, value)?;
+        }
+        Ok(options)
+    }
+}
+
+fn parse_timeout_ms(name: &str, value: OsString) -> Result<Duration> {
+    let value = value
+        .into_string()
+        .map_err(|_| anyhow!("{name} must be valid UTF-8"))?;
+    let millis = value
+        .trim()
+        .parse::<u64>()
+        .with_context(|| format!("{name} must be a positive integer number of milliseconds"))?;
+    if millis == 0 {
+        bail!("{name} must be greater than zero");
+    }
+    Ok(Duration::from_millis(millis))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -442,6 +473,29 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use tokio::net::UnixListener;
+
+    #[test]
+    fn client_options_accept_request_timeout_env_value() {
+        let options =
+            CoddyClientOptions::from_env_request_timeout_value(Some(OsString::from("240000")))
+                .expect("options");
+
+        assert_eq!(options.request_timeout, Duration::from_secs(240));
+        assert_eq!(
+            options.connect_timeout,
+            CoddyClientOptions::default().connect_timeout
+        );
+    }
+
+    #[test]
+    fn client_options_reject_zero_request_timeout_env_value() {
+        let error = CoddyClientOptions::from_env_request_timeout_value(Some(OsString::from("0")))
+            .expect_err("zero timeout should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("CODDY_CLIENT_REQUEST_TIMEOUT_MS must be greater than zero"));
+    }
 
     #[tokio::test]
     async fn client_sends_repl_command_request() {
