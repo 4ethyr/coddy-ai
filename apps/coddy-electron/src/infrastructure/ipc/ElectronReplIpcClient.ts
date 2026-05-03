@@ -19,6 +19,7 @@ import type {
   MultiagentEvalRequest,
   MultiagentEvalResult,
   PermissionReply,
+  PromptBatteryEvalRequest,
   PromptBatteryResult,
   QualityEvalResult,
   ReplEventEnvelope,
@@ -202,9 +203,12 @@ export class ElectronReplIpcClient implements ReplIpcClient {
     )) as MultiagentEvalResult
   }
 
-  async runPromptBatteryEval(): Promise<PromptBatteryResult> {
+  async runPromptBatteryEval(
+    request: PromptBatteryEvalRequest = {},
+  ): Promise<PromptBatteryResult> {
     return (await window.replApi.invoke(
       'repl:eval-prompt-battery',
+      request,
     )) as PromptBatteryResult
   }
 

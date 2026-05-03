@@ -11,6 +11,7 @@ import type {
   MultiagentEvalRequest,
   MultiagentEvalResult,
   PermissionReply,
+  PromptBatteryEvalRequest,
   PromptBatteryResult,
   QualityEvalResult,
   ConversationRecord,
@@ -108,7 +109,9 @@ export interface UseSessionReturn {
   ) => Promise<MultiagentEvalResult>
 
   /** Run the deterministic 1,200-prompt routing battery exposed by the backend */
-  runPromptBatteryEval: () => Promise<PromptBatteryResult>
+  runPromptBatteryEval: (
+    request?: PromptBatteryEvalRequest,
+  ) => Promise<PromptBatteryResult>
 
   /** Run the combined deterministic quality gate exposed by the backend */
   runQualityEval: () => Promise<QualityEvalResult>
@@ -343,14 +346,20 @@ export function useSession(): UseSessionReturn {
     [client],
   )
 
-  const handleRunPromptBatteryEval = useCallback(async () => {
+  const handleRunPromptBatteryEval = useCallback(async (
+    request: PromptBatteryEvalRequest = {},
+  ) => {
     setPromptBatteryStatus('running')
     setPromptBatteryError(null)
 
     try {
-      const result = await runPromptBatteryEval(client)
+      const result = await runPromptBatteryEval(client, request)
       setPromptBattery(result)
-      setPromptBatteryStatus(result.failed > 0 ? 'failed' : 'succeeded')
+      setPromptBatteryStatus(
+        result.comparison?.status === 'failed' || result.failed > 0
+          ? 'failed'
+          : 'succeeded',
+      )
       return result
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)

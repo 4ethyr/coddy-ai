@@ -1674,6 +1674,12 @@ impl AssistantResponse {
                 text,
             };
         }
+        if let Some(text) = guard_ungrounded_implementation_status_claim(&response.text) {
+            return Self {
+                deltas: vec![text.clone()],
+                text,
+            };
+        }
 
         Self {
             text: response.text,
@@ -1688,6 +1694,77 @@ impl AssistantResponse {
             self.deltas.iter().collect()
         }
     }
+}
+
+fn guard_ungrounded_implementation_status_claim(text: &str) -> Option<String> {
+    let normalized = normalize_grounding_text(text);
+    let strong_absence_claim = contains_any(
+        &normalized,
+        &[
+            "not implemented",
+            "not found",
+            "not present",
+            "missing",
+            "absent",
+            "nao implementado",
+            "nao esta implementado",
+            "nao foi implementado",
+            "nao encontrei",
+            "nao existe",
+        ],
+    );
+    let incomplete_evidence = contains_any(
+        &normalized,
+        &[
+            "not inspected",
+            "not read",
+            "not confirmed",
+            "remains uncertain",
+            "could not inspect",
+            "could not verify",
+            "requires additional reading",
+            "nao foi lido",
+            "nao foi possivel inspecionar",
+            "nao foi possivel verificar",
+            "nao consegui inspecionar",
+            "limite de ferramentas",
+            "exigiria leitura adicional",
+            "permanece incerto",
+        ],
+    );
+    let implementation_scope = contains_any(
+        &normalized,
+        &[
+            "guard",
+            "tool",
+            "runtime",
+            "executor",
+            "router",
+            "integration",
+            "capability",
+            "filesystem",
+            "permission",
+            "policy",
+        ],
+    );
+
+    if !(strong_absence_claim && incomplete_evidence && implementation_scope) {
+        return None;
+    }
+
+    Some(format!(
+        "Coddy grounding check: the model made a strong implementation-status claim while also admitting that relevant executor, router, guard, policy, or test files were not inspected. Treat the conclusion below as unverified and inspect those files before acting.\n\n{text}"
+    ))
+}
+
+fn normalize_grounding_text(text: &str) -> String {
+    text.to_lowercase()
+        .replace(['á', 'à', 'â', 'ã', 'ä'], "a")
+        .replace(['é', 'è', 'ê', 'ë'], "e")
+        .replace(['í', 'ì', 'î', 'ï'], "i")
+        .replace(['ó', 'ò', 'ô', 'õ', 'ö'], "o")
+        .replace(['ú', 'ù', 'û', 'ü'], "u")
+        .replace('ç', "c")
 }
 
 fn looks_like_textual_tool_call(text: &str) -> bool {
@@ -1892,6 +1969,11 @@ fn build_model_system_prompt(
             "- When reviewing tests or coverage, cite the inspected test file paths and test names.",
             "- Never cite a repository file path unless it appeared in tool observations or workspace context.",
             "- Do not claim tests, coverage, files, or implementations are missing unless you searched or read the relevant paths in this turn.",
+            "- For repository analysis, treat current source files and tests as stronger evidence than README, roadmap, or historical docs.",
+            "- If documentation conflicts with source or tests, state the conflict and prefer the current source/test evidence.",
+            "- For broad codebase analysis, inspect high-signal entrypoints and at least one current source or test file for each subsystem you assess.",
+            "- When assessing whether a guard, tool, runtime capability, or integration is implemented, search/read router, executor, guard, policy, and test files before concluding.",
+            "- Absence of a type or module with the exact feature name is not evidence that the capability is absent; implementations may live in shared executors or path-resolution code.",
             "- If the evidence is incomplete, say what was inspected and label the conclusion as unverified.",
             "- Prefer precise uncertainty over broad unsupported criticism.",
         ]
@@ -1951,6 +2033,7 @@ fn build_tool_followup_system_prompt(base_prompt: &str, tools_enabled: bool) -> 
         "Tool observation follow-up:",
         "- Treat tool observations as the latest grounded evidence.",
         "- Do not claim files changed unless an edit/apply tool succeeded.",
+        "- Do not infer implementation gaps from docs alone when current source or tests were not inspected.",
         "- If observations are incomplete or redacted, state the limitation briefly.",
         "- Keep the final answer concise and include validation status when relevant.",
         &tool_status,
@@ -3582,6 +3665,18 @@ mod tests {
         assert!(system_prompt.contains(
             "Do not claim tests, coverage, files, or implementations are missing unless you searched or read the relevant paths in this turn"
         ));
+        assert!(system_prompt
+            .contains("treat current source files and tests as stronger evidence than README"));
+        assert!(system_prompt
+            .contains("If documentation conflicts with source or tests, state the conflict"));
+        assert!(system_prompt.contains(
+            "inspect high-signal entrypoints and at least one current source or test file"
+        ));
+        assert!(
+            system_prompt.contains("search/read router, executor, guard, policy, and test files")
+        );
+        assert!(system_prompt
+            .contains("Absence of a type or module with the exact feature name is not evidence"));
         assert!(system_prompt.contains(
             "Never cite a repository file path unless it appeared in tool observations or workspace context"
         ));
@@ -3703,6 +3798,36 @@ mod tests {
 
         assert!(response.text.contains("filesystem.read_file tool"));
         assert!(!response.text.contains("textual tool-call attempt"));
+    }
+
+    #[test]
+    fn assistant_response_marks_unverified_implementation_absence_claims() {
+        let response = ChatResponse::from_text(
+            "O que nao foi lido: crates/coddy-agent/src/router.rs. \
+Conclusao: o filesystem guard nao esta implementado como capability de runtime.",
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response.text.contains("Coddy grounding check"));
+        assert!(response
+            .text
+            .contains("Treat the conclusion below as unverified"));
+        assert!(response
+            .text
+            .contains("filesystem guard nao esta implementado"));
+    }
+
+    #[test]
+    fn assistant_response_allows_supported_implementation_status_claims() {
+        let response = ChatResponse::from_text(
+            "I inspected crates/coddy-agent/src/router.rs and tests. The guard is implemented through router and executor paths.",
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(!response.text.contains("Coddy grounding check"));
+        assert!(response.text.contains("guard is implemented"));
     }
 
     #[test]
@@ -4529,6 +4654,7 @@ mod tests {
         }));
         let followup_system_prompt = &captured_requests[1].messages[0].content;
         assert!(followup_system_prompt.contains("Runtime tools for this follow-up: disabled."));
+        assert!(followup_system_prompt.contains("Do not infer implementation gaps from docs alone"));
         assert!(followup_system_prompt
             .contains("Synthesize the best answer now from the existing tool observations"));
     }

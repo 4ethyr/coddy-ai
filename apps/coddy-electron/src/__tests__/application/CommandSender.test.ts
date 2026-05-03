@@ -141,8 +141,16 @@ describe('CommandSender', () => {
       runPromptBatteryEval: vi.fn().mockResolvedValue(result),
     })
 
-    await expect(runPromptBatteryEval(client)).resolves.toEqual(result)
-    expect(client.runPromptBatteryEval).toHaveBeenCalledWith()
+    await expect(
+      runPromptBatteryEval(client, {
+        baseline: '/tmp/prompt-baseline.json',
+        writeBaseline: '/tmp/prompt-current.json',
+      }),
+    ).resolves.toEqual(result)
+    expect(client.runPromptBatteryEval).toHaveBeenCalledWith({
+      baseline: '/tmp/prompt-baseline.json',
+      writeBaseline: '/tmp/prompt-current.json',
+    })
   })
 
   it('runs the combined quality eval gate through the client port', async () => {

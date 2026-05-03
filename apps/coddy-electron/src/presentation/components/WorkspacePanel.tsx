@@ -3,8 +3,10 @@
 import { useState } from 'react'
 import type {
   ContextItem,
+  EvalBaselineRequest,
   MultiagentEvalRequest,
   MultiagentEvalResult,
+  PromptBatteryEvalRequest,
   PromptBatteryResult,
   QualityEvalResult,
   ReplToolCatalogItem,
@@ -33,7 +35,7 @@ interface Props {
   onEvalHarnessSettingsChange?: (settings: EvalHarnessSettings) => void
   onSelectWorkspace?: () => void
   onRunMultiagentEval?: (request: MultiagentEvalRequest) => void
-  onRunPromptBattery?: () => void
+  onRunPromptBattery?: (request: PromptBatteryEvalRequest) => void
   onRunQualityEval?: () => void
 }
 
@@ -400,14 +402,25 @@ function PromptBatteryPanel({
   result?: PromptBatteryResult | null
   status: EvalRunStatus
   error?: string | null
-  onRun?: () => void
+  onRun?: (request: PromptBatteryEvalRequest) => void
 }) {
+  const [baselinePath, setBaselinePath] = useState('')
+  const [writeBaselinePath, setWriteBaselinePath] = useState('')
   const disabled = status === 'running' || !onRun
   const score = result ? Math.round(result.score) : '--'
   const promptCount = result?.promptCount ?? '--'
   const stackCount = result?.stackCount ?? '--'
   const failed = result?.failed ?? '--'
   const coverage = result ? topMemberCoverage(result.memberCoverage) : []
+  const comparison = result?.comparison
+  const delta =
+    comparison && Number.isFinite(comparison.scoreDelta)
+      ? formatSignedNumber(comparison.scoreDelta)
+      : '--'
+
+  const handleRun = () => {
+    onRun?.(buildEvalRequest(baselinePath, writeBaselinePath))
+  }
 
   return (
     <section className="flex flex-col gap-4 border-t border-white/10 pt-5">
@@ -422,7 +435,7 @@ function PromptBatteryPanel({
         </div>
         <button
           type="button"
-          onClick={onRun}
+          onClick={handleRun}
           disabled={disabled}
           aria-label="Run prompt battery"
           className="desktop-glass-panel inline-flex h-9 items-center justify-center gap-2 rounded-lg px-4 font-display text-[11px] uppercase tracking-[0.18em] text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
@@ -445,6 +458,44 @@ function PromptBatteryPanel({
           tone={result && result.failed > 0 ? 'danger' : 'success'}
         />
       </div>
+
+      <div className="grid gap-3 lg:grid-cols-2">
+        <EvalPathInput
+          label="prompt baseline"
+          value={baselinePath}
+          onChange={setBaselinePath}
+          placeholder="/tmp/coddy-prompt-battery-baseline.json"
+        />
+        <EvalPathInput
+          label="prompt write baseline"
+          value={writeBaselinePath}
+          onChange={setWriteBaselinePath}
+          placeholder="/tmp/coddy-prompt-battery-current.json"
+        />
+      </div>
+
+      {comparison && (
+        <div className="rounded-lg border border-outline/15 bg-surface-container-highest/35 px-3 py-2 font-mono text-xs text-on-surface-variant">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={comparisonTone(comparison.status)}>
+              baseline {comparison.status}
+            </span>
+            <span>
+              {Math.round(comparison.previousScore)}
+              {' -> '}
+              {Math.round(comparison.currentScore)}
+            </span>
+            <span>delta {delta}</span>
+          </div>
+          {comparison.regressions.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {comparison.regressions.map((regression) => (
+                <MetaPill key={regression} label={regression} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {coverage.length > 0 && (
         <div className="flex flex-wrap gap-2">
@@ -549,10 +600,12 @@ function EvalPathInput({
   label,
   value,
   onChange,
+  placeholder = '/tmp/coddy-multiagent-baseline.json',
 }: {
   label: string
   value: string
   onChange: (value: string) => void
+  placeholder?: string
 }) {
   return (
     <label className="flex min-w-0 flex-col gap-2 rounded-lg border border-outline/15 bg-surface-container-highest/30 px-3 py-2">
@@ -563,7 +616,7 @@ function EvalPathInput({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className="h-8 min-w-0 bg-transparent font-mono text-xs text-on-surface outline-none placeholder:text-on-surface-variant/35"
-        placeholder="/tmp/coddy-multiagent-baseline.json"
+        placeholder={placeholder}
       />
     </label>
   )
@@ -639,8 +692,8 @@ function requiredInputFields(schema: ReplToolCatalogItem['input_schema']) {
 function buildEvalRequest(
   baselinePath: string,
   writeBaselinePath: string,
-): MultiagentEvalRequest {
-  const request: MultiagentEvalRequest = {}
+): EvalBaselineRequest {
+  const request: EvalBaselineRequest = {}
   const baseline = baselinePath.trim()
   const writeBaseline = writeBaselinePath.trim()
   if (baseline) request.baseline = baseline

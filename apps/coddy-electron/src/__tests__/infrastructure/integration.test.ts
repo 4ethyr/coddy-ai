@@ -132,8 +132,26 @@ function createSimBridge(daemon: SimDaemon) {
           })
 
         case 'repl:eval-prompt-battery':
-          daemon.commands.push('eval-prompt-battery')
+          daemon.commands.push(
+            `eval-prompt-battery:${JSON.stringify(args[0] ?? {})}`,
+          )
           return Promise.resolve({
+            baselineWritten:
+              (args[0] as { writeBaseline?: string } | undefined)
+                ?.writeBaseline ?? null,
+            comparison: (args[0] as { baseline?: string } | undefined)?.baseline
+              ? {
+                  status: 'passed',
+                  previousScore: 100,
+                  currentScore: 100,
+                  scoreDelta: 0,
+                  previousPromptCount: 1200,
+                  currentPromptCount: 1200,
+                  promptCountDelta: 0,
+                  regressions: [],
+                  improvements: [],
+                }
+              : undefined,
             promptCount: 1200,
             stackCount: 30,
             knowledgeAreaCount: 10,
@@ -606,8 +624,8 @@ function createSimClient(sim: ReturnType<typeof createSimBridge>): ReplIpcClient
       >
     },
 
-    async runPromptBatteryEval() {
-      return (await sim.invoke('repl:eval-prompt-battery')) as Awaited<
+    async runPromptBatteryEval(request = {}) {
+      return (await sim.invoke('repl:eval-prompt-battery', request)) as Awaited<
         ReturnType<ReplIpcClient['runPromptBatteryEval']>
       >
     },
@@ -873,7 +891,10 @@ describe('IPC integration', () => {
     })
 
     it('runs the deterministic prompt battery through the frontend client port', async () => {
-      const result = await client.runPromptBatteryEval()
+      const result = await client.runPromptBatteryEval({
+        baseline: '/tmp/prompt-baseline.json',
+        writeBaseline: '/tmp/prompt-current.json',
+      })
 
       expect(result).toMatchObject({
         promptCount: 1200,
@@ -884,7 +905,11 @@ describe('IPC integration', () => {
         failed: 0,
       })
       expect(result.memberCoverage.explorer).toBe(1200)
-      expect(daemon.commands).toEqual(['eval-prompt-battery'])
+      expect(result.baselineWritten).toBe('/tmp/prompt-current.json')
+      expect(result.comparison?.status).toBe('passed')
+      expect(daemon.commands).toEqual([
+        'eval-prompt-battery:{"baseline":"/tmp/prompt-baseline.json","writeBaseline":"/tmp/prompt-current.json"}',
+      ])
     })
 
     it('runs the combined deterministic quality gate through the frontend client port', async () => {

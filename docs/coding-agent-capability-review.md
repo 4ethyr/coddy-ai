@@ -323,6 +323,42 @@ Smoke live adicional apos a compactacao estrutural do loop agentic direto:
   rota de modelos e proxima acao para reducao de contexto/tool output ou troca
   de provider/modelo.
 
+## Estado validado em 2026-05-03
+
+Validacao live segura com `openrouter/deepseek/deepseek-v4-flash` no workspace
+`/home/aethyr/Documents/coddy` mostrou que prompts amplos sobre implementacao de
+guards ainda podem produzir conclusoes fortes com evidencia incompleta. Em dois
+smokes sobre `filesystem guard`, o modelo priorizou docs/policy e tipos
+genericos e nao leu `crates/coddy-agent/src/router.rs` nem os testes que cobrem
+path traversal, sensitive read e read-before-edit antes de concluir que a
+capability nao estava implementada.
+
+Melhoria aplicada:
+
+- O prompt do runtime e do loop agentic direto agora instrui o modelo a tratar
+  source/tests atuais como evidencia mais forte que README, roadmap ou docs
+  historicas.
+- Para claims sobre guard, tool, runtime capability ou integration, o modelo
+  deve buscar/ler router, executor, guard, policy e testes antes de concluir.
+- Ausencia de um tipo/modulo com o nome exato da feature nao e evidencia de
+  ausencia, pois a implementacao pode estar em executores, roteadores ou codigo
+  de resolucao de path.
+- O runtime agora marca respostas como `Coddy grounding check` quando o modelo
+  faz uma conclusao forte de ausencia de capability enquanto admite que arquivos
+  essenciais nao foram inspecionados.
+
+Validacao executada:
+
+- `cargo test -p coddy-runtime ask_command_builds_contextual_agent_prompt_for_model -- --test-threads=1`.
+- `cargo test -p coddy-runtime assistant_response_marks_unverified_implementation_absence_claims -- --test-threads=1`.
+- `cargo test -p coddy-runtime assistant_response_allows_supported_implementation_status_claims -- --test-threads=1`.
+- `cargo test -p coddy-agent default_system_prompt_requires_evidence_tdd_and_validation -- --test-threads=1`.
+
+Proxima melhoria necessaria: transformar esse guard em um loop de recuperacao
+ativo. Quando o guard detectar conclusao nao grounded e ainda houver budget, o
+Coddy deve pedir ao modelo uma nova chamada estruturada para os arquivos
+router/executor/testes relevantes em vez de apenas avisar o usuario.
+
 ## Fontes pesquisadas
 
 - SWE-bench Verified: https://www.swebench.com/verified.html
