@@ -214,6 +214,17 @@ pub struct MultiagentEvalBaselineComparison {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptBatteryBaselineComparison {
+    pub status: EvalGateStatus,
+    pub previous_score: u8,
+    pub current_score: u8,
+    pub previous_prompt_count: usize,
+    pub current_prompt_count: usize,
+    pub regressions: Vec<String>,
+    pub improvements: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptBatteryCase {
     pub id: String,
     pub stack: String,
@@ -860,6 +871,22 @@ impl MultiagentEvalBaselineComparison {
     }
 }
 
+impl PromptBatteryBaselineComparison {
+    pub fn public_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "status": eval_gate_status_name(self.status),
+            "previousScore": self.previous_score,
+            "currentScore": self.current_score,
+            "scoreDelta": i16::from(self.current_score) - i16::from(self.previous_score),
+            "previousPromptCount": self.previous_prompt_count,
+            "currentPromptCount": self.current_prompt_count,
+            "promptCountDelta": self.current_prompt_count as i64 - self.previous_prompt_count as i64,
+            "regressions": self.regressions,
+            "improvements": self.improvements,
+        })
+    }
+}
+
 impl PromptBatteryCase {
     fn to_multiagent_eval_case(&self) -> MultiagentEvalCase {
         MultiagentEvalCase {
@@ -900,6 +927,38 @@ impl PromptBatteryReport {
             "memberCoverage": self.member_coverage,
             "failures": self.failures.iter().map(PromptBatteryFailure::public_metadata).collect::<Vec<_>>(),
         })
+    }
+
+    pub fn baseline_json(&self) -> serde_json::Value {
+        prompt_battery_baseline_json(&self.public_metadata())
+    }
+
+    pub fn write_baseline(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<(), MultiagentEvalBaselineError> {
+        write_prompt_battery_baseline(path, &self.baseline_json())
+    }
+
+    pub fn read_baseline(
+        path: impl AsRef<Path>,
+    ) -> Result<serde_json::Value, MultiagentEvalBaselineError> {
+        read_prompt_battery_baseline(path)
+    }
+
+    pub fn compare_to_baseline(
+        &self,
+        baseline: &serde_json::Value,
+    ) -> PromptBatteryBaselineComparison {
+        compare_prompt_battery_report_to_baseline(&self.public_metadata(), baseline)
+    }
+
+    pub fn compare_to_baseline_file(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<PromptBatteryBaselineComparison, MultiagentEvalBaselineError> {
+        let baseline = Self::read_baseline(path)?;
+        Ok(self.compare_to_baseline(&baseline))
     }
 }
 
@@ -1000,6 +1059,38 @@ impl LivePromptBatteryReport {
             "failures": self.failures.iter().map(LivePromptBatteryCaseResult::public_metadata).collect::<Vec<_>>(),
             "rawFailures": self.raw_failures.iter().map(LivePromptBatteryCaseResult::public_metadata).collect::<Vec<_>>(),
         })
+    }
+
+    pub fn baseline_json(&self) -> serde_json::Value {
+        prompt_battery_baseline_json(&self.public_metadata())
+    }
+
+    pub fn write_baseline(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<(), MultiagentEvalBaselineError> {
+        write_prompt_battery_baseline(path, &self.baseline_json())
+    }
+
+    pub fn read_baseline(
+        path: impl AsRef<Path>,
+    ) -> Result<serde_json::Value, MultiagentEvalBaselineError> {
+        read_prompt_battery_baseline(path)
+    }
+
+    pub fn compare_to_baseline(
+        &self,
+        baseline: &serde_json::Value,
+    ) -> PromptBatteryBaselineComparison {
+        compare_prompt_battery_report_to_baseline(&self.public_metadata(), baseline)
+    }
+
+    pub fn compare_to_baseline_file(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<PromptBatteryBaselineComparison, MultiagentEvalBaselineError> {
+        let baseline = Self::read_baseline(path)?;
+        Ok(self.compare_to_baseline(&baseline))
     }
 }
 
@@ -1951,6 +2042,172 @@ fn compare_multiagent_suite_to_baseline(
     }
 }
 
+fn prompt_battery_baseline_json(report: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "coddy.promptBatteryBaseline",
+        "version": 1,
+        "report": report,
+    })
+}
+
+fn write_prompt_battery_baseline(
+    path: impl AsRef<Path>,
+    baseline: &serde_json::Value,
+) -> Result<(), MultiagentEvalBaselineError> {
+    let path = path.as_ref();
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|source| MultiagentEvalBaselineError::Io {
+            path: parent.display().to_string(),
+            source,
+        })?;
+    }
+    let json = serde_json::to_string_pretty(baseline).map_err(|source| {
+        MultiagentEvalBaselineError::Json {
+            path: path.display().to_string(),
+            source,
+        }
+    })?;
+    fs::write(path, format!("{json}\n")).map_err(|source| MultiagentEvalBaselineError::Io {
+        path: path.display().to_string(),
+        source,
+    })
+}
+
+fn read_prompt_battery_baseline(
+    path: impl AsRef<Path>,
+) -> Result<serde_json::Value, MultiagentEvalBaselineError> {
+    let path = path.as_ref();
+    let text = fs::read_to_string(path).map_err(|source| MultiagentEvalBaselineError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    serde_json::from_str(&text).map_err(|source| MultiagentEvalBaselineError::Json {
+        path: path.display().to_string(),
+        source,
+    })
+}
+
+fn compare_prompt_battery_report_to_baseline(
+    current: &serde_json::Value,
+    baseline: &serde_json::Value,
+) -> PromptBatteryBaselineComparison {
+    let baseline_report = baseline.get("report").unwrap_or(baseline);
+    let previous_score = u8_field(baseline_report, "score").unwrap_or(0);
+    let current_score = u8_field(current, "score").unwrap_or(0);
+    let previous_prompt_count = usize_field(baseline_report, "promptCount").unwrap_or(0);
+    let current_prompt_count = usize_field(current, "promptCount").unwrap_or(0);
+    let mut regressions = Vec::new();
+    let mut improvements = Vec::new();
+
+    compare_higher_is_better_u8(
+        "score",
+        previous_score,
+        current_score,
+        &mut regressions,
+        &mut improvements,
+    );
+    compare_higher_is_better_usize(
+        "promptCount",
+        previous_prompt_count,
+        current_prompt_count,
+        &mut regressions,
+        &mut improvements,
+    );
+
+    for field in ["rawScore", "memberRecallScore", "rawMemberRecallScore"] {
+        if let (Some(previous), Some(current)) =
+            (u8_field(baseline_report, field), u8_field(current, field))
+        {
+            compare_higher_is_better_u8(
+                field,
+                previous,
+                current,
+                &mut regressions,
+                &mut improvements,
+            );
+        }
+    }
+
+    for field in [
+        "failed",
+        "modelErrorRate",
+        "modelErrorCount",
+        "rawRoutingFailureCount",
+    ] {
+        if let (Some(previous), Some(current)) = (
+            usize_field(baseline_report, field),
+            usize_field(current, field),
+        ) {
+            compare_lower_is_better_usize(
+                field,
+                previous,
+                current,
+                &mut regressions,
+                &mut improvements,
+            );
+        }
+    }
+
+    PromptBatteryBaselineComparison {
+        status: if regressions.is_empty() {
+            EvalGateStatus::Passed
+        } else {
+            EvalGateStatus::Failed
+        },
+        previous_score,
+        current_score,
+        previous_prompt_count,
+        current_prompt_count,
+        regressions,
+        improvements,
+    }
+}
+
+fn compare_higher_is_better_u8(
+    field: &str,
+    previous: u8,
+    current: u8,
+    regressions: &mut Vec<String>,
+    improvements: &mut Vec<String>,
+) {
+    if current < previous {
+        regressions.push(format!("{field} dropped from {previous} to {current}"));
+    } else if current > previous {
+        improvements.push(format!("{field} improved from {previous} to {current}"));
+    }
+}
+
+fn compare_higher_is_better_usize(
+    field: &str,
+    previous: usize,
+    current: usize,
+    regressions: &mut Vec<String>,
+    improvements: &mut Vec<String>,
+) {
+    if current < previous {
+        regressions.push(format!("{field} dropped from {previous} to {current}"));
+    } else if current > previous {
+        improvements.push(format!("{field} improved from {previous} to {current}"));
+    }
+}
+
+fn compare_lower_is_better_usize(
+    field: &str,
+    previous: usize,
+    current: usize,
+    regressions: &mut Vec<String>,
+    improvements: &mut Vec<String>,
+) {
+    if current > previous {
+        regressions.push(format!("{field} increased from {previous} to {current}"));
+    } else if current < previous {
+        improvements.push(format!("{field} decreased from {previous} to {current}"));
+    }
+}
+
 fn baseline_case_summaries(value: &serde_json::Value) -> HashMap<String, MultiagentCaseSummary> {
     value
         .get("reports")
@@ -1989,6 +2246,13 @@ fn u8_field(value: &serde_json::Value, field: &str) -> Option<u8> {
         .get(field)?
         .as_u64()
         .and_then(|value| u8::try_from(value).ok())
+}
+
+fn usize_field(value: &serde_json::Value, field: &str) -> Option<usize> {
+    value
+        .get(field)?
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
 }
 
 fn eval_status_from_name(value: &str) -> Option<EvalStatus> {
@@ -2724,6 +2988,113 @@ mod tests {
 
         assert!(guarded.contains(&"explorer".to_string()));
         assert!(guarded.contains(&"planner".to_string()));
+    }
+
+    #[test]
+    fn prompt_battery_baseline_persistence_serializes_and_deserializes() {
+        let workspace = TempWorkspace::new();
+        let baseline_path = workspace.path.join("evals/prompt-battery-baseline.json");
+        let report = run_default_prompt_battery();
+
+        report
+            .write_baseline(&baseline_path)
+            .expect("write prompt battery baseline");
+        let baseline = PromptBatteryReport::read_baseline(&baseline_path)
+            .expect("read prompt battery baseline");
+        let comparison = report.compare_to_baseline(&baseline);
+
+        assert_eq!(baseline["kind"], json!("coddy.promptBatteryBaseline"));
+        assert_eq!(baseline["version"], json!(1));
+        assert_eq!(baseline["report"]["promptCount"], json!(1200));
+        assert_eq!(comparison.status, EvalGateStatus::Passed);
+        assert_eq!(comparison.previous_score, 100);
+        assert_eq!(comparison.current_score, 100);
+        assert!(comparison.regressions.is_empty());
+    }
+
+    #[test]
+    fn prompt_battery_baseline_comparison_reports_score_and_count_regressions() {
+        let baseline = json!({
+            "kind": "coddy.promptBatteryBaseline",
+            "version": 1,
+            "report": {
+                "promptCount": 1200,
+                "score": 100,
+                "failed": 0
+            }
+        });
+        let current = json!({
+            "promptCount": 1000,
+            "score": 95,
+            "failed": 3
+        });
+
+        let comparison = compare_prompt_battery_report_to_baseline(&current, &baseline);
+        let metadata = comparison.public_metadata();
+
+        assert_eq!(comparison.status, EvalGateStatus::Failed);
+        assert_eq!(comparison.previous_prompt_count, 1200);
+        assert_eq!(comparison.current_prompt_count, 1000);
+        assert!(comparison
+            .regressions
+            .contains(&"score dropped from 100 to 95".to_string()));
+        assert!(comparison
+            .regressions
+            .contains(&"promptCount dropped from 1200 to 1000".to_string()));
+        assert!(comparison
+            .regressions
+            .contains(&"failed increased from 0 to 3".to_string()));
+        assert_eq!(metadata["status"], json!("failed"));
+        assert_eq!(metadata["scoreDelta"], json!(-5));
+        assert_eq!(metadata["promptCountDelta"], json!(-200));
+    }
+
+    #[test]
+    fn live_prompt_battery_baseline_comparison_tracks_provider_reliability_metrics() {
+        let baseline = json!({
+            "kind": "coddy.promptBatteryBaseline",
+            "version": 1,
+            "report": {
+                "kind": "coddy.livePromptBattery",
+                "promptCount": 20,
+                "score": 100,
+                "rawScore": 90,
+                "memberRecallScore": 100,
+                "rawMemberRecallScore": 95,
+                "modelErrorRate": 0,
+                "modelErrorCount": 0,
+                "rawRoutingFailureCount": 2,
+                "failed": 0
+            }
+        });
+        let current = json!({
+            "kind": "coddy.livePromptBattery",
+            "promptCount": 20,
+            "score": 100,
+            "rawScore": 85,
+            "memberRecallScore": 100,
+            "rawMemberRecallScore": 89,
+            "modelErrorRate": 5,
+            "modelErrorCount": 1,
+            "rawRoutingFailureCount": 3,
+            "failed": 0
+        });
+
+        let comparison = compare_prompt_battery_report_to_baseline(&current, &baseline);
+
+        assert_eq!(comparison.status, EvalGateStatus::Failed);
+        assert!(comparison
+            .regressions
+            .contains(&"rawScore dropped from 90 to 85".to_string()));
+        assert!(comparison
+            .regressions
+            .contains(&"rawMemberRecallScore dropped from 95 to 89".to_string()));
+        assert!(comparison
+            .regressions
+            .contains(&"modelErrorRate increased from 0 to 5".to_string()));
+        assert!(comparison
+            .regressions
+            .contains(&"rawRoutingFailureCount increased from 2 to 3".to_string()));
     }
 
     #[derive(Debug)]
