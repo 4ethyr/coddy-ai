@@ -24,6 +24,7 @@ use std::{
     env,
     ffi::OsString,
     fs,
+    io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
     process::{Command as StdCommand, Stdio},
 };
@@ -873,32 +874,31 @@ async fn run_shortcuts_test(config: &CoddyRuntimeConfig) -> Result<()> {
 
 async fn run_session_snapshot(config: &CoddyRuntimeConfig) -> Result<()> {
     let snapshot = coddy_client(config)?.snapshot().await?;
-    println!("{}", serde_json::to_string_pretty(&snapshot)?);
-    Ok(())
+    print_stdout(&format!("{}\n", serde_json::to_string_pretty(&snapshot)?))
 }
 
 async fn run_session_history(config: &CoddyRuntimeConfig, limit: Option<usize>) -> Result<()> {
     let conversations = coddy_client(config)?.conversation_history(limit).await?;
-    println!("{}", serde_json::to_string_pretty(&conversations)?);
-    Ok(())
+    print_stdout(&format!(
+        "{}\n",
+        serde_json::to_string_pretty(&conversations)?
+    ))
 }
 
 async fn run_session_tools(config: &CoddyRuntimeConfig) -> Result<()> {
     let tools = coddy_client(config)?.tool_catalog().await?;
-    println!("{}", serde_json::to_string_pretty(&tools)?);
-    Ok(())
+    print_stdout(&format!("{}\n", serde_json::to_string_pretty(&tools)?))
 }
 
 async fn run_session_events(config: &CoddyRuntimeConfig, after_sequence: u64) -> Result<()> {
     let batch = coddy_client(config)?.events_after(after_sequence).await?;
-    println!(
-        "{}",
+    print_stdout(&format!(
+        "{}\n",
         serde_json::to_string_pretty(&serde_json::json!({
             "last_sequence": batch.last_sequence,
             "events": batch.events,
         }))?
-    );
-    Ok(())
+    ))
 }
 
 async fn run_session_watch(
@@ -910,13 +910,13 @@ async fn run_session_watch(
     let mut received = 0_usize;
     while let Some(frame) = stream.next().await? {
         received += 1;
-        println!(
-            "{}",
+        print_stdout(&format!(
+            "{}\n",
             serde_json::to_string(&serde_json::json!({
                 "last_sequence": frame.last_sequence,
                 "event": frame.event,
             }))?
-        );
+        ))?;
         if session_watch_limit_reached(received, limit) {
             return Ok(());
         }
@@ -1587,8 +1587,7 @@ fn run_shortcuts_install(
 }
 
 fn print_job_result(result: CoddyResult) -> Result<()> {
-    print!("{}", format_job_result(result)?);
-    Ok(())
+    print_stdout(&format_job_result(result)?)
 }
 
 fn format_job_result(result: CoddyResult) -> Result<String> {
@@ -1634,6 +1633,22 @@ fn format_job_result(result: CoddyResult) -> Result<String> {
     }
 }
 
+fn print_stdout(text: &str) -> Result<()> {
+    let mut stdout = io::stdout().lock();
+    write_stdout(&mut stdout, text)
+}
+
+fn write_stdout(writer: &mut impl Write, text: &str) -> Result<()> {
+    match writer
+        .write_all(text.as_bytes())
+        .and_then(|_| writer.flush())
+    {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::BrokenPipe => Ok(()),
+        Err(error) => Err(error).context("failed writing to stdout"),
+    }
+}
+
 fn join_command_text(text: Vec<String>) -> String {
     text.join(" ").trim().to_string()
 }
@@ -1658,6 +1673,45 @@ mod tests {
             join_command_text(vec!["quem".into(), "foi".into(), "rousseau?".into()]),
             "quem foi rousseau?"
         );
+    }
+
+    #[test]
+    fn stdout_writer_treats_broken_pipe_as_clean_shutdown() {
+        struct BrokenPipeWriter;
+
+        impl Write for BrokenPipeWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(ErrorKind::BrokenPipe, "pipe closed"))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = BrokenPipeWriter;
+
+        write_stdout(&mut writer, "large json output\n").expect("broken pipe is ignored");
+    }
+
+    #[test]
+    fn stdout_writer_reports_non_pipe_write_errors() {
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+                Err(io::Error::new(ErrorKind::PermissionDenied, "denied"))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = FailingWriter;
+
+        let error = write_stdout(&mut writer, "large json output\n").expect_err("write fails");
+        assert!(error.to_string().contains("failed writing to stdout"));
     }
 
     #[test]
