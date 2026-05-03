@@ -9,6 +9,7 @@ import type {
   ModelSelectionOptions,
   MultiagentEvalRequest,
   MultiagentEvalResult,
+  PromptBatteryEvalRequest,
   PromptBatteryResult,
   QualityEvalResult,
   PermissionReply,
@@ -120,8 +121,9 @@ export async function runMultiagentEval(
  */
 export async function runPromptBatteryEval(
   client: ReplIpcClient,
+  request: PromptBatteryEvalRequest = {},
 ): Promise<PromptBatteryResult> {
-  return client.runPromptBatteryEval()
+  return client.runPromptBatteryEval(request)
 }
 
 /**

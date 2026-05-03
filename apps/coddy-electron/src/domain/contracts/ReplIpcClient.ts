@@ -9,6 +9,7 @@ import type {
   ModelSelectionOptions,
   MultiagentEvalRequest,
   MultiagentEvalResult,
+  PromptBatteryEvalRequest,
   PromptBatteryResult,
   QualityEvalResult,
   PermissionReply,
@@ -81,7 +82,9 @@ export interface ReplIpcClient {
   ): Promise<MultiagentEvalResult>
 
   /** Run the deterministic 1,200-prompt routing battery without model API spend */
-  runPromptBatteryEval(): Promise<PromptBatteryResult>
+  runPromptBatteryEval(
+    request?: PromptBatteryEvalRequest,
+  ): Promise<PromptBatteryResult>
 
   /** Run the combined deterministic quality gate without model API spend */
   runQualityEval(): Promise<QualityEvalResult>

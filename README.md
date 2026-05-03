@@ -427,6 +427,10 @@ Desktop mode. The workspace flow lets the user select a folder and keep Coddy
 bound to that project, which mirrors terminal-based agents that start inside a
 repository directory.
 
+The Workspace tab also exposes local eval harnesses. Multiagent and
+prompt-battery panels can run deterministic checks, compare against a baseline
+path, and optionally write a fresh baseline for later regression tracking.
+
 Supported local slash commands in the Electron UI:
 
 | Command | Purpose |

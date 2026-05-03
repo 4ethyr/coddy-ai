@@ -341,7 +341,7 @@ Validation:
 
 ### Battery 14: Workspace Prompt Battery Panel
 
-Goal: expose the deterministic 300-prompt routing battery through the Electron workspace, so
+Goal: expose the deterministic 1200-prompt routing battery through the Electron workspace, so
 frontend users can run the same local harness without leaving the desktop UI.
 
 Implemented result:
@@ -349,7 +349,7 @@ Implemented result:
 - Added `PromptBatteryResult` and `PromptBatteryFailure` frontend domain types.
 - Added `runPromptBatteryEval()` to the typed `ReplIpcClient` port and application layer.
 - Added the `repl:eval-prompt-battery` preload/main IPC channel.
-- The Electron main process calls `coddy eval prompt-battery --json` with a fixed argument array.
+- The Electron main process calls `coddy eval prompt-battery --json` through typed IPC.
 - Extended `useSession` with prompt battery result, status and error state.
 - Added a compact Workspace panel for score, prompt count, stack count, failed count and top
   subagent member coverage.
@@ -729,6 +729,8 @@ Implemented result:
 - Baselines are written as `coddy.promptBatteryBaseline` JSON envelopes with the current report
   under `report`.
 - The same baseline path works for deterministic prompt-battery and live prompt-battery output.
+- Wired the Electron Workspace prompt-battery panel to pass baseline and write-baseline paths
+  through `CommandSender`, `ReplIpcClient`, preload/main IPC and the Rust CLI.
 - Comparison checks score, prompt count and failed count for deterministic runs.
 - Live comparisons also track raw score, member recall, raw member recall, model error rate, model
   error count and raw routing failure count.
@@ -738,6 +740,8 @@ Validation:
 
 - `cargo test -p coddy-agent prompt_battery_baseline -- --test-threads=1`: 3 tests passed.
 - `cargo test -p coddy parses_eval_prompt_battery -- --test-threads=1`: 2 tests passed.
+- `npm test -- --run src/__tests__/application/CommandSender.test.ts src/__tests__/infrastructure/ElectronReplIpcClient.test.ts src/__tests__/infrastructure/integration.test.ts src/__tests__/presentation/components/WorkspacePanel.test.tsx src/__tests__/presentation/hooks/useSession.test.tsx src/__tests__/presentation/views/DesktopApp.test.tsx`: 6 files passed, 73 tests passed.
+- `npm run typecheck`: passed.
 - Live OpenRouter/DeepSeek V4 Flash baseline smoke:
   `./target/debug/coddy eval prompt-battery --json --model-provider openrouter --model-name deepseek/deepseek-v4-flash --limit 5 --concurrency 2 --write-baseline /tmp/coddy-live-prompt-battery-baseline.json`
   returned score 100, raw score 100, model error rate 0 and wrote the baseline.

@@ -379,8 +379,8 @@ export function DesktopApp() {
               onRunMultiagentEval={(request) => {
                 void runMultiagentEval(request)
               }}
-              onRunPromptBattery={() => {
-                void runPromptBatteryEval()
+              onRunPromptBattery={(request) => {
+                void runPromptBatteryEval(request)
               }}
               onRunQualityEval={() => {
                 void runQualityEval()

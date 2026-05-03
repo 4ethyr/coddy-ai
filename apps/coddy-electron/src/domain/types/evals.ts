@@ -3,14 +3,26 @@ export interface MultiagentEvalRequest {
   writeBaseline?: string
 }
 
-export interface MultiagentEvalComparison {
+export interface EvalBaselineRequest {
+  baseline?: string
+  writeBaseline?: string
+}
+
+export type PromptBatteryEvalRequest = EvalBaselineRequest
+
+export interface EvalBaselineComparison {
   status: 'passed' | 'failed'
   previousScore: number
   currentScore: number
   scoreDelta: number
+  previousPromptCount?: number
+  currentPromptCount?: number
+  promptCountDelta?: number
   regressions: string[]
   improvements: string[]
 }
+
+export type MultiagentEvalComparison = EvalBaselineComparison
 
 export interface MultiagentExecutionMetrics {
   total: number
@@ -53,6 +65,8 @@ export interface PromptBatteryFailure {
 }
 
 export interface PromptBatteryResult {
+  baselineWritten?: string | null
+  comparison?: EvalBaselineComparison
   promptCount: number
   stackCount: number
   knowledgeAreaCount: number

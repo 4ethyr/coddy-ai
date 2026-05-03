@@ -247,6 +247,17 @@ describe('WorkspacePanel', () => {
         promptBatteryStatus="succeeded"
         onRunPromptBattery={onRun}
         promptBattery={{
+          comparison: {
+            status: 'failed',
+            previousScore: 100,
+            currentScore: 95,
+            scoreDelta: -5,
+            previousPromptCount: 1200,
+            currentPromptCount: 1200,
+            promptCountDelta: 0,
+            regressions: ['rawScore dropped from 100 to 95'],
+            improvements: [],
+          },
           promptCount: 1200,
           stackCount: 30,
           knowledgeAreaCount: 10,
@@ -268,12 +279,26 @@ describe('WorkspacePanel', () => {
     expect(screen.getByText('stacks')).toBeInTheDocument()
     expect(screen.getByText('explorer: 1200')).toBeInTheDocument()
     expect(screen.getByText('coder: 244')).toBeInTheDocument()
+    expect(screen.getByText('baseline failed')).toBeInTheDocument()
+    expect(screen.getByText('rawScore dropped from 100 to 95')).toBeInTheDocument()
+
+    await userEvent.type(
+      screen.getByLabelText('prompt baseline'),
+      ' /tmp/prompt-baseline.json ',
+    )
+    await userEvent.type(
+      screen.getByLabelText('prompt write baseline'),
+      '/tmp/prompt-current.json',
+    )
 
     await userEvent.click(
       screen.getByRole('button', { name: 'Run prompt battery' }),
     )
 
-    expect(onRun).toHaveBeenCalledTimes(1)
+    expect(onRun).toHaveBeenCalledWith({
+      baseline: '/tmp/prompt-baseline.json',
+      writeBaseline: '/tmp/prompt-current.json',
+    })
   })
 
   it('renders and triggers the combined quality eval gate', async () => {

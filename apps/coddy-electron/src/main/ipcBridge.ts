@@ -102,6 +102,11 @@ type MultiagentEvalPayload = {
   writeBaseline?: string
 }
 
+type PromptBatteryEvalPayload = {
+  baseline?: string
+  writeBaseline?: string
+}
+
 const VOICE_CAPTURE_TIMEOUT_MS = 120_000
 
 // ---------------------------------------------------------------------------
@@ -344,9 +349,12 @@ export function registerIpcHandlers(): void {
     },
   )
 
-  ipcMain.handle('repl:eval-prompt-battery', async () => {
-    return runPromptBatteryEval()
-  })
+  ipcMain.handle(
+    'repl:eval-prompt-battery',
+    async (_event, payload: PromptBatteryEvalPayload = {}) => {
+      return runPromptBatteryEval(payload)
+    },
+  )
 
   ipcMain.handle('repl:eval-quality', async () => {
     return runQualityEval()
@@ -731,8 +739,20 @@ async function runMultiagentEval(payload: MultiagentEvalPayload): Promise<unknow
   return readJson(coddySpawn(args))
 }
 
-async function runPromptBatteryEval(): Promise<unknown> {
-  return readJson(coddySpawn(['eval', 'prompt-battery', '--json']))
+async function runPromptBatteryEval(
+  payload: PromptBatteryEvalPayload,
+): Promise<unknown> {
+  const args = ['eval', 'prompt-battery', '--json']
+  const baseline = normalizeOptionalPath(payload.baseline)
+  const writeBaseline = normalizeOptionalPath(payload.writeBaseline)
+  if (baseline) {
+    args.push('--baseline', baseline)
+  }
+  if (writeBaseline) {
+    args.push('--write-baseline', writeBaseline)
+  }
+
+  return readJson(coddySpawn(args))
 }
 
 async function runQualityEval(): Promise<unknown> {
