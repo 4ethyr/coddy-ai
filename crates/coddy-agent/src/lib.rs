@@ -241,12 +241,19 @@ impl WorkspaceRoot {
     }
 
     fn resolve_existing(&self, relative_path: &str) -> Result<PathBuf, AgentError> {
-        let relative_path = relative_path.trim();
-        let relative_path = if relative_path.is_empty() {
-            "."
-        } else {
-            relative_path
-        };
+        let candidate = self.resolve_candidate(relative_path)?;
+        let canonical = candidate.canonicalize().map_err(|source| AgentError::Io {
+            path: candidate.display().to_string(),
+            source,
+        })?;
+        if !canonical.starts_with(&self.root) {
+            return Err(AgentError::OutsideWorkspace(relative_path.to_string()));
+        }
+        Ok(canonical)
+    }
+
+    fn resolve_candidate(&self, relative_path: &str) -> Result<PathBuf, AgentError> {
+        let relative_path = normalized_relative_path(relative_path);
         let requested = Path::new(relative_path);
 
         if requested.is_absolute() {
@@ -259,15 +266,7 @@ impl WorkspaceRoot {
             return Err(AgentError::PathTraversal(relative_path.to_string()));
         }
 
-        let candidate = self.root.join(requested);
-        let canonical = candidate.canonicalize().map_err(|source| AgentError::Io {
-            path: candidate.display().to_string(),
-            source,
-        })?;
-        if !canonical.starts_with(&self.root) {
-            return Err(AgentError::OutsideWorkspace(relative_path.to_string()));
-        }
-        Ok(canonical)
+        Ok(self.root.join(requested))
     }
 
     fn relative_display(&self, path: &Path) -> String {
@@ -1036,6 +1035,24 @@ impl ReadOnlyToolExecutor {
     fn list_files(&self, input: &Value) -> Result<ToolOutput, AgentError> {
         let path = string_field(input, "path")?.unwrap_or(".");
         let max_entries = usize_field(input, "max_entries")?.unwrap_or(DEFAULT_MAX_LIST_ENTRIES);
+        let candidate = self.workspace.resolve_candidate(path)?;
+        let exists = candidate.try_exists().map_err(|source| AgentError::Io {
+            path: candidate.display().to_string(),
+            source,
+        })?;
+        if !exists {
+            let relative_path = normalized_relative_path(path).to_string();
+            return Ok(ToolOutput {
+                text: format!("{relative_path} does not exist."),
+                metadata: json!({
+                    "path": relative_path,
+                    "entries": [],
+                    "not_found": true
+                }),
+                truncated: false,
+            });
+        }
+
         let directory = self.workspace.resolve_existing(path)?;
         if !directory.is_dir() {
             return Err(AgentError::NotDirectory(
@@ -1249,6 +1266,15 @@ impl ReadOnlyToolExecutor {
             }
         }
         Ok(())
+    }
+}
+
+fn normalized_relative_path(relative_path: &str) -> &str {
+    let relative_path = relative_path.trim();
+    if relative_path.is_empty() {
+        "."
+    } else {
+        relative_path
     }
 }
 
@@ -1712,6 +1738,22 @@ mod tests {
         assert!(output.text.contains("README.md"));
         assert!(output.text.contains("src"));
         assert!(!output.truncated);
+    }
+
+    #[test]
+    fn list_files_reports_missing_optional_directories_as_empty_success() {
+        let workspace = TempWorkspace::new();
+        workspace.write("Cargo.toml", "[workspace]\n");
+        let executor = ReadOnlyToolExecutor::new(&workspace.path).expect("executor");
+
+        let result = executor.execute(&call(LIST_FILES_TOOL, json!({ "path": ".github" })));
+
+        assert_eq!(result.status, ToolResultStatus::Succeeded);
+        let output = result.output.expect("tool output");
+        assert_eq!(output.metadata["path"], ".github");
+        assert_eq!(output.metadata["not_found"], json!(true));
+        assert_eq!(output.metadata["entries"], json!([]));
+        assert!(output.text.contains(".github does not exist."));
     }
 
     #[test]

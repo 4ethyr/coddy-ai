@@ -37,7 +37,7 @@ use uuid::Uuid;
 
 const MAX_MODEL_TOOL_ROUNDS: usize = 5;
 const MAX_MODEL_REQUEST_ATTEMPTS: usize = 4;
-const MAX_MODEL_TOOL_OBSERVATION_CHARS: usize = 12 * 1024;
+const MAX_MODEL_TOOL_OBSERVATION_CHARS: usize = 8 * 1024;
 const MODEL_RETRY_BASE_DELAY_MS: u64 = 250;
 
 #[derive(Debug, Clone)]
@@ -898,16 +898,12 @@ impl CoddyRuntime {
                 Ok(response) => response,
                 Err(error) => {
                     self.fail_agent_run(context.run_id, &error);
-                    let mut text = round.response.text;
-                    text.push_str("\n\n");
-                    text.push_str(
-                        "Coddy could not get a follow-up response after tool observations: ",
-                    );
-                    text.push_str(&model_error_message(
+                    let text = build_tool_followup_failure_response(
+                        &round.response.text,
                         &error,
                         context.selected_model,
                         self.tool_registry.definitions().len(),
-                    ));
+                    );
                     return AssistantResponse::from_text(redact_context_text(&text));
                 }
             };
@@ -1490,7 +1486,7 @@ impl CoddyRuntime {
                     .filter(|patterns| !patterns.is_empty())
                     .unwrap_or_else(|| "requested target".to_string());
                 observations.push(format!(
-                    "- `{tool_name}` requires approval before accessing sensitive workspace content: {patterns}."
+                    "- `{tool_name}` requires approval before accessing sensitive workspace content: {patterns}.\n  Coddy needs your approval before it can read sensitive workspace content.\n  Approve this request only if the file is necessary for the task; otherwise reject it and Coddy will continue without that content.\n  Current findings are partial and based only on already available non-sensitive observations."
                 ));
                 continue;
             }
@@ -2146,6 +2142,48 @@ fn append_recovery_failure_context(
     }
 }
 
+fn build_tool_followup_failure_response(
+    tool_observations: &str,
+    error: &ChatModelError,
+    selected_model: &ModelRef,
+    tool_count: usize,
+) -> String {
+    let evidence = sanitize_tool_observations_for_user(tool_observations);
+    let mut sections = vec![
+        "Coddy collected workspace evidence, but the selected model did not return a synthesized follow-up after the tool results.".to_string(),
+        model_error_message(error, selected_model, tool_count),
+    ];
+
+    if !evidence.trim().is_empty() {
+        sections.push(format!(
+            "Partial tool evidence captured before the model failure:\n{}",
+            truncate_context_text(&evidence, 4_000)
+        ));
+    }
+
+    sections.push(
+        "Treat this as a partial result. Retry with a narrower prompt, a smaller tool budget, or a different OpenRouter route/model for a full synthesized answer."
+            .to_string(),
+    );
+    sections.join("\n\n")
+}
+
+fn sanitize_tool_observations_for_user(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if trimmed.eq_ignore_ascii_case("Tool observations:") {
+                "Evidence captured by runtime tools:"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
 fn build_action_promise_recovery_prompt(incomplete_answer: &str, tools_enabled: bool) -> String {
     let excerpt = truncate_context_text(&redact_context_text(incomplete_answer), 1200);
     let tool_instruction = if tools_enabled {
@@ -2281,6 +2319,34 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
             ],
         )
     {
+        return true;
+    }
+
+    if contains_any(
+        &normalized,
+        &[
+            "filesystem.read_file",
+            "filesystem.list_files",
+            "filesystem.search_files",
+            "filesystem.apply_edit",
+            "shell.run",
+            "subagent.",
+        ],
+    ) && contains_any(
+        &normalized,
+        &[
+            "request for `",
+            "request for ",
+            "` succeeded:",
+            "` failed:",
+            ") succeeded",
+            ") failed",
+            " succeeded (",
+            " failed (",
+            "was not executed because",
+            "additional model-requested tool calls",
+        ],
+    ) {
         return true;
     }
 
@@ -2844,12 +2910,14 @@ fn format_tool_budget_context(tool_use_policy: ToolUsePolicy) -> String {
         Some(limit) => [
             format!("Tool-use budget: at most {limit} runtime tool calls this turn."),
             "Pick the highest-signal inspection first; prefer files or searches that directly answer the user's request.".to_string(),
+            "Use `max_bytes` for `filesystem.read_file` on large files; start around 4000 bytes and narrow follow-up reads instead of loading broad files.".to_string(),
             "When the budget is exhausted, synthesize the best grounded answer from gathered observations and state remaining uncertainty.".to_string(),
         ]
         .join("\n"),
         None => [
             "Tool-use budget: bounded by Coddy runtime safeguards.",
             "Use focused tools only when they add evidence, and synthesize once the relevant context is sufficient.",
+            "Use `max_bytes` for `filesystem.read_file` on large files; start around 4000 bytes and narrow follow-up reads instead of loading broad files.",
         ]
         .join("\n"),
     }
@@ -2873,6 +2941,7 @@ fn format_task_specific_tool_guidance(goal: &str) -> Option<String> {
                 "Task-specific guidance for TDD/coding plans:",
                 "- Spend the tool budget as evidence budget: after root/manifest inspection, reserve reads for current source and related tests.",
                 "- Do not spend the whole budget on directory listings; use at most two broad list/search steps before reading source or test files.",
+                "- Use compact source reads (`max_bytes` near 4000) before asking for more context, so follow-up model calls stay reliable.",
                 "- If no source or test file was read, return a partial plan and ask to continue the inspection instead of proposing concrete implementation details.",
                 "- For long or complex codebases, produce a staged plan with inspected evidence, unknowns, and the next highest-signal file reads.",
             ]
@@ -2896,6 +2965,7 @@ fn format_task_specific_tool_guidance(goal: &str) -> Option<String> {
             [
                 "Task-specific guidance for long and complex contexts:",
                 "- Work in evidence slices: map the repo, inspect current source/tests for one subsystem, summarize uncertainty, then continue.",
+                "- Prefer compact `filesystem.read_file` calls with `max_bytes` over broad full-file reads.",
                 "- Prefer compact observations and explicit next reads over broad unsupported conclusions.",
                 "- Distinguish confirmed facts from hypotheses and stale documentation.",
             ]
@@ -3600,25 +3670,50 @@ fn classify_ask_intent(text: &str, action: &AskAction) -> (ReplIntent, f32) {
     }
 
     let normalized = normalize_grounding_text(text);
-    if contains_any(
-        &normalized,
-        &["debug", "erro", "error", "stack trace", "falha"],
-    ) {
-        return (ReplIntent::DebugCode, 0.72);
-    }
-    if contains_any(
+    let asks_for_tdd_or_plan = contains_any(
         &normalized,
         &[
             "plano tdd",
             "plan tdd",
+            "proposta de codigo tdd",
+            "proposta de code tdd",
+            "proposta de implementacao tdd",
+            "implementacao tdd",
+            "tdd code proposal",
             "plano de implementacao",
             "implementation plan",
             "plano para implementar",
             "crie um plano",
             "create a plan",
         ],
-    ) {
+    );
+    let asks_for_code_artifact = contains_any(
+        &normalized,
+        &[
+            "gere codigo",
+            "gere um codigo",
+            "gerar codigo",
+            "generate code",
+            "write code",
+            "codigo rust",
+            "codigo typescript",
+            "codigo javascript",
+            "codigo python",
+            "funcao rust",
+            "patch conceitual",
+            "conceptual patch",
+            "implemente conceitualmente",
+        ],
+    );
+
+    if asks_for_tdd_or_plan || asks_for_code_artifact {
         return (ReplIntent::AgenticCodeChange, 0.73);
+    }
+    if contains_any(
+        &normalized,
+        &["debug", "erro", "error", "stack trace", "falha"],
+    ) {
+        return (ReplIntent::DebugCode, 0.72);
     }
     if contains_any(
         &normalized,
@@ -4457,6 +4552,39 @@ mod tests {
     }
 
     #[test]
+    fn classify_tdd_error_improvement_as_agentic_change_not_debug() {
+        let (intent, confidence) = classify_ask_intent(
+            "Gere uma proposta de código TDD para melhorar mensagens de erro do OpenRouter.",
+            &AskAction::ModelBackedResponse,
+        );
+
+        assert_eq!(intent, coddy_core::ReplIntent::AgenticCodeChange);
+        assert!(confidence >= 0.7);
+    }
+
+    #[test]
+    fn classify_codegen_with_tests_as_agentic_change_not_test_generation() {
+        let (intent, confidence) = classify_ask_intent(
+            "Gere código Rust para uma função summarize_tool_events e inclua testes unitários.",
+            &AskAction::ModelBackedResponse,
+        );
+
+        assert_eq!(intent, coddy_core::ReplIntent::AgenticCodeChange);
+        assert!(confidence >= 0.7);
+    }
+
+    #[test]
+    fn classify_tdd_implementation_proposal_as_agentic_change() {
+        let (intent, confidence) = classify_ask_intent(
+            "Gere uma proposta de implementação TDD para uma melhoria pequena e realista nesta codebase.",
+            &AskAction::ModelBackedResponse,
+        );
+
+        assert_eq!(intent, coddy_core::ReplIntent::AgenticCodeChange);
+        assert!(confidence >= 0.7);
+    }
+
+    #[test]
     fn classify_direct_test_request_as_test_generation() {
         let (intent, confidence) = classify_ask_intent(
             "Gere testes unitarios para o parser de comandos.",
@@ -4793,6 +4921,7 @@ mod tests {
         assert!(system_prompt.contains("Bootstrap type: coding-plan"));
         assert!(system_prompt.contains("Bootstrap tool calls used before model turn: 4"));
         assert!(system_prompt.contains("Remaining model-requested tool budget: 2"));
+        assert!(system_prompt.contains("Use `max_bytes` for `filesystem.read_file`"));
         assert!(system_prompt.contains("`filesystem.read_file` `Cargo.toml` succeeded"));
         assert!(system_prompt.contains("`filesystem.read_file` `src/lib.rs` succeeded"));
         assert!(system_prompt.contains("`filesystem.read_file` `tests/parser_test.rs` succeeded"));
@@ -4967,6 +5096,27 @@ The runtime already implements this feature correctly."#,
         assert!(response.text.contains("not executed for safety"));
         assert!(!response.text.contains("coddy-runtime/src/lib.rs"));
         assert!(!response.text.contains("complete implementation details"));
+    }
+
+    #[test]
+    fn assistant_response_blocks_fabricated_provider_safe_tool_transcripts() {
+        let response = ChatResponse::from_text(
+            r#"`filesystem.read_file` request for `crates/coddy-agent/src/lib.rs` succeeded:
+```rust
+pub struct DefaultChatModelClient;
+```
+
+Now we have strong evidence of the architecture."#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("DefaultChatModelClient"));
+        assert!(!response.text.contains("coddy-agent/src/lib.rs"));
     }
 
     #[test]
@@ -5956,9 +6106,12 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
         let captured_requests = requests.lock().expect("requests mutex poisoned");
 
         assert_eq!(captured_requests.len(), 2);
-        assert!(text.contains("Tool observations:"));
+        assert!(text.contains("Coddy collected workspace evidence"));
+        assert!(text.contains("Partial tool evidence captured before the model failure"));
+        assert!(text.contains("Evidence captured by runtime tools:"));
+        assert!(!text.contains("Tool observations:"));
         assert!(text.contains("filesystem.list_files"));
-        assert!(text.contains("could not get a follow-up response after tool observations"));
+        assert!(text.contains("Treat this as a partial result"));
         assert!(text.contains("missing queued response"));
     }
 
@@ -6220,6 +6373,9 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
 
         assert_eq!(captured_requests.len(), 1);
         assert!(text.contains("requires approval before accessing sensitive workspace content"));
+        assert!(text
+            .contains("Coddy needs your approval before it can read sensitive workspace content"));
+        assert!(text.contains("Approve this request only if the file is necessary for the task"));
         assert!(text.contains(".env"));
         assert!(!text.contains("sk-secret-token"));
         assert_eq!(pending.tool_name.as_str(), READ_FILE_TOOL);

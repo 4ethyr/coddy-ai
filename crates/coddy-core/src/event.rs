@@ -28,7 +28,7 @@ pub enum ReplIntent {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ToolStatus {
     Succeeded,
     Failed,
@@ -221,4 +221,20 @@ pub enum ReplEvent {
         code: String,
         message: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn tool_status_supports_stable_ordering_for_metric_maps() {
+        let mut counts = BTreeMap::new();
+        counts.insert(ToolStatus::Succeeded, 2_usize);
+        counts.insert(ToolStatus::Failed, 1_usize);
+
+        assert_eq!(counts.get(&ToolStatus::Succeeded), Some(&2));
+        assert_eq!(counts.get(&ToolStatus::Failed), Some(&1));
+    }
 }
