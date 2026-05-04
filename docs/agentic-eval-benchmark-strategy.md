@@ -59,16 +59,18 @@ followed by one record per fixture case. Records include:
 This is deliberately offline today: it records fixture contract quality before
 Coddy executes patch attempts against materialized fixture repositories.
 
-Fixture benchmark contracts that declare `cargo test -p coddy-agent ... --
---exact` must use a known full test path. The current executable Coddy agent
-fixture verifiers are:
+Fixture benchmark contracts that declare exact Cargo test verifiers must use a
+known test path or test name. The current executable Coddy fixture verifiers
+are:
 
 - `eval::tests::security_fixture_detects_path_traversal`;
 - `eval::tests::rag_memory_fixture_retrieves_expected_context`;
 - `eval::tests::skills_mcp_fixture_validates_permissions`.
+- `runtime_fixture_regression`.
 
-Unknown exact Coddy agent fixture verifier names fail the deterministic fixture
-benchmark instead of being accepted as unverified shell strings.
+Unknown exact Coddy agent or Coddy runtime fixture verifier names fail the
+deterministic fixture benchmark instead of being accepted as unverified shell
+strings.
 
 ## Fixture Smoke
 

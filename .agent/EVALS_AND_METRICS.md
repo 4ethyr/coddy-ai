@@ -18,7 +18,8 @@ Coddy must be evaluated as an engineering system, not only as a chat interface.
   prompt-injection resistance and coding orchestration;
 - fixture benchmark contracts with setup command, allowed tools, expected
   files, test command, security assertions and timeout;
-- fixture benchmark rejection for unknown exact `coddy-agent` verifier tests;
+- fixture benchmark rejection for unknown exact `coddy-agent` and
+  `coddy-runtime` verifier tests;
 - fixture benchmark JSONL metrics with summary and per-case records;
 - fixture smoke materialization with read-only shell verifier metrics and
   RAG/memory tag coverage;
