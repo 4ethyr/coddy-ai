@@ -4,10 +4,10 @@ use coddy_agent::{
     should_retry_chat_model_request_error, with_empty_response_retry_guidance, AgentRunAction,
     AgentRunStopReason, AgentRunSummary, AgentRunV2, AgentToolRegistry, ChatMessage,
     ChatMessageRole, ChatModelClient, ChatModelError, ChatModelResult, ChatRequest, ChatResponse,
-    ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, SubagentExecutionGate,
-    SubagentExecutionHandoff, SubagentExecutionStartPlan, SubagentExecutionStartStatus,
-    SubagentOutputContract, LIST_FILES_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL,
-    SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
+    ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, ShellExecutionConfig,
+    SubagentExecutionGate, SubagentExecutionHandoff, SubagentExecutionStartPlan,
+    SubagentExecutionStartStatus, SubagentOutputContract, LIST_FILES_TOOL, READ_FILE_TOOL,
+    SEARCH_FILES_TOOL, SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
 };
 use coddy_core::{
     ContextItem, ContextPolicy, ConversationRecord, ModelCredential, ModelRef, ModelRole,
@@ -128,6 +128,16 @@ impl CoddyRuntime {
         Self::new_with_agent_runtime(tool_registry, agent_runtime)
     }
 
+    pub fn with_shell_config(
+        tool_registry: AgentToolRegistry,
+        shell_config: ShellExecutionConfig,
+    ) -> Self {
+        let agent_runtime = default_workspace_root().and_then(|workspace| {
+            LocalAgentRuntime::with_shell_config(workspace, shell_config).ok()
+        });
+        Self::new_with_agent_runtime(tool_registry, agent_runtime)
+    }
+
     pub fn with_workspace(
         tool_registry: AgentToolRegistry,
         workspace_root: impl AsRef<Path>,
@@ -135,6 +145,20 @@ impl CoddyRuntime {
         Ok(Self::new_with_agent_runtime(
             tool_registry,
             Some(LocalAgentRuntime::new(workspace_root)?),
+        ))
+    }
+
+    pub fn with_workspace_and_shell_config(
+        tool_registry: AgentToolRegistry,
+        workspace_root: impl AsRef<Path>,
+        shell_config: ShellExecutionConfig,
+    ) -> Result<Self, coddy_agent::AgentError> {
+        Ok(Self::new_with_agent_runtime(
+            tool_registry,
+            Some(LocalAgentRuntime::with_shell_config(
+                workspace_root,
+                shell_config,
+            )?),
         ))
     }
 
@@ -188,6 +212,11 @@ impl CoddyRuntime {
             state.conversation_history = ConversationHistoryStore::open(Some(path.into()));
         });
         self
+    }
+
+    pub fn with_event_audit_path(self, path: impl AsRef<Path>) -> io::Result<Self> {
+        self.with_state_mut(|state| state.broker.enable_audit_path(path))?;
+        Ok(self)
     }
 
     pub fn handle_request(&self, request: CoddyRequest) -> CoddyResult {
@@ -4660,7 +4689,7 @@ mod tests {
     };
     use coddy_client::CoddyClient;
     use coddy_core::{
-        ApprovalPolicy, ModelRef, ModelRole, PermissionReply, ReplEvent, ToolCategory,
+        ApprovalPolicy, ModelRef, ModelRole, PermissionReply, ReplEvent, ReplMessage, ToolCategory,
         ToolPermission, ToolRiskLevel, ToolStatus,
     };
     use coddy_ipc::{
@@ -4856,6 +4885,77 @@ mod tests {
         let raw = fs::read_to_string(history_path).expect("history file");
         assert!(!raw.contains("sk-or-secret-token"));
         assert!(raw.contains("[redacted]"));
+    }
+
+    #[test]
+    fn event_audit_log_persists_redacted_runtime_events() {
+        let workspace = TempWorkspace::new();
+        let audit_path = workspace.path.join("event-audit.jsonl");
+        let runtime = CoddyRuntime::default()
+            .with_event_audit_path(&audit_path)
+            .expect("audit path");
+
+        runtime.publish_event(
+            ReplEvent::MessageAppended {
+                message: ReplMessage {
+                    id: Uuid::new_v4(),
+                    role: "user".to_string(),
+                    text: "OPENROUTER_API_KEY=sk-or-secret-token".to_string(),
+                },
+            },
+            None,
+            1_775_000_000_000,
+        );
+
+        let raw = fs::read_to_string(audit_path).expect("audit log");
+
+        assert_eq!(raw.lines().count(), 2);
+        assert!(raw.contains("SessionStarted"));
+        assert!(raw.contains("MessageAppended"));
+        assert!(!raw.contains("sk-or-secret-token"));
+        assert!(raw.contains("[redacted]"));
+    }
+
+    #[test]
+    fn event_audit_log_persists_tool_execution_records_without_raw_output() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("README.md", "# Coddy\n");
+        let audit_path = workspace.path.join("event-audit.jsonl");
+        let runtime = CoddyRuntime::with_workspace(AgentToolRegistry::default(), &workspace.path)
+            .expect("runtime")
+            .with_event_audit_path(&audit_path)
+            .expect("audit path");
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "list files".to_string(),
+                context_policy: ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let raw = fs::read_to_string(audit_path).expect("audit log");
+        let tool_record = raw
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find_map(|value| {
+                value["event"]["ToolExecutionRecorded"]["record"]
+                    .as_object()
+                    .map(|_| value["event"]["ToolExecutionRecorded"]["record"].clone())
+            })
+            .expect("tool execution record");
+
+        assert_eq!(tool_record["tool_name"], json!(LIST_FILES_TOOL));
+        assert_eq!(tool_record["status"], json!("Succeeded"));
+        assert!(tool_record["output_chars"].as_u64().expect("output chars") > 0);
+        assert!(tool_record["metadata"]["entries"].is_array());
+        assert!(tool_record["metadata"].get("stdout").is_none());
+        assert!(tool_record["metadata"].get("stderr").is_none());
+        assert!(!raw.contains("# Coddy"));
     }
 
     #[test]
@@ -8992,6 +9092,14 @@ Conclusao: o runtime policy guard nao esta implementado.",
             &event.event,
             ReplEvent::ToolCompleted { name, status: coddy_core::ToolStatus::Succeeded }
                 if name == LIST_FILES_TOOL
+        )));
+        assert!(events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolExecutionRecorded { record }
+                if record.tool_name == LIST_FILES_TOOL
+                    && record.status == coddy_core::ToolStatus::Succeeded
+                    && record.output_chars > 0
+                    && record.metadata.get("entries").is_some()
         )));
         assert!(snapshot
             .session

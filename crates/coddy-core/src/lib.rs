@@ -26,7 +26,7 @@ pub use context::{
 pub use event::{
     AgentRunPhase, AgentRunStopReason, AgentRunSummary, ReplEvent, ReplIntent, ShortcutSource,
     SubagentHandoffPrepared, SubagentLifecycleStatus, SubagentLifecycleUpdate,
-    SubagentRouteRecommendation, ToolStatus,
+    SubagentRouteRecommendation, ToolExecutionRecord, ToolStatus,
 };
 pub use event_broker::{ReplEventBroker, ReplEventSubscription};
 pub use event_log::{ReplEventEnvelope, ReplEventLog, ReplSessionSnapshot};

@@ -28,6 +28,7 @@ coddy-runtime = { path = "crates/coddy-runtime" }
 coddy-voice-input = { path = "crates/coddy-voice-input" }
 directories = "5.0"
 gtk4 = "0.8"
+libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"

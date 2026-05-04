@@ -1,10 +1,15 @@
 use std::path::Path;
 
-use coddy_core::{PermissionReply, ReplEvent, ToolCall, ToolName, ToolResult, ToolResultStatus};
-use serde_json::Value;
+use coddy_core::{
+    redact_conversation_text, PermissionReply, ReplEvent, ToolCall, ToolExecutionRecord, ToolName,
+    ToolResult, ToolResultStatus, ToolStatus,
+};
+use serde_json::{Map, Value};
 use uuid::Uuid;
 
-use crate::{AgentError, LocalToolRouteOutcome, LocalToolRouter, WorkspaceRoot};
+use crate::{
+    AgentError, LocalToolRouteOutcome, LocalToolRouter, ShellExecutionConfig, WorkspaceRoot,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentRunStatus {
@@ -81,8 +86,15 @@ pub struct LocalAgentRuntime {
 
 impl LocalAgentRuntime {
     pub fn new(workspace_root: impl AsRef<Path>) -> Result<Self, AgentError> {
+        Self::with_shell_config(workspace_root, ShellExecutionConfig::default())
+    }
+
+    pub fn with_shell_config(
+        workspace_root: impl AsRef<Path>,
+        shell_config: ShellExecutionConfig,
+    ) -> Result<Self, AgentError> {
         let workspace = WorkspaceRoot::new(workspace_root.as_ref())?;
-        let router = LocalToolRouter::new(workspace.path())?;
+        let router = LocalToolRouter::with_shell_config(workspace.path(), shell_config)?;
         Ok(Self { workspace, router })
     }
 
@@ -146,7 +158,8 @@ impl LocalAgentRuntime {
         call: &ToolCall,
     ) -> LocalToolRouteOutcome {
         state.status = AgentRunStatus::Running;
-        let outcome = self.router.route(call);
+        let mut outcome = self.router.route(call);
+        append_tool_execution_record_event(&call.tool_name, &mut outcome);
         record_outcome(
             state,
             call.tool_name.clone(),
@@ -163,12 +176,13 @@ impl LocalAgentRuntime {
         reply: PermissionReply,
     ) -> LocalToolRouteOutcome {
         state.status = AgentRunStatus::Running;
-        let outcome = self.router.reply_permission(request_id, reply);
+        let mut outcome = self.router.reply_permission(request_id, reply);
         let tool_name = outcome
             .result
             .as_ref()
             .and_then(|_| infer_tool_from_events(&outcome.events))
             .unwrap_or_else(|| ToolName::new("permission.reply").expect("tool name"));
+        append_tool_execution_record_event(&tool_name, &mut outcome);
         record_outcome(state, tool_name, AgentStepKind::PermissionReply, &outcome);
         outcome
     }
@@ -219,6 +233,14 @@ fn record_outcome(
     };
 }
 
+fn append_tool_execution_record_event(tool_name: &ToolName, outcome: &mut LocalToolRouteOutcome) {
+    if let Some(result) = &outcome.result {
+        outcome.events.push(ReplEvent::ToolExecutionRecorded {
+            record: tool_execution_record(tool_name, result),
+        });
+    }
+}
+
 fn observation_from_result(tool_name: ToolName, result: &ToolResult) -> Observation {
     let (text, metadata, truncated) = result
         .output
@@ -252,6 +274,116 @@ fn observation_from_result(tool_name: ToolName, result: &ToolResult) -> Observat
     }
 }
 
+fn tool_execution_record(tool_name: &ToolName, result: &ToolResult) -> ToolExecutionRecord {
+    let (output_chars, truncated, metadata) = result
+        .output
+        .as_ref()
+        .map(|output| {
+            (
+                output.text.chars().count(),
+                output.truncated,
+                audit_metadata(&output.metadata),
+            )
+        })
+        .unwrap_or_else(|| (0, false, Value::Object(Map::new())));
+
+    ToolExecutionRecord {
+        tool_name: tool_name.to_string(),
+        call_id: result.call_id,
+        status: tool_status(result.status),
+        started_at_unix_ms: result.started_at_unix_ms,
+        completed_at_unix_ms: result.completed_at_unix_ms,
+        duration_ms: result
+            .completed_at_unix_ms
+            .saturating_sub(result.started_at_unix_ms),
+        output_chars,
+        truncated,
+        error_code: result.error.as_ref().map(|error| error.code.clone()),
+        retryable: result.error.as_ref().map(|error| error.retryable),
+        metadata,
+    }
+}
+
+fn tool_status(status: ToolResultStatus) -> ToolStatus {
+    match status {
+        ToolResultStatus::Succeeded => ToolStatus::Succeeded,
+        ToolResultStatus::Failed => ToolStatus::Failed,
+        ToolResultStatus::Cancelled => ToolStatus::Cancelled,
+        ToolResultStatus::Denied => ToolStatus::Denied,
+    }
+}
+
+fn audit_metadata(metadata: &Value) -> Value {
+    sanitize_audit_metadata_value(metadata, 0)
+}
+
+fn sanitize_audit_metadata_value(value: &Value, depth: usize) -> Value {
+    const MAX_DEPTH: usize = 4;
+    const MAX_ARRAY_ITEMS: usize = 25;
+
+    if depth >= MAX_DEPTH {
+        return Value::String("[truncated]".to_string());
+    }
+
+    match value {
+        Value::String(text) => Value::String(redact_and_truncate(text)),
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .take(MAX_ARRAY_ITEMS)
+                .map(|value| sanitize_audit_metadata_value(value, depth + 1))
+                .collect(),
+        ),
+        Value::Object(map) => {
+            let mut sanitized = Map::new();
+            for (key, value) in map {
+                if audit_metadata_key_is_omitted(key) {
+                    continue;
+                }
+                sanitized.insert(key.clone(), sanitize_audit_metadata_value(value, depth + 1));
+            }
+            Value::Object(sanitized)
+        }
+        _ => value.clone(),
+    }
+}
+
+fn audit_metadata_key_is_omitted(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "body"
+            | "content"
+            | "diff"
+            | "failures"
+            | "handoff"
+            | "matches"
+            | "output"
+            | "outputs"
+            | "raw"
+            | "raw_failures"
+            | "recommendations"
+            | "response"
+            | "stderr"
+            | "stdout"
+            | "subagents"
+            | "team"
+            | "text"
+    )
+}
+
+fn redact_and_truncate(text: &str) -> String {
+    const MAX_CHARS: usize = 512;
+
+    let redacted = redact_conversation_text(text);
+    if redacted.chars().count() <= MAX_CHARS {
+        return redacted;
+    }
+
+    let mut truncated = redacted.chars().take(MAX_CHARS).collect::<String>();
+    truncated.push_str("...[truncated]");
+    truncated
+}
+
 fn step_summary(tool_name: &ToolName, status: AgentStepStatus) -> String {
     format!("{}: {status:?}", tool_name.as_str())
 }
@@ -272,7 +404,9 @@ mod tests {
     use coddy_core::ToolResultStatus;
     use serde_json::json;
 
-    use crate::{READ_FILE_TOOL, SHELL_RUN_TOOL};
+    use crate::{
+        ShellSandboxPolicy, ShellSandboxProviderDiscovery, READ_FILE_TOOL, SHELL_RUN_TOOL,
+    };
 
     use super::*;
 
@@ -336,6 +470,23 @@ mod tests {
             .events
             .iter()
             .any(|event| matches!(event, ReplEvent::ToolCompleted { .. })));
+        let record = state
+            .events
+            .iter()
+            .find_map(|event| match event {
+                ReplEvent::ToolExecutionRecorded { record }
+                    if record.tool_name == READ_FILE_TOOL =>
+                {
+                    Some(record)
+                }
+                _ => None,
+            })
+            .expect("read file execution record");
+        assert_eq!(record.call_id, read_call.id);
+        assert_eq!(record.status, ToolStatus::Succeeded);
+        assert!(record.output_chars > 0);
+        assert_eq!(record.metadata["path"], json!("README.md"));
+        assert!(record.metadata.get("stdout").is_none());
     }
 
     #[test]
@@ -359,6 +510,171 @@ mod tests {
             state.observations.last().expect("observation").metadata["stdout"],
             json!("coddy")
         );
+        let record = state
+            .events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                ReplEvent::ToolExecutionRecorded { record }
+                    if record.tool_name == SHELL_RUN_TOOL =>
+                {
+                    Some(record)
+                }
+                _ => None,
+            })
+            .expect("shell execution record");
+        assert_eq!(record.status, ToolStatus::Succeeded);
+        assert_eq!(record.metadata["command"], json!("printf coddy"));
+        assert_eq!(record.metadata["success"], json!(true));
+        assert_eq!(record.metadata["sandbox_policy"], json!("process"));
+        assert_eq!(
+            record.metadata["sandbox"]["no_new_privileges"],
+            json!(cfg!(target_os = "linux"))
+        );
+        assert_eq!(record.metadata["sandbox"]["policy"], json!("process"));
+        assert_eq!(
+            record.metadata["sandbox"]["providers"]["selected"],
+            json!("process")
+        );
+        assert_eq!(
+            record.metadata["sandbox"]["providers"]["kernel_isolation_active"],
+            json!(false)
+        );
+        assert!(record.metadata.get("stdout").is_none());
+        assert!(record.metadata.get("stderr").is_none());
+    }
+
+    #[test]
+    fn shell_network_policy_denial_is_recorded_after_approval() {
+        let workspace = TempWorkspace::new();
+        let runtime = LocalAgentRuntime::new(&workspace.path).expect("runtime");
+        let mut state = runtime.start_run(Uuid::new_v4(), "check network command policy");
+
+        let shell_call = call(
+            &state,
+            SHELL_RUN_TOOL,
+            json!({ "command": "curl --version" }),
+        );
+        let pending = runtime.execute_tool_call(&mut state, &shell_call);
+        let request = pending.permission_request.expect("permission request");
+
+        let executed = runtime.reply_permission(&mut state, request.id, PermissionReply::Once);
+
+        assert_eq!(executed.status(), Some(ToolResultStatus::Denied));
+        assert_eq!(state.status, AgentRunStatus::Failed);
+        let observation = state.observations.last().expect("observation");
+        assert_eq!(observation.tool_name.as_str(), SHELL_RUN_TOOL);
+        assert_eq!(observation.status, ToolResultStatus::Denied);
+        assert_eq!(observation.error_code.as_deref(), Some("network_disabled"));
+        let record = state
+            .events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                ReplEvent::ToolExecutionRecorded { record }
+                    if record.tool_name == SHELL_RUN_TOOL =>
+                {
+                    Some(record)
+                }
+                _ => None,
+            })
+            .expect("shell execution record");
+        assert_eq!(record.status, ToolStatus::Denied);
+        assert_eq!(record.error_code.as_deref(), Some("network_disabled"));
+        assert_eq!(record.metadata["policy"], json!("network_disabled"));
+        assert_eq!(record.metadata["command"], json!("curl --version"));
+        assert_eq!(record.metadata["cwd"], json!("."));
+        assert_eq!(record.metadata["network_policy"], json!("disabled"));
+        assert_eq!(record.metadata["sandbox_policy"], json!("process"));
+        assert_eq!(
+            record.metadata["sandbox"]["no_new_privileges"],
+            json!(cfg!(target_os = "linux"))
+        );
+        assert_eq!(record.metadata["sandbox"]["policy"], json!("process"));
+        assert_eq!(
+            record.metadata["sandbox"]["providers"]["selected"],
+            json!("process")
+        );
+        assert_eq!(
+            record.metadata["sandbox"]["providers"]["kernel_isolation_active"],
+            json!(false)
+        );
+        assert!(record.metadata.get("stdout").is_none());
+        assert!(record.metadata.get("stderr").is_none());
+    }
+
+    #[test]
+    fn strict_shell_sandbox_config_is_enforced_through_local_runtime() {
+        let workspace = TempWorkspace::new();
+        let runtime = LocalAgentRuntime::with_shell_config(
+            &workspace.path,
+            ShellExecutionConfig {
+                sandbox_policy: ShellSandboxPolicy::RequireKernelIsolation,
+                sandbox_provider_discovery: ShellSandboxProviderDiscovery::Disabled,
+                ..ShellExecutionConfig::default()
+            },
+        )
+        .expect("runtime");
+        let mut state = runtime.start_run(Uuid::new_v4(), "run strict shell command");
+
+        let shell_call = call(&state, SHELL_RUN_TOOL, json!({ "command": "printf coddy" }));
+        let pending = runtime.execute_tool_call(&mut state, &shell_call);
+        let request = pending.permission_request.expect("permission request");
+
+        let executed = runtime.reply_permission(&mut state, request.id, PermissionReply::Once);
+
+        assert_eq!(executed.status(), Some(ToolResultStatus::Denied));
+        assert_eq!(state.status, AgentRunStatus::Failed);
+        let observation = state.observations.last().expect("observation");
+        assert_eq!(
+            observation.error_code.as_deref(),
+            Some("sandbox_unavailable")
+        );
+        let record = state
+            .events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                ReplEvent::ToolExecutionRecorded { record }
+                    if record.tool_name == SHELL_RUN_TOOL =>
+                {
+                    Some(record)
+                }
+                _ => None,
+            })
+            .expect("shell execution record");
+        assert_eq!(record.status, ToolStatus::Denied);
+        assert_eq!(record.error_code.as_deref(), Some("sandbox_unavailable"));
+        assert_eq!(
+            record.metadata["sandbox_policy"],
+            json!("require-kernel-isolation")
+        );
+        assert_eq!(
+            record.metadata["sandbox"]["providers"]["kernel_isolation_active"],
+            json!(false)
+        );
+        assert!(record.metadata.get("stdout").is_none());
+        assert!(record.metadata.get("stderr").is_none());
+    }
+
+    #[test]
+    fn audit_metadata_omits_raw_output_and_redacts_strings() {
+        let metadata = audit_metadata(&json!({
+            "command": "OPENAI_API_KEY=sk-secret cargo test",
+            "stdout": "token=sk-secret",
+            "stderr": "password=secret",
+            "path": "src/main.rs",
+            "nested": {
+                "diff": "-old\n+new",
+                "safe": "Bearer sk-secret"
+            }
+        }));
+
+        assert_eq!(metadata["path"], json!("src/main.rs"));
+        assert!(metadata.get("stdout").is_none());
+        assert!(metadata.get("stderr").is_none());
+        assert!(metadata["nested"].get("diff").is_none());
+        assert!(!metadata.to_string().contains("sk-secret"));
     }
 
     #[test]

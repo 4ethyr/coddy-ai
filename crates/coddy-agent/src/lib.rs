@@ -35,15 +35,23 @@ pub use command_guard::{
 };
 pub use context::{ContextObservation, ContextPlanItem, ContextSnapshot, ContextTool};
 pub use eval::{
-    default_grounded_response_cases, default_prompt_battery_cases, extract_prompt_battery_members,
-    extract_repository_path_citations, guard_prompt_battery_members,
-    prompt_battery_routing_messages, run_default_grounded_response_eval,
-    run_default_prompt_battery, run_grounded_response_eval, run_live_prompt_battery_cases,
-    run_prompt_battery, EvalCase, EvalExpectations, EvalGateReport, EvalGateStatus,
-    EvalQualityGate, EvalReport, EvalRunner, EvalStatus, EvalSuiteReport, GroundedResponseCase,
-    GroundedResponseFailure, GroundedResponseReport, LivePromptBatteryCaseResult,
-    LivePromptBatteryReport, MultiagentEvalBaselineComparison, MultiagentEvalBaselineError,
-    MultiagentEvalCase, MultiagentEvalReport, MultiagentEvalRunner, MultiagentEvalSuiteReport,
+    default_capability_benchmark_cases, default_fixture_benchmark_cases,
+    default_fixture_smoke_cases, default_grounded_response_cases, default_prompt_battery_cases,
+    extract_prompt_battery_members, extract_repository_path_citations,
+    guard_prompt_battery_members, prompt_battery_routing_messages, run_capability_benchmark,
+    run_deep_context_eval, run_default_capability_benchmark, run_default_deep_context_eval,
+    run_default_fixture_benchmark, run_default_fixture_smoke, run_default_grounded_response_eval,
+    run_default_prompt_battery, run_fixture_benchmark, run_fixture_smoke,
+    run_grounded_response_eval, run_live_prompt_battery_cases, run_prompt_battery,
+    CapabilityBenchmarkCase, CapabilityBenchmarkCaseReport, CapabilityBenchmarkReport,
+    DeepContextEvalCase, DeepContextEvalCaseReport, DeepContextEvalReport, EvalCase,
+    EvalExpectations, EvalGateReport, EvalGateStatus, EvalQualityGate, EvalReport, EvalRunner,
+    EvalStatus, EvalSuiteReport, FixtureBenchmarkCase, FixtureBenchmarkCaseReport,
+    FixtureBenchmarkReport, FixtureSmokeCase, FixtureSmokeCaseReport, FixtureSmokeError,
+    FixtureSmokeFile, FixtureSmokeReport, GroundedResponseCase, GroundedResponseFailure,
+    GroundedResponseReport, LivePromptBatteryCaseResult, LivePromptBatteryReport,
+    MultiagentEvalBaselineComparison, MultiagentEvalBaselineError, MultiagentEvalCase,
+    MultiagentEvalReport, MultiagentEvalRunner, MultiagentEvalSuiteReport,
     MultiagentExecutionMetrics, PromptBatteryBaselineComparison, PromptBatteryCase,
     PromptBatteryFailure, PromptBatteryReport,
 };
@@ -63,7 +71,10 @@ pub use runtime::{
     AgentRunStatus, AgentStep, AgentStepKind, AgentStepStatus, LocalAgentRuntime, Observation,
     PlanItem, RunState,
 };
-pub use shell_executor::{ShellExecutionConfig, ShellExecutor, DEFAULT_SHELL_OUTPUT_LIMIT_BYTES};
+pub use shell_executor::{
+    ShellExecutionConfig, ShellExecutor, ShellNetworkPolicy, ShellResourceLimits,
+    ShellSandboxPolicy, ShellSandboxProviderDiscovery, DEFAULT_SHELL_OUTPUT_LIMIT_BYTES,
+};
 pub use shell_plan::{
     ShellApprovalState, ShellPlan, ShellPlanRequest, ShellPlanner, DEFAULT_SHELL_TIMEOUT_MS,
     MAX_SHELL_TIMEOUT_MS,

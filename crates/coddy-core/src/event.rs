@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -123,6 +124,22 @@ pub struct SubagentLifecycleUpdate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ToolExecutionRecord {
+    pub tool_name: String,
+    pub call_id: Uuid,
+    pub status: ToolStatus,
+    pub started_at_unix_ms: u64,
+    pub completed_at_unix_ms: u64,
+    pub duration_ms: u64,
+    pub output_chars: usize,
+    pub truncated: bool,
+    pub error_code: Option<String>,
+    pub retryable: Option<bool>,
+    #[serde(with = "crate::json_value_wire")]
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ReplEvent {
     SessionStarted {
         session_id: Uuid,
@@ -195,6 +212,9 @@ pub enum ReplEvent {
         name: String,
         status: ToolStatus,
     },
+    ToolExecutionRecorded {
+        record: ToolExecutionRecord,
+    },
     SubagentRouted {
         recommendations: Vec<SubagentRouteRecommendation>,
     },
@@ -236,5 +256,34 @@ mod tests {
 
         assert_eq!(counts.get(&ToolStatus::Succeeded), Some(&2));
         assert_eq!(counts.get(&ToolStatus::Failed), Some(&1));
+    }
+
+    #[test]
+    fn tool_execution_record_roundtrips_as_repl_event() {
+        let record = ToolExecutionRecord {
+            tool_name: "shell.run".to_string(),
+            call_id: Uuid::new_v4(),
+            status: ToolStatus::Succeeded,
+            started_at_unix_ms: 1_775_000_000_000,
+            completed_at_unix_ms: 1_775_000_000_025,
+            duration_ms: 25,
+            output_chars: 6,
+            truncated: false,
+            error_code: None,
+            retryable: None,
+            metadata: serde_json::json!({
+                "command": "printf coddy",
+                "cwd": ".",
+                "exit_code": 0
+            }),
+        };
+        let event = ReplEvent::ToolExecutionRecorded {
+            record: record.clone(),
+        };
+
+        let encoded = serde_json::to_string(&event).expect("serialize event");
+        let decoded: ReplEvent = serde_json::from_str(&encoded).expect("deserialize event");
+
+        assert_eq!(decoded, event);
     }
 }
