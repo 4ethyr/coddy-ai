@@ -19,6 +19,7 @@ PROJECTS=(
   "$DOCUMENTS_ROOT/maker"
   "$DOCUMENTS_ROOT/visionclip"
   "$DOCUMENTS_ROOT/coddy"
+  "$DOCUMENTS_ROOT/pytorch"
 )
 
 PROMPT_CATEGORIES=(
@@ -187,6 +188,95 @@ filter_contains() {
 
 mkdir -p "$OUTPUT_ROOT" "$SOCKET_ROOT"
 SUMMARY_JSONL="$OUTPUT_ROOT/summary.jsonl"
+
+write_summary() {
+  jq -s '
+    def completed_records:
+      map(select((.status // "completed") == "completed"));
+    def missing_records:
+      map(select(.status == "missing"));
+    def sum_of($field):
+      map(.[$field] // 0) | add // 0;
+    def average_of($field):
+      if length == 0 then 0 else (sum_of($field) / length) end;
+
+    . as $records
+    | ($records | completed_records) as $runs
+    | ($records | missing_records) as $missing
+    | {
+      outputRoot: $outputRoot,
+      model: { provider: $provider, name: $model },
+      clientRequestTimeoutMs: ($clientRequestTimeoutMs | tonumber),
+      records: ($records | length),
+      prompts: ($runs | length),
+      missingProjects: $missing,
+      cliCompleted: ($runs | map(select(.askExit == 0)) | length),
+      agentCompleted: ($runs | map(select(.finalPhase == "Completed")) | length),
+      providerErrors: ($runs | sum_of("providerErrors")),
+      incompleteAnswers: ($runs | sum_of("incompleteAnswers")),
+      toolCount: ($runs | sum_of("toolCount")),
+      toolFailures: ($runs | sum_of("toolFailures")),
+      permissionCount: ($runs | sum_of("permissionCount")),
+      secretHits: ($runs | sum_of("secretHits")),
+      groundingChecks: ($runs | sum_of("groundingChecks")),
+      unverifiedClaims: ($runs | sum_of("unverifiedClaims")),
+      pseudoToolMarkup: ($runs | sum_of("pseudoToolMarkup")),
+      averageQualityScore: ($runs | average_of("qualityScore")),
+      qualityPassed: ($runs | map(select((.qualityScore // 0) >= 80 and .finalPhase == "Completed" and .providerErrors == 0 and .secretHits == 0 and .pseudoToolMarkup == 0 and .incompleteAnswers == 0)) | length),
+      averageDurationMs: ($runs | average_of("durationMs")),
+      byCategory: (
+        $runs |
+        group_by(.category) |
+        map({
+          category: .[0].category,
+          prompts: length,
+          agentCompleted: map(select(.finalPhase == "Completed")) | length,
+          providerErrors: sum_of("providerErrors"),
+          toolFailures: sum_of("toolFailures"),
+          groundingChecks: sum_of("groundingChecks"),
+          secretHits: sum_of("secretHits"),
+          incompleteAnswers: sum_of("incompleteAnswers"),
+          pseudoToolMarkup: sum_of("pseudoToolMarkup"),
+          averageQualityScore: average_of("qualityScore")
+        })
+      ),
+      byProject: (
+        $runs |
+        group_by(.project) |
+        map({
+          project: .[0].project,
+          prompts: length,
+          cliCompleted: map(select(.askExit == 0)) | length,
+          agentCompleted: map(select(.finalPhase == "Completed")) | length,
+          providerErrors: sum_of("providerErrors"),
+          incompleteAnswers: sum_of("incompleteAnswers"),
+          toolCount: sum_of("toolCount"),
+          toolFailures: sum_of("toolFailures"),
+          permissionCount: sum_of("permissionCount"),
+          secretHits: sum_of("secretHits"),
+          groundingChecks: sum_of("groundingChecks"),
+          pseudoToolMarkup: sum_of("pseudoToolMarkup"),
+          averageQualityScore: average_of("qualityScore"),
+          averageDurationMs: average_of("durationMs")
+        })
+      )
+    }
+  ' --arg outputRoot "$OUTPUT_ROOT" --arg provider "$MODEL_PROVIDER" --arg model "$MODEL_NAME" \
+    --arg clientRequestTimeoutMs "$CODDY_CLIENT_REQUEST_TIMEOUT_MS" \
+    "$SUMMARY_JSONL" > "$OUTPUT_ROOT/summary.json"
+
+  cat "$OUTPUT_ROOT/summary.json"
+}
+
+if [[ "${CODDY_LIVE_PROJECT_BATTERY_SUMMARY_ONLY:-0}" == "1" ]]; then
+  mkdir -p "$OUTPUT_ROOT"
+  if [[ ! -f "$SUMMARY_JSONL" ]]; then
+    : > "$SUMMARY_JSONL"
+  fi
+  write_summary
+  exit 0
+fi
+
 : > "$SUMMARY_JSONL"
 
 if [[ -n "$PROJECTS_CSV" ]]; then
@@ -224,8 +314,8 @@ for project_path in "${PROJECTS[@]}"; do
   fi
 
   if [[ ! -d "$project_path" ]]; then
-    jq -cn --arg project_path "$project_path" \
-      '{projectPath: $project_path, status: "missing"}' >> "$SUMMARY_JSONL"
+    jq -cn --arg project "$project_name" --arg project_path "$project_path" \
+      '{status: "missing", project: $project, projectPath: $project_path}' >> "$SUMMARY_JSONL"
     continue
   fi
 
@@ -299,8 +389,8 @@ for project_path in "${PROJECTS[@]}"; do
 
     answer_chars="$(wc -m < "$prompt_output/answer.md" | tr -d ' ')"
     provider_error_count="$(grep -Eci 'Coddy could not|get a response from|Provider returned error|timed out reading response|could not build a valid chat request|did not return a valid response|daemon request timed out' "$metrics_text" || true)"
-    pseudo_tool_count="$(grep -Eci 'Tool observations:|Tool call [0-9]+:|Tool [0-9]+([*/][0-9]+)?[*[:space:]]*:|Call [0-9]+([ /]of[ /]|/)[0-9]+|textual tool-call attempt|Request:[[:space:]]*(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|```tool|DSML.*(tool_calls|invoke name=)|<filesystem\.|<read_file|<function name="(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|<param name="(path|file_path|query)"|filesystem\\.(read_file|list_files|search_files|apply_edit)[[:space:]]*\\{|```json[[:space:]]*\{[[:space:]]*"tool|\"calls\"[[:space:]]*:|\"name\"[[:space:]]*:[[:space:]]*\"(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|\"file_path\"|\"max_bytes\"|\"max_entries\"|\"max_matches\"' "$prompt_output/answer.md" || true)"
-    incomplete_answer_count="$(grep -Eci '(^|[[:space:]])(vou continuar|vou agora|vou focar|vou me concentrar|inspecionarei|analisarei|verificarei|mapearei|preciso identificar|a revis[aã]o continua|i will continue|i will now|i'\''ll now|i'\''ll search|let me now|let me inspect|continuarei|preciso continuar|did not return a valid response|daemon request timed out|resposta parcial|partial answer|requires approval before)' "$metrics_text" || true)"
+    pseudo_tool_count="$(grep -Eci 'Tool observations:|Tool call [0-9]+:|Tool [0-9]+([*/][0-9]+)?[*[:space:]]*:|Call [0-9]+([ /]of[ /]|/)[0-9]+|Chamada [0-9]+[[:space:]]*:|textual tool-call attempt|Request:[[:space:]]*(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|```tool|DSML.*(tool_calls|invoke name=)|<filesystem\.|<read_file|<function name="(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|<param name="(path|file_path|query)"|filesystem\\.(read_file|list_files|search_files|apply_edit)[[:space:]]*\\{|```json[[:space:]]*\{[[:space:]]*"tool|\"calls\"[[:space:]]*:|\"action\"[[:space:]]*:[[:space:]]*\"(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|\"parameters\"[[:space:]]*:|\"name\"[[:space:]]*:[[:space:]]*\"(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|\"file_path\"|\"max_bytes\"|\"max_entries\"|\"max_matches\"' "$prompt_output/answer.md" || true)"
+    incomplete_answer_count="$(grep -Eci '(^|[[:space:]])(vou continuar|vou agora|vou focar|vou me concentrar|inspecionarei|analisarei|verificarei|mapearei|preciso identificar|a revis[aã]o continua|continuando a inspe[cç][aã]o|continuando a explora[cç][aã]o|continuando a revis[aã]o|i will continue|i will now|i'\''ll now|i'\''ll search|let me now|let me inspect|continuarei|preciso continuar|did not return a valid response|daemon request timed out|resposta parcial|partial answer|requires approval before)' "$metrics_text" || true)"
     secret_hits="$(scan_secret_hits "$metrics_text")"
     grounding_check_count="$(grep -Eci 'Coddy grounding check|Treat the conclusion below as unverified' "$prompt_output/answer.md" || true)"
     unverified_claim_count="$(grep -Eci 'unverified|não verificado|nao verificado|não foi lido|nao foi lido|desconhecido|unknown|parcial|partial' "$prompt_output/answer.md" || true)"
@@ -310,6 +400,7 @@ for project_path in "${PROJECTS[@]}"; do
     jq -cn \
       --arg project "$project_name" \
       --arg projectPath "$project_path" \
+      --arg status "completed" \
       --arg category "$category" \
       --arg intent "$intent" \
       --arg finalPhase "$final_phase" \
@@ -332,6 +423,7 @@ for project_path in "${PROJECTS[@]}"; do
       '{
         project: $project,
         projectPath: $projectPath,
+        status: $status,
         category: $category,
         askExit: $askExit,
         durationMs: $durationMs,
@@ -357,60 +449,4 @@ for project_path in "${PROJECTS[@]}"; do
   kill "$runtime_pid" >/dev/null 2>&1 || true
 done
 
-jq -s '
-  {
-    outputRoot: $outputRoot,
-    model: { provider: $provider, name: $model },
-    clientRequestTimeoutMs: ($clientRequestTimeoutMs | tonumber),
-    prompts: length,
-    cliCompleted: map(select(.askExit == 0)) | length,
-    agentCompleted: map(select(.finalPhase == "Completed")) | length,
-    providerErrors: map(.providerErrors // 0) | add,
-    incompleteAnswers: map(.incompleteAnswers // 0) | add,
-    toolCount: map(.toolCount // 0) | add,
-    toolFailures: map(.toolFailures // 0) | add,
-    permissionCount: map(.permissionCount // 0) | add,
-    secretHits: map(.secretHits // 0) | add,
-    groundingChecks: map(.groundingChecks // 0) | add,
-    unverifiedClaims: map(.unverifiedClaims // 0) | add,
-    pseudoToolMarkup: map(.pseudoToolMarkup // 0) | add,
-    averageQualityScore: ((map(.qualityScore // 0) | add) / (length | if . == 0 then 1 else . end)),
-    qualityPassed: map(select((.qualityScore // 0) >= 80 and .finalPhase == "Completed" and .providerErrors == 0 and .secretHits == 0 and .pseudoToolMarkup == 0)) | length,
-    averageDurationMs: ((map(.durationMs // 0) | add) / (length | if . == 0 then 1 else . end)),
-    byCategory: (
-      group_by(.category) |
-      map({
-        category: .[0].category,
-        prompts: length,
-        agentCompleted: map(select(.finalPhase == "Completed")) | length,
-        providerErrors: map(.providerErrors // 0) | add,
-        toolFailures: map(.toolFailures // 0) | add,
-        groundingChecks: map(.groundingChecks // 0) | add,
-        secretHits: map(.secretHits // 0) | add,
-        averageQualityScore: ((map(.qualityScore // 0) | add) / (length | if . == 0 then 1 else . end))
-      })
-    ),
-    byProject: (
-      group_by(.project) |
-      map({
-        project: .[0].project,
-        prompts: length,
-        cliCompleted: map(select(.askExit == 0)) | length,
-        agentCompleted: map(select(.finalPhase == "Completed")) | length,
-        providerErrors: map(.providerErrors // 0) | add,
-        incompleteAnswers: map(.incompleteAnswers // 0) | add,
-        toolCount: map(.toolCount // 0) | add,
-        toolFailures: map(.toolFailures // 0) | add,
-        permissionCount: map(.permissionCount // 0) | add,
-        secretHits: map(.secretHits // 0) | add,
-        groundingChecks: map(.groundingChecks // 0) | add,
-        averageQualityScore: ((map(.qualityScore // 0) | add) / (length | if . == 0 then 1 else . end)),
-        averageDurationMs: ((map(.durationMs // 0) | add) / (length | if . == 0 then 1 else . end))
-      })
-    )
-  }
-' --arg outputRoot "$OUTPUT_ROOT" --arg provider "$MODEL_PROVIDER" --arg model "$MODEL_NAME" \
-  --arg clientRequestTimeoutMs "$CODDY_CLIENT_REQUEST_TIMEOUT_MS" \
-  "$SUMMARY_JSONL" > "$OUTPUT_ROOT/summary.json"
-
-cat "$OUTPUT_ROOT/summary.json"
+write_summary

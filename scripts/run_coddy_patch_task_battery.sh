@@ -207,10 +207,10 @@ run_task() {
   fi
 
   set +e
-  git -C "$workspace" apply "$task_output/model.patch" > "$task_output/git-apply.log" 2>&1
+  git -C "$workspace" apply --recount "$task_output/model.patch" > "$task_output/git-apply.log" 2>&1
   apply_exit=$?
   if [[ "$apply_exit" -ne 0 ]]; then
-    git -C "$workspace" apply --recount "$task_output/model.patch" >> "$task_output/git-apply.log" 2>&1
+    git -C "$workspace" apply "$task_output/model.patch" >> "$task_output/git-apply.log" 2>&1
     apply_exit=$?
   fi
   if [[ "$apply_exit" -eq 0 ]]; then
@@ -242,7 +242,7 @@ run_task() {
   cat "$task_output/answer.md" "$task_output/ask-stderr.log" > "$metrics_text"
 
   provider_errors="$(grep -Eci 'Coddy could not|get a response from|Provider returned error|timed out reading response|daemon request timed out' "$metrics_text" || true)"
-  pseudo_tool_count="$(grep -Eci 'Tool observations:|Tool call [0-9]+:|Tool [0-9]+([*/][0-9]+)?[*[:space:]]*:|Call [0-9]+([ /]of[ /]|/)[0-9]+|textual tool-call attempt|Request:[[:space:]]*(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|```tool|DSML.*(tool_calls|invoke name=)|<filesystem\.|<read_file|<function name="(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|<param name="(path|file_path|query)"|filesystem\\.(read_file|list_files|search_files|apply_edit)[[:space:]]*\\{|\"calls\"[[:space:]]*:|\"name\"[[:space:]]*:[[:space:]]*\"(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|\"file_path\"|\"max_bytes\"|\"max_entries\"|\"max_matches\"' "$task_output/answer.md" || true)"
+  pseudo_tool_count="$(grep -Eci 'Tool observations:|Tool call [0-9]+:|Tool [0-9]+([*/][0-9]+)?[*[:space:]]*:|Call [0-9]+([ /]of[ /]|/)[0-9]+|Chamada [0-9]+[[:space:]]*:|textual tool-call attempt|Request:[[:space:]]*(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|```tool|DSML.*(tool_calls|invoke name=)|<filesystem\.|<read_file|<function name="(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|<param name="(path|file_path|query)"|filesystem\\.(read_file|list_files|search_files|apply_edit)[[:space:]]*\\{|\"calls\"[[:space:]]*:|\"action\"[[:space:]]*:[[:space:]]*\"(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|\"parameters\"[[:space:]]*:|\"name\"[[:space:]]*:[[:space:]]*\"(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|\"file_path\"|\"max_bytes\"|\"max_entries\"|\"max_matches\"' "$task_output/answer.md" || true)"
   secret_hits="$(grep -Eci '(sk-or-[A-Za-z0-9_-]{12,}|nvapi-[A-Za-z0-9_-]{12,}|AIza[0-9A-Za-z_-]{20,}|OPENROUTER_API_KEY=[^[:space:]]+|NVIDIA_API_KEY=[^[:space:]]+)' "$metrics_text" || true)"
   answer_chars="$(wc -m < "$task_output/answer.md" | tr -d ' ')"
 
