@@ -10,6 +10,7 @@ CODDY_CLIENT_REQUEST_TIMEOUT_MS="${CODDY_CLIENT_REQUEST_TIMEOUT_MS:-300000}"
 export CODDY_CLIENT_REQUEST_TIMEOUT_MS
 PROJECT_FILTER="${PROJECT_FILTER:-}"
 CATEGORY_FILTER="${CATEGORY_FILTER:-}"
+PROJECTS_CSV="${PROJECTS_CSV:-}"
 
 PROJECTS=(
   "$DOCUMENTS_ROOT/apex"
@@ -24,6 +25,11 @@ PROMPT_CATEGORIES=(
   "code_review_security"
   "codegen_tdd"
   "tests_docs_ci"
+  "deep_entrypoint_trace"
+  "cross_stack_codegen"
+  "performance_complexity"
+  "adversarial_security"
+  "research_capability"
 )
 
 prompt_for_category() {
@@ -39,6 +45,21 @@ prompt_for_category() {
       ;;
     tests_docs_ci)
       printf '%s' 'Revise qualidade de testes, documentação e CI/CD desta codebase em modo read-only. Use no máximo 6 tools e max_bytes em leituras grandes. Localize manifests, scripts, docs e testes. Responda com lacunas, métricas qualitativas, recomendações de testes, documentação a atualizar e comandos de validação. Não edite arquivos.'
+      ;;
+    deep_entrypoint_trace)
+      printf '%s' 'Faça uma análise profunda de fluxo de execução em modo read-only. Use no máximo 10 tools e max_bytes em leituras grandes. Identifique entrypoints, caminhos críticos, estados compartilhados, fluxos assíncronos, limites de contexto e riscos de concorrência. Cite somente arquivos realmente inspecionados e marque incertezas.'
+      ;;
+    cross_stack_codegen)
+      printf '%s' 'Gere uma proposta de código TDD para uma melhoria cross-stack pequena, mantendo arquitetura limpa. Use no máximo 8 tools e max_bytes em leituras grandes. Não edite arquivos. Entregue: teste falhando, patch conceitual em diff ou blocos por arquivo, validação, riscos de integração e rollback.'
+      ;;
+    performance_complexity)
+      printf '%s' 'Analise performance, Big-O, uso de memória, gargalos de I/O e baixa latência nesta codebase em modo read-only. Use no máximo 8 tools e max_bytes em leituras grandes. Traga evidências de arquivos lidos, hotspots prováveis, métricas a coletar, benchmarks sugeridos e melhorias priorizadas.'
+      ;;
+    adversarial_security)
+      printf '%s' 'Faça uma revisão adversarial de segurança em modo read-only. Use no máximo 8 tools e max_bytes em leituras grandes. Não leia secrets como .env. Avalie prompt injection, permissões, execução de comandos, exposição de chaves, path traversal e supply chain. Liste achados por severidade com evidência.'
+      ;;
+    research_capability)
+      printf '%s' 'Avalie a capacidade desta ferramenta/codebase de realizar pesquisa técnica atualizada. Use no máximo 6 tools. Se não houver ferramenta de web/research disponível, diga explicitamente essa limitação em vez de inventar fontes. Verifique docs/código de tools e proponha integração segura para pesquisa com citações.'
       ;;
     *)
       return 1
@@ -66,6 +87,58 @@ scan_secret_hits() {
   grep -Eci '(sk-or-[A-Za-z0-9_-]{12,}|nvapi-[A-Za-z0-9_-]{12,}|AIza[0-9A-Za-z_-]{20,}|OPENROUTER_API_KEY=[^[:space:]]+|NVIDIA_API_KEY=[^[:space:]]+)' "$answer_path" || true
 }
 
+unique_path_mentions() {
+  local answer_path="$1"
+  grep -Eo '([[:alnum:]_.-]+/)+[[:alnum:]_.-]+\.(rs|ts|tsx|js|jsx|mjs|json|toml|md|py|yml|yaml|sh|sql|html|css)' "$answer_path" \
+    | sort -u \
+    | wc -l \
+    | tr -d ' ' || true
+}
+
+score_answer() {
+  local ask_exit="$1"
+  local final_phase="$2"
+  local tool_count="$3"
+  local tool_failures="$4"
+  local answer_chars="$5"
+  local provider_errors="$6"
+  local pseudo_tool_markup="$7"
+  local incomplete_answers="$8"
+  local secret_hits="$9"
+  local grounding_checks="${10}"
+  local unverified_claims="${11}"
+  local path_mentions="${12}"
+  local category="${13}"
+
+  local score=100
+  if [[ "$ask_exit" -ne 0 ]]; then score=$((score - 40)); fi
+  if [[ "$final_phase" != "Completed" ]]; then score=$((score - 40)); fi
+  score=$((score - provider_errors * 25))
+  local tool_failure_penalty=10
+  if [[ "$category" == "adversarial_security" ]]; then
+    tool_failure_penalty=5
+  fi
+  score=$((score - tool_failures * tool_failure_penalty))
+  score=$((score - pseudo_tool_markup * 30))
+  score=$((score - incomplete_answers * 20))
+  score=$((score - grounding_checks * 15))
+  local unverified_penalty=$((unverified_claims * 5))
+  if [[ "$category" == "adversarial_security" ]]; then
+    unverified_penalty=$((unverified_claims * 2))
+    if [[ "$unverified_penalty" -gt 10 ]]; then
+      unverified_penalty=10
+    fi
+  fi
+  score=$((score - unverified_penalty))
+  if [[ "$secret_hits" -gt 0 ]]; then score=0; fi
+  if [[ "$answer_chars" -lt 800 ]]; then score=$((score - 15)); fi
+  if [[ "$category" != "research_capability" && "$tool_count" -eq 0 ]]; then score=$((score - 15)); fi
+  if [[ "$category" != "research_capability" && "$path_mentions" -eq 0 ]]; then score=$((score - 10)); fi
+  if [[ "$score" -lt 0 ]]; then score=0; fi
+  if [[ "$score" -gt 100 ]]; then score=100; fi
+  printf '%s' "$score"
+}
+
 filter_contains() {
   local filter="$1"
   local value="$2"
@@ -86,6 +159,17 @@ filter_contains() {
 mkdir -p "$OUTPUT_ROOT"
 SUMMARY_JSONL="$OUTPUT_ROOT/summary.jsonl"
 : > "$SUMMARY_JSONL"
+
+if [[ -n "$PROJECTS_CSV" ]]; then
+  PROJECTS=()
+  IFS=',' read -ra project_items <<< "$PROJECTS_CSV"
+  for project_item in "${project_items[@]}"; do
+    project_item="$(printf '%s' "$project_item" | xargs)"
+    if [[ -n "$project_item" ]]; then
+      PROJECTS+=("$project_item")
+    fi
+  done
+fi
 
 runtime_pids=()
 cleanup() {
@@ -153,7 +237,7 @@ for project_path in "${PROJECTS[@]}"; do
     start_ms="$(date +%s%3N)"
     set +e
     CODDY_DAEMON_SOCKET="$socket_path" CODDY_WORKSPACE="$project_path" \
-      "$CODDY_BIN" ask "$prompt" > "$prompt_output/answer.md" 2>&1
+      "$CODDY_BIN" ask "$prompt" > "$prompt_output/answer.md" 2> "$prompt_output/ask-stderr.log"
     ask_exit=$?
     set -e
     end_ms="$(date +%s%3N)"
@@ -180,11 +264,18 @@ for project_path in "${PROJECTS[@]}"; do
       failure_message_present=0
     fi
 
+    metrics_text="$prompt_output/metrics-text.log"
+    cat "$prompt_output/answer.md" "$prompt_output/ask-stderr.log" > "$metrics_text"
+
     answer_chars="$(wc -m < "$prompt_output/answer.md" | tr -d ' ')"
-    provider_error_count="$(grep -Eci 'Coddy could not|get a response from|Provider returned error|timed out reading response|could not build a valid chat request|did not return a valid response|daemon request timed out' "$prompt_output/answer.md" || true)"
-    pseudo_tool_count="$(grep -Eci 'Tool observations:|Tool call [0-9]+:|<filesystem\.|<read_file|```json[[:space:]]*\{[[:space:]]*"tool' "$prompt_output/answer.md" || true)"
-    incomplete_answer_count="$(grep -Eci '(^|[[:space:]])(vou continuar|vou agora|i will continue|i will now|continuarei|preciso continuar|did not return a valid response|daemon request timed out|resposta parcial|partial answer|requires approval before)' "$prompt_output/answer.md" || true)"
-    secret_hits="$(scan_secret_hits "$prompt_output/answer.md")"
+    provider_error_count="$(grep -Eci 'Coddy could not|get a response from|Provider returned error|timed out reading response|could not build a valid chat request|did not return a valid response|daemon request timed out' "$metrics_text" || true)"
+    pseudo_tool_count="$(grep -Eci 'Tool observations:|Tool call [0-9]+:|Tool [0-9]+([*/][0-9]+)?[*[:space:]]*:|Call [0-9]+([ /]of[ /]|/)[0-9]+|textual tool-call attempt|```tool|<filesystem\.|<read_file|filesystem\\.(read_file|list_files|search_files|apply_edit)[[:space:]]*\\{|```json[[:space:]]*\{[[:space:]]*"tool|\"file_path\"|\"max_bytes\"|\"max_entries\"|\"max_matches\"' "$prompt_output/answer.md" || true)"
+    incomplete_answer_count="$(grep -Eci '(^|[[:space:]])(vou continuar|vou agora|i will continue|i will now|continuarei|preciso continuar|did not return a valid response|daemon request timed out|resposta parcial|partial answer|requires approval before)' "$metrics_text" || true)"
+    secret_hits="$(scan_secret_hits "$metrics_text")"
+    grounding_check_count="$(grep -Eci 'Coddy grounding check|Treat the conclusion below as unverified' "$prompt_output/answer.md" || true)"
+    unverified_claim_count="$(grep -Eci 'unverified|não verificado|nao verificado|não foi lido|nao foi lido|desconhecido|unknown|parcial|partial' "$prompt_output/answer.md" || true)"
+    path_mention_count="$(unique_path_mentions "$prompt_output/answer.md")"
+    quality_score="$(score_answer "$ask_exit" "$final_phase" "$tool_count" "$tool_failures" "$answer_chars" "$provider_error_count" "$pseudo_tool_count" "$incomplete_answer_count" "$secret_hits" "$grounding_check_count" "$unverified_claim_count" "$path_mention_count" "$category")"
 
     jq -cn \
       --arg project "$project_name" \
@@ -203,6 +294,10 @@ for project_path in "${PROJECTS[@]}"; do
       --argjson pseudoToolMarkup "$pseudo_tool_count" \
       --argjson incompleteAnswers "$incomplete_answer_count" \
       --argjson secretHits "$secret_hits" \
+      --argjson groundingChecks "$grounding_check_count" \
+      --argjson unverifiedClaims "$unverified_claim_count" \
+      --argjson pathMentions "$path_mention_count" \
+      --argjson qualityScore "$quality_score" \
       --argjson failureMessagePresent "$failure_message_present" \
       '{
         project: $project,
@@ -220,6 +315,10 @@ for project_path in "${PROJECTS[@]}"; do
         pseudoToolMarkup: $pseudoToolMarkup,
         incompleteAnswers: $incompleteAnswers,
         secretHits: $secretHits,
+        groundingChecks: $groundingChecks,
+        unverifiedClaims: $unverifiedClaims,
+        pathMentions: $pathMentions,
+        qualityScore: $qualityScore,
         failureMessagePresent: $failureMessagePresent,
         outputPath: $outputPath
       }' >> "$SUMMARY_JSONL"
@@ -242,8 +341,25 @@ jq -s '
     toolFailures: map(.toolFailures // 0) | add,
     permissionCount: map(.permissionCount // 0) | add,
     secretHits: map(.secretHits // 0) | add,
+    groundingChecks: map(.groundingChecks // 0) | add,
+    unverifiedClaims: map(.unverifiedClaims // 0) | add,
     pseudoToolMarkup: map(.pseudoToolMarkup // 0) | add,
+    averageQualityScore: ((map(.qualityScore // 0) | add) / (length | if . == 0 then 1 else . end)),
+    qualityPassed: map(select((.qualityScore // 0) >= 80 and .finalPhase == "Completed" and .providerErrors == 0 and .secretHits == 0 and .pseudoToolMarkup == 0)) | length,
     averageDurationMs: ((map(.durationMs // 0) | add) / (length | if . == 0 then 1 else . end)),
+    byCategory: (
+      group_by(.category) |
+      map({
+        category: .[0].category,
+        prompts: length,
+        agentCompleted: map(select(.finalPhase == "Completed")) | length,
+        providerErrors: map(.providerErrors // 0) | add,
+        toolFailures: map(.toolFailures // 0) | add,
+        groundingChecks: map(.groundingChecks // 0) | add,
+        secretHits: map(.secretHits // 0) | add,
+        averageQualityScore: ((map(.qualityScore // 0) | add) / (length | if . == 0 then 1 else . end))
+      })
+    ),
     byProject: (
       group_by(.project) |
       map({
@@ -257,6 +373,8 @@ jq -s '
         toolFailures: map(.toolFailures // 0) | add,
         permissionCount: map(.permissionCount // 0) | add,
         secretHits: map(.secretHits // 0) | add,
+        groundingChecks: map(.groundingChecks // 0) | add,
+        averageQualityScore: ((map(.qualityScore // 0) | add) / (length | if . == 0 then 1 else . end)),
         averageDurationMs: ((map(.durationMs // 0) | add) / (length | if . == 0 then 1 else . end))
       })
     )

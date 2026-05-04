@@ -23,7 +23,7 @@ history, deterministic quality evals and early runtime streaming. Advanced
 capabilities such as isolated executable subagents and MCP are planned or
 partially scaffolded and should be evolved incrementally with tests.
 
-Last full validation recorded in this branch: 2026-05-02.
+Last full validation recorded in this branch: 2026-05-03.
 
 ## Main Features
 
@@ -77,14 +77,17 @@ autonomous merge/release agent.
 | MCP and external tools | Planned | MCP readiness is documented and surfaced in UI commands, but the runtime MCP adapter and permission bridge are not complete yet. |
 | Autonomous PR/release flow | Planned | Coddy can assist with commits and PR descriptions through local workflows, but it does not yet run isolated branch workers with PR lifecycle automation. |
 
-Recent secure live eval against OpenRouter using
+Recent secure live evals against OpenRouter using
 `deepseek/deepseek-v4-flash`, with the API key loaded locally and not printed:
 
-- 50 prompts.
-- 47 passed.
-- Guarded score: 94.
-- Member recall: 94.
-- Model error rate: 6%.
+- Deterministic quality gate: score 100, prompt-battery 1200/1200.
+- Core live project matrix over `apex`, `Guardian`, `maker`, `visionclip`
+  samples: provider errors 0, pseudo-tool markup 0, secret hits 0, observed
+  scores after hardening in the 80-100 range.
+- Local SWE-bench-style patch battery: 3/3 resolved across Python, Node and
+  Rust fixtures; patches extracted, applied and validated by tests.
+- Official SWE-bench execution remains blocked locally until Docker daemon
+  access is available for the benchmark harness.
 
 See [docs/coding-agent-capability-review.md](docs/coding-agent-capability-review.md)
 for the deeper comparison against current coding-agent systems.
@@ -605,17 +608,41 @@ selected provider:
   --concurrency 4
 ```
 
+Live project/codebase battery across local repositories:
+
+```bash
+MODEL_PROVIDER=openrouter \
+MODEL_NAME=deepseek/deepseek-v4-flash \
+./scripts/run_live_project_battery.sh
+```
+
+The live project battery writes redacted artifacts under `/tmp`, separates
+model stdout from CLI stderr, tracks provider errors, tool failures,
+pseudo-tool markup, incomplete answers, secret hits and a per-prompt quality
+score. Use `PROJECT_FILTER`, `CATEGORY_FILTER` or `PROJECTS_CSV` to run a
+smaller matrix.
+
+Local SWE-bench-style patch battery:
+
+```bash
+MODEL_PROVIDER=openrouter \
+MODEL_NAME=deepseek/deepseek-v4-flash \
+./scripts/run_coddy_patch_task_battery.sh
+```
+
+This local patch battery creates temporary fixtures, asks Coddy for unified
+diffs, extracts patches, applies them with `git apply` and runs fixture tests.
+It is not an official SWE-bench score; official SWE-bench requires the upstream
+Docker harness and benchmark dataset.
+
 Latest validated local suite on this branch:
 
-- `cargo fmt --check`.
-- `cargo test --workspace -- --test-threads=1`.
-- `cargo clippy --workspace --all-targets -- -D warnings`.
-- `npm test -- --run` in `apps/coddy-electron`: 44 files, 344 tests.
+- `cargo test -p coddy-core -p coddy-agent -p coddy-client -p coddy-runtime -p coddy -- --test-threads=1`.
 - `npm run typecheck`.
-- `npm run lint`.
-- `npm run build`.
-- `git diff --check`.
 - `./scripts/guard_no_secrets.sh`.
+- `./target/debug/coddy eval quality --json`: score 100.
+- `./target/debug/coddy eval prompt-battery --json`: 1200/1200 passed.
+- `./scripts/run_coddy_patch_task_battery.sh`: 3/3 local patch tasks resolved.
 
 ## Security Model
 

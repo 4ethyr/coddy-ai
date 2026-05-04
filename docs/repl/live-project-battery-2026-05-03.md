@@ -150,3 +150,65 @@ result=recoverable OpenRouter follow-up timeout
 - Add richer tool failure metadata to `ToolCompleted` events so UI/eval reports
   can explain which path or argument failed without parsing final text.
 - Add a deterministic eval case for provider-safe numeric string coercion.
+
+## Follow-Up Hardening: Long-Context Coding Prompts
+
+Additional secure live testing was run with `openrouter/deepseek/deepseek-v4-flash`
+against local projects in `Documents/` (`apex`, `Guardian`, `maker`,
+`visionclip`, `coddy`). API keys were loaded from local configuration and were
+not printed in outputs.
+
+New failure modes found and fixed:
+
+1. Follow-up responses after tool observations could end with pending tool
+   requests, unregistered aliases or raw `Tool observations:` text.
+   - Fix: synthesize a final answer when the model requests unexecuted tools,
+     when the user tool budget is exhausted, or when a requested tool is unsafe
+     or unavailable.
+
+2. Some providers emitted legacy tool aliases such as `filesystem.dot_read_file`.
+   - Fix: provider-safe tool-name decoding now maps these aliases back to
+     canonical tools such as `filesystem.read_file`.
+
+3. Final answers could contain pseudo-tools in several formats:
+   - `Tool 1/10: ...`
+   - `Tool 1: ...`
+   - `Call 1 of 8 ...`
+   - fenced ````tool_call` blocks.
+   - Fix: textual tool-call detection blocks these outputs and triggers
+     recovery/synthesis rather than showing them to the user.
+
+4. Portuguese action promises such as "vou priorizar leituras" or "vou
+   continuar a exploracao" were not always detected.
+   - Fix: incomplete-action recovery now covers these Portuguese variants and
+     forces a grounded synthesis from existing observations.
+
+5. Architecture/security reviews sometimes guessed conventional paths after a
+   directory listing.
+   - Fix: task-specific guidance now instructs models to read only observed
+     paths and mark missing conventional files as gaps.
+
+6. OpenRouter follow-up turns could time out on larger agentic contexts.
+   - Fix: OpenRouter OpenAI-compatible timeout is extended to 300 seconds for
+     agentic follow-ups.
+
+Validation artifacts:
+
+```text
+/tmp/coddy-patch-task-battery-final-20260503-221925
+/tmp/coddy-live-project-battery-adversarial-metric-20260503-221647
+/tmp/coddy-live-project-battery-maker-architecture-guidance-20260503-220652
+```
+
+Measured results:
+
+- Deterministic quality eval: score 100.
+- Prompt battery: 1200/1200 passed.
+- Local SWE-bench-style patch battery: 3/3 resolved across Python, Node and
+  Rust fixtures.
+- Adversarial security revalidation for `maker` and `visionclip`: average score
+  91, provider errors 0, tool failures 0, pseudo-tool markup 0, secret hits 0.
+
+The local patch battery is a controlled SWE-bench-style harness, not an
+official SWE-bench score. Official SWE-bench still requires the upstream Docker
+harness and Docker daemon access.
