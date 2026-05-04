@@ -40,11 +40,11 @@ Comandos genéricos retornam `CoddyResult`, definido em `coddy-ipc`, e não `Job
 ```rust
 CoddyClientOptions {
     connect_timeout: Duration::from_secs(2),
-    request_timeout: Duration::from_secs(180),
+    request_timeout: Duration::from_secs(420),
 }
 ```
 
-O timeout de request cobre roundtrips e abertura inicial do stream. `ReplEventStream::next()` não usa timeout por padrão porque é uma conexão persistente; política de reconnect deve ficar no consumidor ou numa camada superior.
+O timeout de request cobre roundtrips e abertura inicial do stream. Ele precisa ser maior que os timeouts dos providers LLM usados em follow-ups agentic para que o daemon consiga devolver uma falha amigável e observações parciais em vez de o cliente local encerrar a conexão antes da resposta. `ReplEventStream::next()` não usa timeout por padrão porque é uma conexão persistente; política de reconnect deve ficar no consumidor ou numa camada superior.
 
 O client valida correlação de `request_id`: respostas roundtrip e frames de stream com `request_id` diferente do request original são rejeitados.
 

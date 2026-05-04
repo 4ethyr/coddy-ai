@@ -3,8 +3,8 @@ use coddy_agent::{
     model_tool_call_may_run as agent_model_tool_call_may_run,
     should_retry_chat_model_request_error, with_empty_response_retry_guidance, AgentRunAction,
     AgentRunStopReason, AgentRunSummary, AgentRunV2, AgentToolRegistry, ChatMessage,
-    ChatModelClient, ChatModelError, ChatModelResult, ChatRequest, ChatResponse, ChatToolCall,
-    ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, SubagentExecutionGate,
+    ChatMessageRole, ChatModelClient, ChatModelError, ChatModelResult, ChatRequest, ChatResponse,
+    ChatToolCall, ChatToolSpec, DefaultChatModelClient, LocalAgentRuntime, SubagentExecutionGate,
     SubagentExecutionHandoff, SubagentExecutionStartPlan, SubagentExecutionStartStatus,
     SubagentOutputContract, LIST_FILES_TOOL, READ_FILE_TOOL, SEARCH_FILES_TOOL,
     SUBAGENT_PREPARE_TOOL, SUBAGENT_ROUTE_TOOL, SUBAGENT_TEAM_PLAN_TOOL,
@@ -37,7 +37,9 @@ use uuid::Uuid;
 
 const MAX_MODEL_TOOL_ROUNDS: usize = 5;
 const MAX_MODEL_REQUEST_ATTEMPTS: usize = 4;
-const MAX_MODEL_TOOL_OBSERVATION_CHARS: usize = 8 * 1024;
+const MAX_MODEL_TOOL_OBSERVATION_CHARS: usize = 4 * 1024;
+const MAX_MODEL_TOOL_ROUND_OBSERVATION_CHARS: usize = 12 * 1024;
+const MAX_MODEL_TOTAL_TOOL_CONTEXT_CHARS: usize = 24 * 1024;
 const MODEL_RETRY_BASE_DELAY_MS: u64 = 250;
 
 #[derive(Debug, Clone)]
@@ -1727,6 +1729,7 @@ impl CoddyRuntime {
         }
         text.push_str("Tool observations:\n");
         text.push_str(&observations.join("\n"));
+        let (text, _) = compact_tool_round_observations_for_model(&text);
         let text = redact_context_text(&text);
 
         ToolRoundOutcome {
@@ -1743,6 +1746,7 @@ impl CoddyRuntime {
         messages: Vec<ChatMessage>,
         tools_enabled: bool,
     ) -> ChatModelResult {
+        let messages = compact_tool_messages_for_model_followup(messages);
         let mut request = ChatRequest::new(selected_model.clone(), messages)
             .and_then(|request| request.with_model_credential(model_credential))?;
         if tools_enabled {
@@ -2204,21 +2208,36 @@ fn guard_ungrounded_implementation_status_claim(text: &str) -> Option<String> {
 
 fn is_ungrounded_implementation_status_claim(text: &str) -> bool {
     let normalized = normalize_grounding_text(text);
-    let strong_absence_claim = contains_any(
+    let scoped_no_direct_evidence_claim = contains_any(
+        &normalized,
+        &[
+            "nao encontrei evidencia direta",
+            "nao encontrei evidência direta",
+            "nao encontrei evidencias diretas",
+            "nao encontrei evidências diretas",
+            "sem evidencia direta",
+            "sem evidência direta",
+            "no direct evidence",
+            "did not find direct evidence",
+        ],
+    );
+
+    let absolute_absence_claim = contains_any(
         &normalized,
         &[
             "not implemented",
-            "not found",
             "not present",
             "missing",
             "absent",
             "nao implementado",
             "nao esta implementado",
             "nao foi implementado",
-            "nao encontrei",
             "nao existe",
         ],
     );
+    let search_absence_claim = !scoped_no_direct_evidence_claim
+        && contains_any(&normalized, &["not found", "nao encontrei"]);
+    let strong_absence_claim = absolute_absence_claim || search_absence_claim;
     let incomplete_evidence = contains_any(
         &normalized,
         &[
@@ -2230,6 +2249,10 @@ fn is_ungrounded_implementation_status_claim(text: &str) -> bool {
             "could not verify",
             "requires additional reading",
             "nao foi lido",
+            "nao lido",
+            "nao lidos",
+            "não lido",
+            "não lidos",
             "nao foi possivel inspecionar",
             "nao foi possivel verificar",
             "nao consegui inspecionar",
@@ -2484,6 +2507,24 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
         return true;
     }
 
+    if normalized.contains("\"calls\"")
+        && normalized.contains("\"name\"")
+        && normalized.contains("\"args\"")
+        && contains_any(
+            &normalized,
+            &[
+                "filesystem.read_file",
+                "filesystem.list_files",
+                "filesystem.search_files",
+                "filesystem.apply_edit",
+                "shell.run",
+                "subagent.",
+            ],
+        )
+    {
+        return true;
+    }
+
     if looks_like_bare_tool_arguments_object(text) {
         return true;
     }
@@ -2497,6 +2538,7 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
             "tool-call:",
             "tool calls:",
             "requested tool:",
+            "request:",
         ],
     ) && contains_any(
         &normalized,
@@ -2684,6 +2726,10 @@ fn looks_like_unexecuted_tool_action_promise(text: &str) -> bool {
             "vou focar",
             "vou me concentrar",
             "vou me ater",
+            "inspecionarei",
+            "analisarei",
+            "verificarei",
+            "mapearei",
             "tool calls restantes",
             "chamadas restantes",
             "chamadas focadas",
@@ -2694,6 +2740,13 @@ fn looks_like_unexecuted_tool_action_promise(text: &str) -> bool {
             "irei ler",
             "irei inspecionar",
             "let me read",
+            "let me now read",
+            "let me inspect",
+            "let me now inspect",
+            "i'll now read",
+            "i'll now inspect",
+            "i'll search",
+            "i'll inspect",
             "i will now read",
             "i will read",
             "i will now inspect",
@@ -2724,6 +2777,32 @@ fn looks_like_unexecuted_tool_action_promise(text: &str) -> bool {
             "files",
             "test",
             "tests",
+            "politica",
+            "politicas",
+            "policy",
+            "policies",
+            "subagente",
+            "subagentes",
+            "subagent",
+            "subagents",
+            "agentic",
+            "orquestracao",
+            "orquestração",
+            "registro",
+            "registros",
+            "component",
+            "components",
+            "componente",
+            "componentes",
+            "matematica",
+            "matemática",
+            "mathematical",
+            "scientific",
+            "cientifico",
+            "científico",
+            "cientifica",
+            "científica",
+            "ml",
             "src/",
             ".rs",
             ".ts",
@@ -3253,15 +3332,64 @@ fn coerce_positive_integer_string(input: &mut serde_json::Value, field: &str) {
 }
 
 fn compact_tool_output_for_model(text: &str) -> (String, bool) {
+    compact_model_context_text(text, MAX_MODEL_TOOL_OBSERVATION_CHARS, "tool output")
+}
+
+fn compact_tool_round_observations_for_model(text: &str) -> (String, bool) {
+    compact_model_context_text(
+        text,
+        MAX_MODEL_TOOL_ROUND_OBSERVATION_CHARS,
+        "tool observations",
+    )
+}
+
+fn compact_tool_messages_for_model_followup(mut messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    let total_tool_chars: usize = messages
+        .iter()
+        .filter(|message| message.role == ChatMessageRole::Tool)
+        .map(|message| message.content.chars().count())
+        .sum();
+    if total_tool_chars <= MAX_MODEL_TOTAL_TOOL_CONTEXT_CHARS {
+        return messages;
+    }
+
+    let mut remaining = MAX_MODEL_TOTAL_TOOL_CONTEXT_CHARS;
+    for message in messages.iter_mut().rev() {
+        if message.role != ChatMessageRole::Tool {
+            continue;
+        }
+
+        let message_chars = message.content.chars().count();
+        if message_chars <= remaining {
+            remaining = remaining.saturating_sub(message_chars);
+            continue;
+        }
+
+        if remaining >= 1024 {
+            let (compacted, _) =
+                compact_model_context_text(&message.content, remaining, "older tool observations");
+            message.content = compacted;
+        } else {
+            message.content = format!(
+                "[Coddy compacted older tool observations: original {message_chars} chars omitted because newer tool evidence filled the model context budget.]"
+            );
+        }
+        remaining = 0;
+    }
+
+    messages
+}
+
+fn compact_model_context_text(text: &str, max_chars: usize, label: &str) -> (String, bool) {
     let total_chars = text.chars().count();
-    if total_chars <= MAX_MODEL_TOOL_OBSERVATION_CHARS {
+    if total_chars <= max_chars {
         return (text.to_string(), false);
     }
 
     let marker = format!(
-        "\n[Coddy compacted tool output: original {total_chars} chars; middle content omitted for context budget.]\n"
+        "\n[Coddy compacted {label}: original {total_chars} chars; middle content omitted for context budget.]\n"
     );
-    let available = MAX_MODEL_TOOL_OBSERVATION_CHARS.saturating_sub(marker.chars().count());
+    let available = max_chars.saturating_sub(marker.chars().count());
     let head_chars = available / 2;
     let tail_chars = available.saturating_sub(head_chars);
     let head: String = text.chars().take(head_chars).collect();
@@ -5958,6 +6086,52 @@ filesystem.list_files {"path": "apex_framework/apex"}
     }
 
     #[test]
+    fn assistant_response_blocks_tool_calls_array_json() {
+        let response = ChatResponse::from_text(
+            r#"```json
+{
+  "calls": [
+    {
+      "name": "filesystem.read_file",
+      "args": {
+        "path": "packages/core/src/index.ts",
+        "max_bytes": 8000
+      }
+    }
+  ]
+}
+```"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("packages/core/src/index.ts"));
+    }
+
+    #[test]
+    fn assistant_response_blocks_request_prefixed_textual_tool_calls() {
+        let response = ChatResponse::from_text(
+            r#"I'll use my remaining tool budget to inspect the key config files.
+
+Request: filesystem.list_files `config/`
+Request: filesystem.read_file `config/subagent_registry.json` (max_bytes=4000)
+Request: filesystem.read_file `prompts/AI.txt` (max_bytes=4000)"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("config/subagent_registry.json"));
+    }
+
+    #[test]
     fn assistant_response_blocks_numbered_pseudo_tool_calls() {
         let response = ChatResponse::from_text(
             r#"I will now perform two additional tool calls within the remaining budget.
@@ -6116,6 +6290,37 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
         assert!(response
             .text
             .contains("filesystem guard nao esta implementado"));
+    }
+
+    #[test]
+    fn assistant_response_allows_scoped_no_direct_evidence_security_claims() {
+        let response = ChatResponse::from_text(
+            "Arquivos nao lidos: permission.rs e tool.rs. \
+Nao encontrei evidencia direta de falha critica em runtime, guard, policy ou permissions nos arquivos inspecionados.",
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(!response.text.contains("Coddy grounding check"));
+        assert!(response
+            .text
+            .contains("Nao encontrei evidencia direta de falha critica"));
+    }
+
+    #[test]
+    fn assistant_response_still_marks_absolute_absence_claim_after_scoped_evidence_language() {
+        let response = ChatResponse::from_text(
+            "Arquivos nao lidos: permission.rs e tool.rs. \
+Nao encontrei evidencia direta em arquivos inspecionados. \
+Conclusao: o runtime policy guard nao esta implementado.",
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response.text.contains("Coddy grounding check"));
+        assert!(response
+            .text
+            .contains("Treat the conclusion below as unverified"));
     }
 
     #[test]
@@ -7840,6 +8045,184 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
     }
 
     #[test]
+    fn ask_command_compacts_aggregate_tool_observations_before_followup() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        let large_source = "x".repeat(MAX_MODEL_TOOL_OBSERVATION_CHARS * 3);
+        workspace.write("src/a.rs", &large_source);
+        workspace.write("src/b.rs", &large_source);
+        workspace.write("src/c.rs", &large_source);
+        let (chat_client, requests) = QueuedChatClient::new(vec![
+            ChatResponse {
+                text: "I will inspect the relevant source files.".to_string(),
+                deltas: vec!["I will inspect the relevant source files.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![
+                    ChatToolCall {
+                        id: Some("call-a".to_string()),
+                        name: READ_FILE_TOOL.to_string(),
+                        arguments: json!({
+                            "path": "src/a.rs",
+                            "max_bytes": MAX_MODEL_TOOL_OBSERVATION_CHARS * 4,
+                        }),
+                    },
+                    ChatToolCall {
+                        id: Some("call-b".to_string()),
+                        name: READ_FILE_TOOL.to_string(),
+                        arguments: json!({
+                            "path": "src/b.rs",
+                            "max_bytes": MAX_MODEL_TOOL_OBSERVATION_CHARS * 4,
+                        }),
+                    },
+                    ChatToolCall {
+                        id: Some("call-c".to_string()),
+                        name: READ_FILE_TOOL.to_string(),
+                        arguments: json!({
+                            "path": "src/c.rs",
+                            "max_bytes": MAX_MODEL_TOOL_OBSERVATION_CHARS * 4,
+                        }),
+                    },
+                ],
+            },
+            ChatResponse::from_text("Aggregate inspection is complete."),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect several large source files".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let tool_message = captured_requests[1]
+            .messages
+            .iter()
+            .find(|message| message.role == coddy_agent::ChatMessageRole::Tool)
+            .expect("tool observation message");
+
+        assert_eq!(text, "Aggregate inspection is complete.");
+        assert!(tool_message
+            .content
+            .contains("Coddy compacted tool observations"));
+        assert!(
+            tool_message.content.chars().count() <= MAX_MODEL_TOOL_ROUND_OBSERVATION_CHARS + 512,
+            "tool round observation was not compacted enough: {} chars",
+            tool_message.content.chars().count()
+        );
+    }
+
+    #[test]
+    fn ask_command_compacts_accumulated_tool_messages_before_followup() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        let large_source = "x".repeat(MAX_MODEL_TOOL_OBSERVATION_CHARS * 3);
+        for path in [
+            "src/a.rs", "src/b.rs", "src/c.rs", "src/d.rs", "src/e.rs", "src/f.rs", "src/g.rs",
+            "src/h.rs", "src/i.rs",
+        ] {
+            workspace.write(path, &large_source);
+        }
+        let tool_round = |paths: [&str; 3], offset: char| ChatResponse {
+            text: format!("I will inspect source group {offset}."),
+            deltas: vec![format!("I will inspect source group {offset}.")],
+            finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+            tool_calls: paths
+                .into_iter()
+                .enumerate()
+                .map(|(index, path)| ChatToolCall {
+                    id: Some(format!("call-{offset}-{index}")),
+                    name: READ_FILE_TOOL.to_string(),
+                    arguments: json!({
+                        "path": path,
+                        "max_bytes": MAX_MODEL_TOOL_OBSERVATION_CHARS * 4,
+                    }),
+                })
+                .collect(),
+        };
+        let (chat_client, requests) = QueuedChatClient::new(vec![
+            tool_round(["src/a.rs", "src/b.rs", "src/c.rs"], 'a'),
+            tool_round(["src/d.rs", "src/e.rs", "src/f.rs"], 'b'),
+            tool_round(["src/g.rs", "src/h.rs", "src/i.rs"], 'c'),
+            ChatResponse::from_text("Accumulated inspection is complete."),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "inspect many large source files".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let final_followup = captured_requests
+            .last()
+            .expect("expected final follow-up request");
+        let total_tool_chars: usize = final_followup
+            .messages
+            .iter()
+            .filter(|message| message.role == coddy_agent::ChatMessageRole::Tool)
+            .map(|message| message.content.chars().count())
+            .sum();
+
+        assert_eq!(text, "Accumulated inspection is complete.");
+        assert!(final_followup
+            .messages
+            .iter()
+            .any(|message| message.content.contains("older tool observations")));
+        assert!(
+            total_tool_chars <= MAX_MODEL_TOTAL_TOOL_CONTEXT_CHARS + 1024,
+            "accumulated tool context was not compacted enough: {total_tool_chars} chars"
+        );
+    }
+
+    #[test]
     fn ask_command_allows_model_preview_edit_to_request_approval_after_read() {
         let request_id = Uuid::new_v4();
         let workspace = TempWorkspace::new();
@@ -8557,6 +8940,12 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
         ));
         assert!(looks_like_unexecuted_tool_action_promise(
             "Com base na exploração inicial, preciso identificar entrypoints executáveis, tratamento de credenciais, superfícies de comando e testes. Vou continuar a revisão com mais ferramentas focadas."
+        ));
+        assert!(looks_like_unexecuted_tool_action_promise(
+            "Inspecionarei agora os registros de subagentes, especialistas, APEX, políticas e orquestração para entender a capacidade agentic."
+        ));
+        assert!(looks_like_unexecuted_tool_action_promise(
+            "I'll now inspect the codebase for mathematical, scientific, and ML components."
         ));
     }
 

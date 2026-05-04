@@ -37,7 +37,7 @@ impl Default for CoddyClientOptions {
     fn default() -> Self {
         Self {
             connect_timeout: Duration::from_secs(2),
-            request_timeout: Duration::from_secs(180),
+            request_timeout: Duration::from_secs(420),
             reconnect_initial_delay: Duration::from_millis(50),
             reconnect_max_delay: Duration::from_secs(2),
         }
@@ -485,6 +485,11 @@ mod tests {
             options.connect_timeout,
             CoddyClientOptions::default().connect_timeout
         );
+    }
+
+    #[test]
+    fn client_options_default_request_timeout_outlives_agentic_provider_timeout() {
+        assert!(CoddyClientOptions::default().request_timeout > Duration::from_secs(300));
     }
 
     #[test]

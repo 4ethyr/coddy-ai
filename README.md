@@ -23,7 +23,7 @@ history, deterministic quality evals and early runtime streaming. Advanced
 capabilities such as isolated executable subagents and MCP are planned or
 partially scaffolded and should be evolved incrementally with tests.
 
-Last full validation recorded in this branch: 2026-05-03.
+Last full validation recorded in this branch: 2026-05-04.
 
 ## Main Features
 
@@ -84,6 +84,11 @@ Recent secure live evals against OpenRouter using
 - Core live project matrix over `apex`, `Guardian`, `maker`, `visionclip`
   samples: provider errors 0, pseudo-tool markup 0, secret hits 0, observed
   scores after hardening in the 80-100 range.
+- Five-project security/agentic live matrix over `apex`, `Guardian`, `maker`,
+  `visionclip` and `coddy`: 10/10 CLI completions, 100 tool calls, secret hits
+  0, pseudo-tool markup 0. A `visionclip` agentic timeout was reproduced and
+  then fixed with accumulated tool-context compaction; focused rerun score
+  96/100.
 - Local SWE-bench-style patch battery: 3/3 resolved across Python, Node and
   Rust fixtures; patches extracted, applied and validated by tests.
 - Official SWE-bench execution remains blocked locally until Docker daemon
@@ -620,7 +625,10 @@ The live project battery writes redacted artifacts under `/tmp`, separates
 model stdout from CLI stderr, tracks provider errors, tool failures,
 pseudo-tool markup, incomplete answers, secret hits and a per-prompt quality
 score. Use `PROJECT_FILTER`, `CATEGORY_FILTER` or `PROJECTS_CSV` to run a
-smaller matrix.
+smaller matrix. The default local Coddy client timeout for these batteries is
+420 seconds so OpenRouter/NVIDIA 300-second provider timeouts can return a
+recoverable daemon response instead of leaving the local client with an empty
+timeout.
 
 Local SWE-bench-style patch battery:
 
@@ -678,15 +686,22 @@ Latest validated local suite on this branch:
 Recent live hardening added:
 
 - provider-safe recovery for XML `<function name="filesystem.*">` and variant
-  DSML pseudo-tool outputs;
+  DSML pseudo-tool outputs, JSON `{"calls":[...]}` pseudo-tools and
+  `Request: filesystem.*` textual tool requests;
 - incomplete Portuguese action-promise recovery for phrases such as
-  `vou focar` and `vou continuar a revisão`;
+  `vou focar`, `inspecionarei` and `vou continuar a revisão`;
 - security-review bootstrap that reads high-signal policy/config/security/test
   files before the model turn;
 - short `/tmp` socket paths for live and patch batteries to avoid Unix socket
   `SUN_LEN` failures with long artifact directories;
 - tool observation headers that include the executed path/query, improving
-  answer grounding after follow-up tool calls.
+  answer grounding after follow-up tool calls;
+- per-tool, per-round and accumulated tool-message compaction before provider
+  follow-ups, preserving recent evidence while keeping long-context agentic
+  turns below provider timeout risk;
+- grounded review guard refinement so scoped claims such as “no direct evidence
+  found in inspected files” are allowed, while absolute implementation absence
+  claims without source inspection remain guarded.
 
 ## Security Model
 
