@@ -212,3 +212,97 @@ Measured results:
 The local patch battery is a controlled SWE-bench-style harness, not an
 official SWE-bench score. Official SWE-bench still requires the upstream Docker
 harness and Docker daemon access.
+
+### Official SWE-bench preflight
+
+Added `scripts/run_swebench_official.sh` as a reproducible wrapper around the
+upstream `swebench.harness.run_evaluation` entrypoint. The wrapper records a
+JSON report before execution so official benchmark readiness is measured instead
+of inferred from local machine state.
+
+Current preflight on this machine:
+
+```text
+status=preflight_failed
+docker.accessible=false
+docker.socket="srw-rw---- 1 root docker ... /var/run/docker.sock"
+disk.freeGb=33
+disk.requiredGb=120
+swebenchPythonPackage=false
+uv=true
+```
+
+Interpretation:
+
+- Docker is running on the host, but this process is not in the `docker` group
+  and non-interactive `sudo` cannot be used here.
+- The default cache-backed filesystem has about 33 GB free, which is below the
+  configured 120 GB threshold for real SWE-bench work.
+- `uv` is available, so the wrapper can bootstrap the Python `swebench` package
+  once Docker permissions and storage are fixed.
+
+Official SWE-bench can be attempted after the environment passes:
+
+```bash
+SWE_BENCH_PREFLIGHT_ONLY=1 ./scripts/run_swebench_official.sh
+./scripts/run_swebench_official.sh
+```
+
+Use `SWE_BENCH_PREDICTIONS=/path/to/coddy-predictions.jsonl` for Coddy-scored
+runs. The default `gold` prediction mode is only a harness validation smoke.
+
+### Follow-up hardening
+
+Additional live prompts against OpenRouter/DeepSeek V4 Flash exposed several
+agent-output edge cases that were converted into deterministic tests and runtime
+guards:
+
+- `maker/codegen_tdd` returned generic XML
+  `<function name="filesystem.list_files">` instead of a final answer.
+  - Fix: textual tool-call guard now blocks generic function XML markup.
+  - Revalidation: `maker/codegen_tdd` improved to score 95/100, then 100/100
+    on the broader rerun with no pseudo-tool markup.
+- `visionclip/code_review_security` returned variant DSML
+  `<｜｜DSML｜｜tool_calls>`.
+  - Fix: DSML detection now matches variant DSML tool-call wrappers by
+    semantics, not only exact glyph spelling.
+- `visionclip/architecture` returned an action promise in Portuguese
+  (`vou focar...`) instead of a synthesis.
+  - Fix: incomplete action-promise detection covers `vou focar`,
+    `vou me concentrar`, `vou me ater`, and review-continuation phrases.
+- Security reviews were spending too much budget on listings and then
+  speculating.
+  - Fix: added a `security-review` deterministic evidence bootstrap that reads
+    manifest, high-signal security/config/action files and an observed test
+    file before the first model turn.
+  - Fix: security guidance now disallows High/Critical/Confirmed labels without
+    direct source or test evidence and tells the model not to claim tests are
+    absent unless test paths were actually searched/read.
+- Live harness socket paths could exceed Unix `SUN_LEN` when the artifact path
+  was long.
+  - Fix: live and patch batteries use short sockets under `/tmp` while keeping
+    artifacts in the configured output directory.
+- Follow-up tool observations did not identify the executed path/query in their
+  header.
+  - Fix: successful tool observations now include the path/query, improving
+    grounded synthesis after multiple tool rounds.
+
+Latest focused live artifacts:
+
+```text
+/tmp/coddy-patch-final-234026
+/tmp/coddy-sec-coddy-synth-235547
+/tmp/coddy-live-coddy-smoke-234521
+/tmp/coddy-sec-vc-233409
+```
+
+Latest focused measured results:
+
+- Local patch/SWE-style battery: 3/3 resolved, patch extraction 3/3,
+  `git apply` failures 0, test failures 0, provider errors 0, pseudo-tool
+  markup 0, secret hits 0.
+- `coddy/code_review_security` after pending-permission synthesis: score 85,
+  provider errors 0, tool failures 0, pseudo-tool markup 0, secret hits 0.
+- SWE-bench official preflight remains blocked on this machine:
+  Docker socket access is denied for the current process and the cache-backed
+  filesystem has about 32 GB free versus the 120 GB threshold.
