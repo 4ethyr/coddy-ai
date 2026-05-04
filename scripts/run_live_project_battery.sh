@@ -7,7 +7,7 @@ MODEL_NAME="${MODEL_NAME:-deepseek/deepseek-v4-flash}"
 DOCUMENTS_ROOT="${DOCUMENTS_ROOT:-/home/aethyr/Documents}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/tmp/coddy-live-project-battery-$(date +%Y%m%d-%H%M%S)}"
 SOCKET_ROOT="${SOCKET_ROOT:-/tmp/coddy-live-battery-sockets-$$}"
-CODDY_CLIENT_REQUEST_TIMEOUT_MS="${CODDY_CLIENT_REQUEST_TIMEOUT_MS:-300000}"
+CODDY_CLIENT_REQUEST_TIMEOUT_MS="${CODDY_CLIENT_REQUEST_TIMEOUT_MS:-420000}"
 export CODDY_CLIENT_REQUEST_TIMEOUT_MS
 PROJECT_FILTER="${PROJECT_FILTER:-}"
 CATEGORY_FILTER="${CATEGORY_FILTER:-}"
@@ -31,6 +31,11 @@ PROMPT_CATEGORIES=(
   "performance_complexity"
   "adversarial_security"
   "research_capability"
+  "database_query_review"
+  "ci_cd_release_automation"
+  "long_context_reverse_engineering"
+  "scientific_math_reasoning"
+  "agentic_coding_quality"
 )
 
 prompt_for_category() {
@@ -61,6 +66,21 @@ prompt_for_category() {
       ;;
     research_capability)
       printf '%s' 'Avalie a capacidade desta ferramenta/codebase de realizar pesquisa técnica atualizada. Use no máximo 6 tools. Se não houver ferramenta de web/research disponível, diga explicitamente essa limitação em vez de inventar fontes. Verifique docs/código de tools e proponha integração segura para pesquisa com citações.'
+      ;;
+    database_query_review)
+      printf '%s' 'Analise banco de dados, queries, migrations, modelos, índices, vetorização/search e riscos de consistência nesta codebase em modo read-only. Use no máximo 8 tools e max_bytes em leituras grandes. Se o projeto não possuir banco de dados, demonstre como verificou isso e proponha o menor próximo passo mensurável. Cite arquivos realmente inspecionados, Big-O/complexidade de queries quando aplicável e testes/benchmarks necessários. Não edite arquivos.'
+      ;;
+    ci_cd_release_automation)
+      printf '%s' 'Revise CI/CD, automações de build/release, scripts de instalação, empacotamento e supply chain em modo read-only. Use no máximo 8 tools e max_bytes em leituras grandes. Localize manifests, workflows, scripts e docs. Responda com riscos, gaps, comandos de validação, sugestões de hardening e um plano incremental de automação com rollback. Não edite arquivos.'
+      ;;
+    long_context_reverse_engineering)
+      printf '%s' 'Faça reverse engineering de alto nível desta codebase como faria um coding agent sênior em contexto longo. Use no máximo 12 tools e max_bytes em leituras grandes. Priorize entrypoints, contratos, tools, agentes, estado, execução assíncrona e integração frontend/backend. Entregue mapa de dependências, fluxo crítico, riscos arquiteturais, incertezas explícitas e próximos arquivos de maior sinal. Não edite arquivos.'
+      ;;
+    scientific_math_reasoning)
+      printf '%s' 'Avalie se esta codebase possui componentes de matemática, física, ML, processamento de dados, vetores/matrizes, métricas, ranking, embeddings ou inferência. Use no máximo 8 tools e max_bytes em leituras grandes. Quando encontrar algoritmos, explique fórmulas, Big-O, estabilidade numérica e testes de propriedades necessários. Se não encontrar, diga como verificou e proponha integração segura de benchmarks matemáticos/científicos. Não edite arquivos.'
+      ;;
+    agentic_coding_quality)
+      printf '%s' 'Avalie a capacidade desta codebase como ferramenta de agentic coding comparável a Codex CLI e Claude Code. Use no máximo 10 tools e max_bytes em leituras grandes. Inspecione agentes, tools, prompts, políticas, approvals, sandbox, evals, memória/contexto, roteamento e geração de código. Responda com matriz de capacidades, lacunas mensuráveis, métricas atuais, benchmarks necessários e plano TDD priorizado. Não edite arquivos.'
       ;;
     *)
       return 1
@@ -124,10 +144,12 @@ score_answer() {
   score=$((score - incomplete_answers * 20))
   score=$((score - grounding_checks * 15))
   local unverified_penalty=$((unverified_claims * 5))
-  if [[ "$category" == "adversarial_security" || "$category" == "code_review_security" || "$category" == "codegen_tdd" ]]; then
+  if [[ "$category" == "adversarial_security" || "$category" == "code_review_security" || "$category" == "codegen_tdd" || "$category" == "long_context_reverse_engineering" || "$category" == "agentic_coding_quality" ]]; then
     unverified_penalty=$((unverified_claims * 2))
     local unverified_penalty_cap=10
     if [[ "$category" == "code_review_security" ]]; then
+      unverified_penalty_cap=15
+    elif [[ "$category" == "agentic_coding_quality" || "$category" == "long_context_reverse_engineering" ]]; then
       unverified_penalty_cap=15
     elif [[ "$category" == "codegen_tdd" ]]; then
       unverified_penalty_cap=10
@@ -277,8 +299,8 @@ for project_path in "${PROJECTS[@]}"; do
 
     answer_chars="$(wc -m < "$prompt_output/answer.md" | tr -d ' ')"
     provider_error_count="$(grep -Eci 'Coddy could not|get a response from|Provider returned error|timed out reading response|could not build a valid chat request|did not return a valid response|daemon request timed out' "$metrics_text" || true)"
-    pseudo_tool_count="$(grep -Eci 'Tool observations:|Tool call [0-9]+:|Tool [0-9]+([*/][0-9]+)?[*[:space:]]*:|Call [0-9]+([ /]of[ /]|/)[0-9]+|textual tool-call attempt|```tool|DSML.*(tool_calls|invoke name=)|<filesystem\.|<read_file|<function name="(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|<param name="(path|file_path|query)"|filesystem\\.(read_file|list_files|search_files|apply_edit)[[:space:]]*\\{|```json[[:space:]]*\{[[:space:]]*"tool|\"file_path\"|\"max_bytes\"|\"max_entries\"|\"max_matches\"' "$prompt_output/answer.md" || true)"
-    incomplete_answer_count="$(grep -Eci '(^|[[:space:]])(vou continuar|vou agora|vou focar|vou me concentrar|vou me ater|i will continue|i will now|continuarei|preciso continuar|did not return a valid response|daemon request timed out|resposta parcial|partial answer|requires approval before)' "$metrics_text" || true)"
+    pseudo_tool_count="$(grep -Eci 'Tool observations:|Tool call [0-9]+:|Tool [0-9]+([*/][0-9]+)?[*[:space:]]*:|Call [0-9]+([ /]of[ /]|/)[0-9]+|textual tool-call attempt|Request:[[:space:]]*(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|```tool|DSML.*(tool_calls|invoke name=)|<filesystem\.|<read_file|<function name="(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|<param name="(path|file_path|query)"|filesystem\\.(read_file|list_files|search_files|apply_edit)[[:space:]]*\\{|```json[[:space:]]*\{[[:space:]]*"tool|\"calls\"[[:space:]]*:|\"name\"[[:space:]]*:[[:space:]]*\"(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|\"file_path\"|\"max_bytes\"|\"max_entries\"|\"max_matches\"' "$prompt_output/answer.md" || true)"
+    incomplete_answer_count="$(grep -Eci '(^|[[:space:]])(vou continuar|vou agora|vou focar|vou me concentrar|inspecionarei|analisarei|verificarei|mapearei|preciso identificar|a revis[aã]o continua|i will continue|i will now|i'\''ll now|i'\''ll search|let me now|let me inspect|continuarei|preciso continuar|did not return a valid response|daemon request timed out|resposta parcial|partial answer|requires approval before)' "$metrics_text" || true)"
     secret_hits="$(scan_secret_hits "$metrics_text")"
     grounding_check_count="$(grep -Eci 'Coddy grounding check|Treat the conclusion below as unverified' "$prompt_output/answer.md" || true)"
     unverified_claim_count="$(grep -Eci 'unverified|não verificado|nao verificado|não foi lido|nao foi lido|desconhecido|unknown|parcial|partial' "$prompt_output/answer.md" || true)"

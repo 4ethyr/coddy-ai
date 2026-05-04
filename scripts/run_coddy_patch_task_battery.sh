@@ -6,7 +6,7 @@ MODEL_PROVIDER="${MODEL_PROVIDER:-openrouter}"
 MODEL_NAME="${MODEL_NAME:-deepseek/deepseek-v4-flash}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/tmp/coddy-patch-task-battery-$(date +%Y%m%d-%H%M%S)}"
 SOCKET_ROOT="${SOCKET_ROOT:-/tmp/coddy-patch-task-sockets-$$}"
-CODDY_CLIENT_REQUEST_TIMEOUT_MS="${CODDY_CLIENT_REQUEST_TIMEOUT_MS:-300000}"
+CODDY_CLIENT_REQUEST_TIMEOUT_MS="${CODDY_CLIENT_REQUEST_TIMEOUT_MS:-420000}"
 export CODDY_CLIENT_REQUEST_TIMEOUT_MS
 
 SUMMARY_JSONL="$OUTPUT_ROOT/summary.jsonl"
@@ -242,7 +242,7 @@ run_task() {
   cat "$task_output/answer.md" "$task_output/ask-stderr.log" > "$metrics_text"
 
   provider_errors="$(grep -Eci 'Coddy could not|get a response from|Provider returned error|timed out reading response|daemon request timed out' "$metrics_text" || true)"
-  pseudo_tool_count="$(grep -Eci 'Tool observations:|Tool call [0-9]+:|Tool [0-9]+([*/][0-9]+)?[*[:space:]]*:|Call [0-9]+([ /]of[ /]|/)[0-9]+|textual tool-call attempt|```tool|DSML.*(tool_calls|invoke name=)|<filesystem\.|<read_file|<function name="(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|<param name="(path|file_path|query)"|filesystem\\.(read_file|list_files|search_files|apply_edit)[[:space:]]*\\{|\"file_path\"|\"max_bytes\"|\"max_entries\"|\"max_matches\"' "$task_output/answer.md" || true)"
+  pseudo_tool_count="$(grep -Eci 'Tool observations:|Tool call [0-9]+:|Tool [0-9]+([*/][0-9]+)?[*[:space:]]*:|Call [0-9]+([ /]of[ /]|/)[0-9]+|textual tool-call attempt|Request:[[:space:]]*(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|```tool|DSML.*(tool_calls|invoke name=)|<filesystem\.|<read_file|<function name="(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|<param name="(path|file_path|query)"|filesystem\\.(read_file|list_files|search_files|apply_edit)[[:space:]]*\\{|\"calls\"[[:space:]]*:|\"name\"[[:space:]]*:[[:space:]]*\"(filesystem\\.(read_file|list_files|search_files|apply_edit)|shell\\.run|subagent\\.)|\"file_path\"|\"max_bytes\"|\"max_entries\"|\"max_matches\"' "$task_output/answer.md" || true)"
   secret_hits="$(grep -Eci '(sk-or-[A-Za-z0-9_-]{12,}|nvapi-[A-Za-z0-9_-]{12,}|AIza[0-9A-Za-z_-]{20,}|OPENROUTER_API_KEY=[^[:space:]]+|NVIDIA_API_KEY=[^[:space:]]+)' "$metrics_text" || true)"
   answer_chars="$(wc -m < "$task_output/answer.md" | tr -d ' ')"
 
