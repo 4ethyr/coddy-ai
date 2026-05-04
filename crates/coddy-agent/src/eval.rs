@@ -3715,13 +3715,8 @@ fn validate_fixture_commands(case: &FixtureBenchmarkCase, failures: &mut Vec<Str
                 case.id
             ));
         }
-        if let Some(verifier_name) = coddy_agent_exact_fixture_verifier_name(command) {
-            if !known_coddy_agent_fixture_verifier_names().contains(&verifier_name) {
-                failures.push(format!(
-                    "{}: unknown coddy-agent exact fixture verifier `{verifier_name}`",
-                    case.id
-                ));
-            }
+        if let Some((package_name, verifier_name)) = cargo_exact_fixture_verifier(command) {
+            validate_known_exact_fixture_verifier(case, package_name, verifier_name, failures);
         }
         let assessment = guard.assess(
             Uuid::nil(),
@@ -3740,21 +3735,41 @@ fn validate_fixture_commands(case: &FixtureBenchmarkCase, failures: &mut Vec<Str
     }
 }
 
-fn coddy_agent_exact_fixture_verifier_name(command: &str) -> Option<&str> {
+fn cargo_exact_fixture_verifier(command: &str) -> Option<(&str, &str)> {
     let tokens = command.split_whitespace().collect::<Vec<_>>();
     if tokens.first().copied() != Some("cargo") || tokens.get(1).copied() != Some("test") {
         return None;
     }
-    let package_index = tokens.windows(2).position(|window| {
-        matches!(
-            (window[0], window[1]),
-            ("-p", "coddy-agent") | ("--package", "coddy-agent")
-        )
-    })?;
+    let package_index = tokens
+        .windows(2)
+        .position(|window| matches!(window[0], "-p" | "--package"))?;
     if !tokens.windows(2).any(|window| window == ["--", "--exact"]) {
         return None;
     }
-    tokens.get(package_index + 2).copied()
+    Some((
+        *tokens.get(package_index + 1)?,
+        *tokens.get(package_index + 2)?,
+    ))
+}
+
+fn validate_known_exact_fixture_verifier(
+    case: &FixtureBenchmarkCase,
+    package_name: &str,
+    verifier_name: &str,
+    failures: &mut Vec<String>,
+) {
+    let known = match package_name {
+        "coddy-agent" => known_coddy_agent_fixture_verifier_names(),
+        "coddy-runtime" => known_coddy_runtime_fixture_verifier_names(),
+        _ => return,
+    };
+
+    if !known.contains(&verifier_name) {
+        failures.push(format!(
+            "{}: unknown {package_name} exact fixture verifier `{verifier_name}`",
+            case.id
+        ));
+    }
 }
 
 fn known_coddy_agent_fixture_verifier_names() -> &'static [&'static str] {
@@ -3763,6 +3778,10 @@ fn known_coddy_agent_fixture_verifier_names() -> &'static [&'static str] {
         "eval::tests::rag_memory_fixture_retrieves_expected_context",
         "eval::tests::skills_mcp_fixture_validates_permissions",
     ]
+}
+
+fn known_coddy_runtime_fixture_verifier_names() -> &'static [&'static str] {
+    &["runtime_fixture_regression"]
 }
 
 fn fixture_assertions_contain(assertions: &[String], needle: &str) -> bool {
@@ -4986,6 +5005,39 @@ mod tests {
                 .iter()
                 .any(|failure| failure.contains("unknown coddy-agent exact fixture verifier")),
             "expected unknown verifier failure, got {:?}",
+            report.reports[0].failures,
+        );
+    }
+
+    #[test]
+    fn fixture_benchmark_rejects_unknown_coddy_runtime_exact_verifier() {
+        let cases = vec![FixtureBenchmarkCase::new(
+            "unknown-runtime-verifier",
+            "rust-agent-runtime",
+            "rust-tokio-agent",
+            "Verify that runtime fixture benchmark commands only reference known verifier tests.",
+        )
+        .allowed_tools(&[READ_FILE_TOOL, SHELL_RUN_TOOL])
+        .expected_files(&["crates/coddy-runtime/tests/runtime_fixture.rs"])
+        .test_commands(&["cargo test -p coddy-runtime missing_runtime_fixture -- --exact"])
+        .security_assertions(&[
+            "sandbox required",
+            "timeout enforced",
+            "secret redaction preserved",
+        ])
+        .timeout_ms(60_000)];
+
+        let report = run_fixture_benchmark(&cases);
+
+        assert!(!report.is_success());
+        assert_eq!(report.passed, 0);
+        assert_eq!(report.failed, 1);
+        assert!(
+            report.reports[0]
+                .failures
+                .iter()
+                .any(|failure| failure.contains("unknown coddy-runtime exact fixture verifier")),
+            "expected unknown runtime verifier failure, got {:?}",
             report.reports[0].failures,
         );
     }
