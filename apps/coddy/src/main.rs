@@ -354,6 +354,7 @@ async fn main() -> Result<()> {
 
     tracing_subscriber::fmt()
         .with_env_filter(env::var("RUST_LOG").unwrap_or_else(|_| config.log_level().to_string()))
+        .with_writer(io::stderr)
         .init();
 
     match cli.command {

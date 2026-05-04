@@ -869,6 +869,24 @@ impl CoddyRuntime {
                 remaining_tool_calls,
             );
             if round.executed_tool_calls == 0 {
+                if !response.tool_calls.is_empty() {
+                    let tool_summary = summarize_chat_tool_calls(&response.tool_calls);
+                    if let Some(final_response) = self.synthesize_after_unexecuted_tool_requests(
+                        &context,
+                        &messages,
+                        response.text.trim(),
+                        &round.response.text,
+                        &tool_summary,
+                    ) {
+                        return final_response;
+                    }
+                    let text = build_unexecuted_tool_request_response(
+                        response.text.trim(),
+                        &tool_summary,
+                        &round.response.text,
+                    );
+                    return AssistantResponse::from_text(redact_context_text(&text));
+                }
                 return round.response;
             }
             if let Some(remaining) = remaining_tool_calls.as_mut() {
@@ -931,7 +949,23 @@ impl CoddyRuntime {
                             continue;
                         }
                         Ok(recovery_response) => {
-                            return AssistantResponse::from_chat_response(recovery_response);
+                            let assistant_response =
+                                AssistantResponse::from_chat_response(recovery_response);
+                            if assistant_response
+                                .text
+                                .contains("textual tool-call attempt from the model")
+                            {
+                                if let Some(synthesized_response) = self
+                                    .synthesize_after_rejected_textual_tool_response(
+                                        &context,
+                                        &messages,
+                                        &assistant_response.text,
+                                    )
+                                {
+                                    return synthesized_response;
+                                }
+                            }
+                            return assistant_response;
                         }
                         Err(error) => {
                             let mut response =
@@ -970,7 +1004,23 @@ impl CoddyRuntime {
                             continue;
                         }
                         Ok(recovery_response) => {
-                            return AssistantResponse::from_chat_response(recovery_response);
+                            let assistant_response =
+                                AssistantResponse::from_chat_response(recovery_response);
+                            if assistant_response
+                                .text
+                                .contains("textual tool-call attempt from the model")
+                            {
+                                if let Some(synthesized_response) = self
+                                    .synthesize_after_rejected_textual_tool_response(
+                                        &context,
+                                        &messages,
+                                        &assistant_response.text,
+                                    )
+                                {
+                                    return synthesized_response;
+                                }
+                            }
+                            return assistant_response;
                         }
                         Err(error) => {
                             let mut response =
@@ -1075,7 +1125,101 @@ impl CoddyRuntime {
             )
             .ok()?;
         if response.tool_calls.is_empty() && !response.text.trim().is_empty() {
-            return Some(AssistantResponse::from_chat_response(response));
+            let assistant_response = AssistantResponse::from_chat_response(response);
+            if assistant_response
+                .text
+                .contains("textual tool-call attempt from the model")
+            {
+                return None;
+            }
+            return Some(assistant_response);
+        }
+        None
+    }
+
+    fn synthesize_after_unexecuted_tool_requests(
+        &self,
+        context: &ModelResponseContext<'_>,
+        base_messages: &[ChatMessage],
+        pending_model_text: &str,
+        unexecuted_observations: &str,
+        pending_tool_summary: &str,
+    ) -> Option<AssistantResponse> {
+        let mut messages = base_messages.to_vec();
+        if !pending_model_text.trim().is_empty() {
+            messages.push(ChatMessage::assistant(
+                pending_model_text.trim().to_string(),
+            ));
+        }
+        messages.push(ChatMessage::tool(
+            redact_context_text(unexecuted_observations)
+                .trim()
+                .to_string(),
+        ));
+        messages.push(ChatMessage::user(build_unexecuted_tool_synthesis_prompt(
+            pending_tool_summary,
+        )));
+        let response = self
+            .complete_after_tool_messages(
+                context.selected_model,
+                context.model_credential.clone(),
+                messages,
+                false,
+            )
+            .ok()?;
+        if response.tool_calls.is_empty() && !response.text.trim().is_empty() {
+            let assistant_response = AssistantResponse::from_chat_response(response);
+            if assistant_response
+                .text
+                .contains("textual tool-call attempt from the model")
+            {
+                return None;
+            }
+            return Some(assistant_response);
+        }
+        None
+    }
+
+    fn synthesize_after_rejected_textual_tool_response(
+        &self,
+        context: &ModelResponseContext<'_>,
+        base_messages: &[ChatMessage],
+        rejected_text: &str,
+    ) -> Option<AssistantResponse> {
+        let mut messages = base_messages.to_vec();
+        if !rejected_text.trim().is_empty() {
+            messages.push(ChatMessage::assistant(truncate_context_text(
+                &redact_context_text(rejected_text),
+                1200,
+            )));
+        }
+        messages.push(ChatMessage::user(
+            [
+                "Coddy textual tool-call recovery fallback:",
+                "The previous recovery response still attempted to request tools as plain text.",
+                "Native tool calls are disabled for this final synthesis. Do not mention future tool execution as something you will do now.",
+                "Use only the actual tool observations already present in this conversation.",
+                "Return the best grounded answer now, with confirmed evidence, explicit gaps, and safe next files to inspect as recommendations only.",
+            ]
+            .join("\n"),
+        ));
+        let response = self
+            .complete_after_tool_messages(
+                context.selected_model,
+                context.model_credential.clone(),
+                messages,
+                false,
+            )
+            .ok()?;
+        if response.tool_calls.is_empty() && !response.text.trim().is_empty() {
+            let assistant_response = AssistantResponse::from_chat_response(response);
+            if assistant_response
+                .text
+                .contains("textual tool-call attempt from the model")
+            {
+                return None;
+            }
+            return Some(assistant_response);
         }
         None
     }
@@ -2242,6 +2386,8 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
         &[
             "<｜dsml｜tool_calls>",
             "<|tool_calls|>",
+            "```tool_call",
+            "```tool",
             "<tool_call",
             "</tool_call",
             "<｜dsml｜invoke",
@@ -2263,12 +2409,24 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
             "</filesystem.search_files",
             "<filesystem.apply_edit",
             "</filesystem.apply_edit",
+            "filesystem.read_file {",
+            "filesystem.list_files {",
+            "filesystem.search_files {",
+            "filesystem.apply_edit {",
         ],
     ) {
         return true;
     }
 
+    if contains_numbered_tool_step_header(&normalized) {
+        return true;
+    }
+
     if normalized.contains("\"tool_calls\"") && normalized.contains("\"arguments\"") {
+        return true;
+    }
+
+    if looks_like_bare_tool_arguments_object(text) {
         return true;
     }
 
@@ -2379,6 +2537,72 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
         )
 }
 
+fn looks_like_bare_tool_arguments_object(text: &str) -> bool {
+    let Some(candidate) = extract_json_like_final_answer(text.trim()) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate) else {
+        return false;
+    };
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    if object.is_empty() || object.len() > 8 {
+        return false;
+    }
+
+    let has_target = object.keys().any(|key| {
+        matches!(
+            key.as_str(),
+            "path" | "file_path" | "relative_path" | "query"
+        )
+    });
+    let has_tool_parameter = object.keys().any(|key| {
+        matches!(
+            key.as_str(),
+            "max_bytes"
+                | "max_entries"
+                | "max_matches"
+                | "old_string"
+                | "new_string"
+                | "replace_all"
+        )
+    });
+    let only_tool_argument_keys = object.keys().all(|key| {
+        matches!(
+            key.as_str(),
+            "path"
+                | "file_path"
+                | "relative_path"
+                | "query"
+                | "max_bytes"
+                | "max_entries"
+                | "max_matches"
+                | "old_string"
+                | "new_string"
+                | "replace_all"
+        )
+    });
+
+    has_target && has_tool_parameter && only_tool_argument_keys
+}
+
+fn extract_json_like_final_answer(text: &str) -> Option<&str> {
+    if text.starts_with('{') && text.ends_with('}') {
+        return Some(text);
+    }
+
+    let fenced = text
+        .strip_prefix("```json")
+        .or_else(|| text.strip_prefix("```"))?
+        .trim();
+    let fenced = fenced.strip_suffix("```")?.trim();
+    if fenced.starts_with('{') && fenced.ends_with('}') {
+        return Some(fenced);
+    }
+    None
+}
+
 fn looks_like_unexecuted_tool_action_promise(text: &str) -> bool {
     let normalized = normalize_grounding_text(text);
     contains_any(
@@ -2388,6 +2612,19 @@ fn looks_like_unexecuted_tool_action_promise(text: &str) -> bool {
             "vou ler",
             "vou agora inspecionar",
             "vou inspecionar",
+            "vou priorizar leitura",
+            "vou priorizar leituras",
+            "vou priorizar a leitura",
+            "vou priorizar as leituras",
+            "vou continuar a exploracao",
+            "vou continuar a exploração",
+            "tool calls restantes",
+            "chamadas restantes",
+            "chamadas focadas",
+            "primeiro vou ler",
+            "primeiro, vou ler",
+            "vou comecar lendo",
+            "vou começar lendo",
             "irei ler",
             "irei inspecionar",
             "let me read",
@@ -2407,6 +2644,15 @@ fn looks_like_unexecuted_tool_action_promise(text: &str) -> bool {
             "arquivos",
             "fonte",
             "manifesto",
+            "modulo",
+            "modulos",
+            "entrypoint",
+            "entrypoints",
+            "arquitetura",
+            "fluxo de execucao",
+            "fluxo de execução",
+            "teste",
+            "testes",
             "source",
             "file",
             "files",
@@ -2744,6 +2990,50 @@ fn contains_numbered_tool_call_header(text: &str) -> bool {
     })
 }
 
+fn contains_numbered_tool_step_header(text: &str) -> bool {
+    text.lines().any(|line| {
+        let trimmed = line
+            .trim_start_matches(|character: char| {
+                character.is_whitespace() || matches!(character, '#' | '*' | '-' | '>' | '`')
+            })
+            .trim_start();
+        let Some(rest) = trimmed
+            .strip_prefix("tool ")
+            .or_else(|| trimmed.strip_prefix("call "))
+        else {
+            return false;
+        };
+        let Some(first) = rest.chars().next() else {
+            return false;
+        };
+        if !first.is_ascii_digit() {
+            return false;
+        }
+        let looks_like_numbered_tool_heading = rest.contains(':')
+            || rest.contains("**:")
+            || rest.contains('/')
+            || rest.contains(" of ");
+        if !looks_like_numbered_tool_heading {
+            return false;
+        }
+
+        contains_any(
+            rest,
+            &[
+                "filesystem.read_file",
+                "filesystem.list_files",
+                "filesystem.search_files",
+                "filesystem.apply_edit",
+                "shell.run",
+                "subagent.",
+            ],
+        ) || contains_any(
+            trimmed,
+            &["search for", "read ", "list ", "inspect ", "grep ", "find "],
+        )
+    })
+}
+
 fn summarize_chat_tool_calls(tool_calls: &[ChatToolCall]) -> String {
     tool_calls
         .iter()
@@ -2846,6 +3136,44 @@ fn build_tool_round_limit_synthesis_prompt(pending_tool_summary: &str) -> String
     .join(" ")
 }
 
+fn build_unexecuted_tool_synthesis_prompt(pending_tool_summary: &str) -> String {
+    [
+        "Coddy could not execute one or more model-requested tools in this turn.".to_string(),
+        format!("Pending model-requested tools were not executed: {pending_tool_summary}."),
+        "Do not request more tools.".to_string(),
+        "Do not print `Tool observations:` or tool-call markup.".to_string(),
+        "Synthesize the best final answer from the available evidence and runtime safety notes."
+            .to_string(),
+        "If the user asked for a patch, return a valid unified diff with `diff --git` headers."
+            .to_string(),
+        "If evidence is insufficient, provide a concise partial answer and exact next safe follow-up."
+            .to_string(),
+    ]
+    .join(" ")
+}
+
+fn build_unexecuted_tool_request_response(
+    model_text: &str,
+    pending_tool_summary: &str,
+    unexecuted_observations: &str,
+) -> String {
+    let mut sections = Vec::new();
+    if !model_text.trim().is_empty() {
+        sections.push(model_text.trim().to_string());
+    }
+    sections.push(format!(
+        "Coddy could not execute pending model-requested tools in this turn: {pending_tool_summary}."
+    ));
+    let notes = unexecuted_observations.trim();
+    if !notes.is_empty() {
+        sections.push(format!("Runtime safety notes:\n{notes}"));
+    }
+    sections.push(
+        "Retry with a narrower prompt, request a patch-only answer, or approve a safe preview/edit flow when workspace writes are intended.".to_string(),
+    );
+    sections.join("\n\n")
+}
+
 fn build_model_system_prompt(
     context_policy: ContextPolicy,
     session: &ReplSession,
@@ -2925,6 +3253,85 @@ fn format_tool_budget_context(tool_use_policy: ToolUsePolicy) -> String {
 
 fn format_task_specific_tool_guidance(goal: &str) -> Option<String> {
     let normalized = normalize_grounding_text(goal);
+    if contains_any(
+        &normalized,
+        &[
+            "swe-bench",
+            "swe bench",
+            "unified diff",
+            "diff --git",
+            "patch-only",
+            "patch only",
+            "return only a patch",
+            "retorne apenas um patch",
+            "retornar apenas um patch",
+        ],
+    ) {
+        return Some(
+            [
+                "Task-specific guidance for patch-only coding benchmarks:",
+                "- Inspect source and tests before proposing a patch.",
+                "- If the user asks for patch-only output, the final answer must contain only a unified diff; no prose, markdown fences, summaries, or next-step text.",
+                "- Unified diff output must include `diff --git a/<path> b/<path>` headers, `---`/`+++` file headers, and complete hunks with accurate line counts.",
+                "- Do not call `filesystem.apply_edit` when the user asked not to edit files; generate the textual patch instead.",
+                "- If you cannot produce a valid patch, say so briefly instead of emitting malformed diff.",
+            ]
+            .join("\n"),
+        );
+    }
+
+    if contains_any(
+        &normalized,
+        &[
+            "revisao adversarial de seguranca",
+            "security review",
+            "adversarial security",
+            "prompt injection",
+            "path traversal",
+            "supply chain",
+            "exposicao de chaves",
+            "key exposure",
+        ],
+    ) {
+        return Some(
+            [
+                "Task-specific guidance for security review:",
+                "- Treat secret files and credentials as off-limits: do not read `.env`, private keys, token dumps, or credential reports unless the user explicitly narrows and authorizes that exact file.",
+                "- Use safe evidence first: list files, search for code patterns, read source, manifests, policy, CI, dependency and test files.",
+                "- If a secret-like path exists, report its presence as a risk without printing or requesting its contents.",
+                "- Prioritize executable entrypoints, command execution surfaces, path handling, dependency manifests, prompt/system instruction files, and tests.",
+                "- If a security-relevant file was not read because of safety policy or tool budget, mark that finding as unverified instead of presenting it as confirmed.",
+            ]
+            .join("\n"),
+        );
+    }
+
+    if contains_any(
+        &normalized,
+        &[
+            "analise profundamente",
+            "analise a arquitetura",
+            "arquitetura",
+            "architecture",
+            "entrypoints",
+            "fluxo de execucao",
+            "execution flow",
+            "map structure",
+        ],
+    ) {
+        return Some(
+            [
+                "Task-specific guidance for architecture/codebase analysis:",
+                "- Treat list_files/search_files output as the source of truth for follow-up reads; do not guess conventional paths that were not observed.",
+                "- Prioritize manifests, actual entrypoints, package/module indexes, routing/config files, and one representative test when available.",
+                "- If a likely file such as a schema, router, module, or worker entrypoint was not listed, mark it as a gap instead of calling read_file on the guessed path.",
+                "- Cite only files that appeared in tool observations, and separate confirmed structure from inferred architecture.",
+                "- Produce a complete synthesis before requesting additional inspection; list extra reads only as follow-up recommendations.",
+            ]
+            .join("\n"),
+        );
+    }
+
     if contains_any(
         &normalized,
         &[
@@ -3726,12 +4133,39 @@ fn classify_ask_intent(text: &str, action: &AskAction) -> (ReplIntent, f32) {
             "testabilidade",
             "testability",
             "revisao de seguranca",
+            "revisao adversarial de seguranca",
             "security review",
+            "adversarial security",
             "seguranca read-only",
             "security read-only",
+            "prompt injection",
+            "path traversal",
+            "supply chain",
+            "execucao de comandos",
+            "command execution",
+            "exposicao de chaves",
+            "key exposure",
+            "permissoes",
+            "permissions",
             "analise a arquitetura",
             "analise minha codebase",
             "analyze the codebase",
+            "fluxo de execucao",
+            "execution flow",
+            "entrypoint",
+            "entrypoints",
+            "caminhos criticos",
+            "critical paths",
+            "estados compartilhados",
+            "shared state",
+            "fluxos assincronos",
+            "async flows",
+            "performance",
+            "big-o",
+            "complexidade",
+            "complexity",
+            "gargalos",
+            "hotspots",
         ],
     ) {
         return (ReplIntent::ExplainCode, 0.74);
@@ -4541,6 +4975,28 @@ mod tests {
     }
 
     #[test]
+    fn classify_entrypoint_flow_analysis_as_code_explanation_despite_tests_word() {
+        let (intent, confidence) = classify_ask_intent(
+            "Faça uma análise profunda de fluxo de execução, entrypoints, estados compartilhados, fluxos assíncronos e cite testes apenas como evidência.",
+            &AskAction::ModelBackedResponse,
+        );
+
+        assert_eq!(intent, coddy_core::ReplIntent::ExplainCode);
+        assert!(confidence >= 0.7);
+    }
+
+    #[test]
+    fn classify_adversarial_security_review_as_code_explanation() {
+        let (intent, confidence) = classify_ask_intent(
+            "Faça uma revisão adversarial de segurança read-only: prompt injection, permissões, execução de comandos, exposição de chaves, path traversal e supply chain.",
+            &AskAction::ModelBackedResponse,
+        );
+
+        assert_eq!(intent, coddy_core::ReplIntent::ExplainCode);
+        assert!(confidence >= 0.7);
+    }
+
+    #[test]
     fn classify_tdd_plan_as_agentic_code_change_not_test_generation() {
         let (intent, confidence) = classify_ask_intent(
             "Crie um plano TDD para implementar uma melhoria pequena neste projeto.",
@@ -4866,6 +5322,141 @@ mod tests {
     }
 
     #[test]
+    fn ask_command_injects_patch_only_benchmark_guidance() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("src/lib.rs", "pub fn value() -> i32 { 1 }\n");
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("diff accepted"));
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Solve this SWE-bench-style bug and return only a unified diff patch with diff --git headers.".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let system_prompt = &captured_requests[0].messages[0].content;
+
+        assert!(system_prompt.contains("Task-specific guidance for patch-only coding benchmarks"));
+        assert!(system_prompt.contains("final answer must contain only a unified diff"));
+        assert!(system_prompt.contains("diff --git a/<path> b/<path>"));
+        assert!(system_prompt.contains("Do not call `filesystem.apply_edit`"));
+    }
+
+    #[test]
+    fn ask_command_injects_security_review_secret_safety_guidance() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("src/main.rs", "fn main() { println!(\"hello\"); }\n");
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("security guidance accepted"));
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Faça uma revisão adversarial de segurança. Não leia secrets como .env; avalie prompt injection, path traversal e supply chain.".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let system_prompt = &captured_requests[0].messages[0].content;
+
+        assert!(system_prompt.contains("Task-specific guidance for security review"));
+        assert!(system_prompt.contains("do not read `.env`"));
+        assert!(system_prompt.contains("report its presence as a risk without printing"));
+        assert!(system_prompt.contains("mark that finding as unverified"));
+    }
+
+    #[test]
+    fn ask_command_injects_architecture_existing_path_guidance() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("package.json", "{\"name\":\"demo\"}\n");
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("architecture guidance accepted"));
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Analise profundamente esta codebase, arquitetura, entrypoints e fluxo de execução.".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let system_prompt = &captured_requests[0].messages[0].content;
+
+        assert!(system_prompt.contains("Task-specific guidance for architecture/codebase analysis"));
+        assert!(system_prompt.contains("do not guess conventional paths"));
+        assert!(system_prompt.contains("mark it as a gap instead of calling read_file"));
+        assert!(system_prompt.contains("separate confirmed structure from inferred architecture"));
+    }
+
+    #[test]
     fn ask_command_bootstraps_tdd_codebase_plan_with_source_and_test_evidence() {
         let request_id = Uuid::new_v4();
         let workspace = TempWorkspace::new();
@@ -5042,6 +5633,45 @@ mod tests {
     }
 
     #[test]
+    fn assistant_response_blocks_fenced_tool_call_blocks() {
+        let response = ChatResponse::from_text(
+            r#"Tool call budget is almost exhausted. Let me inspect the package structure.
+
+```tool_call
+filesystem.list_files {"path": "apex_framework/apex"}
+```"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("apex_framework/apex"));
+    }
+
+    #[test]
+    fn assistant_response_blocks_bare_tool_argument_json() {
+        let response = ChatResponse::from_text(
+            r#"```json
+{
+  "file_path": "apex_framework/pyproject.toml",
+  "max_bytes": 3000
+}
+```"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("apex_framework/pyproject.toml"));
+    }
+
+    #[test]
     fn assistant_response_blocks_numbered_pseudo_tool_calls() {
         let response = ChatResponse::from_text(
             r#"I will now perform two additional tool calls within the remaining budget.
@@ -5058,6 +5688,59 @@ mod tests {
             .contains("textual tool-call attempt from the model"));
         assert!(response.text.contains("not executed for safety"));
         assert!(!response.text.contains("SECURITY_POLICY.md"));
+    }
+
+    #[test]
+    fn assistant_response_blocks_numbered_tool_step_pseudo_calls() {
+        let response = ChatResponse::from_text(
+            r#"**PLANO DE ANÁLISE**
+1. Ler entrypoint principal
+
+---
+**Tool 1/10:** `filesystem.read_file` — `apex_framework/apex/__init__.py`"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("apex_framework/apex/__init__.py"));
+    }
+
+    #[test]
+    fn assistant_response_blocks_generic_numbered_tool_step_pseudo_calls() {
+        let response = ChatResponse::from_text(
+            r#"I will execute a focused code review with the remaining tool budget.
+
+**Tool 1**: Search for security-sensitive patterns across the codebase."#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("security-sensitive patterns"));
+    }
+
+    #[test]
+    fn assistant_response_blocks_numbered_call_of_budget_pseudo_calls() {
+        let response = ChatResponse::from_text(
+            r#"I'll start the read-only code/security review by inspecting relevant files.
+
+**Call 1 of 8** — list key source directories inside `apex_framework/apex/`."#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("apex_framework/apex"));
     }
 
     #[test]
@@ -6055,6 +6738,170 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
         assert!(followup_system_prompt.contains("Do not infer implementation gaps from docs alone"));
         assert!(followup_system_prompt
             .contains("Synthesize the best answer now from the existing tool observations"));
+    }
+
+    #[test]
+    fn ask_command_synthesizes_when_model_requests_more_tools_after_budget_is_spent() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("src/main.rs", "fn main() {}\n");
+        let (chat_client, requests) = QueuedChatClient::new(vec![
+            ChatResponse {
+                text: "I will inspect once.".to_string(),
+                deltas: vec!["I will inspect once.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-list".to_string()),
+                    name: LIST_FILES_TOOL.to_string(),
+                    arguments: json!({ "path": ".", "max_entries": 20 }),
+                }],
+            },
+            ChatResponse {
+                text: "I need another read before answering.".to_string(),
+                deltas: vec!["I need another read before answering.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-read-after-budget".to_string()),
+                    name: READ_FILE_TOOL.to_string(),
+                    arguments: json!({ "path": "src/main.rs", "max_bytes": 100 }),
+                }],
+            },
+            ChatResponse::from_text(
+                "I inspected the available workspace listing and cannot read more in this turn. src/main.rs is present; ask for a narrower follow-up to inspect it.",
+            ),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Use no maximo 1 ferramenta read-only e responda.".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let events = runtime.events_after(0).0;
+
+        assert_eq!(captured_requests.len(), 3);
+        assert!(captured_requests
+            .last()
+            .expect("budget synthesis request")
+            .tools
+            .is_empty());
+        assert!(captured_requests
+            .last()
+            .unwrap()
+            .messages
+            .iter()
+            .any(|message| {
+                message
+                    .content
+                    .contains("Coddy could not execute one or more model-requested tools")
+            }));
+        assert!(text.contains("cannot read more in this turn"));
+        assert!(!text.contains("Tool observations:"));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(&event.event, ReplEvent::ToolStarted { name } if name == LIST_FILES_TOOL || name == READ_FILE_TOOL))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn ask_command_synthesizes_when_model_requested_tool_is_rejected() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write("src/lib.rs", "pub fn value() -> i32 { 1 }\n");
+        let (chat_client, requests) = QueuedChatClient::new(vec![
+            ChatResponse {
+                text: "I will patch the file.".to_string(),
+                deltas: vec!["I will patch the file.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-apply-edit".to_string()),
+                    name: "filesystem.apply_edit".to_string(),
+                    arguments: json!({
+                        "path": "src/lib.rs",
+                        "old_string": "1",
+                        "new_string": "2"
+                    }),
+                }],
+            },
+            ChatResponse::from_text(
+                "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-pub fn value() -> i32 { 1 }\n+pub fn value() -> i32 { 2 }\n",
+            ),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Return a patch for src/lib.rs without editing files.".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let events = runtime.events_after(0).0;
+
+        assert_eq!(captured_requests.len(), 2);
+        assert!(captured_requests[1].tools.is_empty());
+        assert!(captured_requests[1].messages.iter().any(|message| {
+            message
+                .content
+                .contains("could not execute one or more model-requested tools")
+        }));
+        assert!(text.contains("diff --git a/src/lib.rs b/src/lib.rs"));
+        assert!(!text.contains("Tool observations:"));
+        assert!(!events.iter().any(|event| matches!(
+            &event.event,
+            ReplEvent::ToolStarted { name } if name == "filesystem.apply_edit"
+        )));
     }
 
     #[test]
@@ -7188,6 +8035,83 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
     }
 
     #[test]
+    fn ask_command_synthesizes_when_textual_tool_recovery_is_also_textual() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write(
+            "src/lib.rs",
+            "pub fn normalize(value: &str) -> String { value.trim().to_lowercase() }\n",
+        );
+        let (chat_client, requests) = QueuedChatClient::new(vec![
+            ChatResponse {
+                text: "I will inspect source first.".to_string(),
+                deltas: vec!["I will inspect source first.".to_string()],
+                finish_reason: coddy_agent::ChatFinishReason::ToolCalls,
+                tool_calls: vec![ChatToolCall {
+                    id: Some("call-read-source".to_string()),
+                    name: READ_FILE_TOOL.to_string(),
+                    arguments: json!({ "path": "src/lib.rs", "max_bytes": 400 }),
+                }],
+            },
+            ChatResponse::from_text(
+                "**Tool 1**: Search for security-sensitive patterns across the codebase.",
+            ),
+            ChatResponse::from_text(
+                "**Call 1 of 8** — list key source directories inside `src/`.",
+            ),
+            ChatResponse::from_text(
+                "Grounded answer: `src/lib.rs` defines `normalize`, which trims and lowercases input. A useful next test should cover surrounding whitespace and mixed-case strings.",
+            ),
+        ]);
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Analise a helper normalize com tools.".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        let CoddyResult::Text { text, .. } = result else {
+            panic!("expected text result");
+        };
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let fallback_request = captured_requests
+            .get(3)
+            .expect("textual recovery fallback request");
+
+        assert_eq!(captured_requests.len(), 4);
+        assert!(fallback_request.tools.is_empty());
+        assert!(fallback_request.messages.iter().any(|message| message
+            .content
+            .contains("Coddy textual tool-call recovery fallback")));
+        assert!(text.contains("normalize"));
+        assert!(text.contains("mixed-case"));
+        assert!(!text.contains("textual tool-call attempt"));
+        assert!(!text.contains("Tool 1"));
+        assert!(!text.contains("Call 1 of 8"));
+    }
+
+    #[test]
     fn ask_command_returns_tool_evidence_when_textual_recovery_provider_fails() {
         let request_id = Uuid::new_v4();
         let workspace = TempWorkspace::new();
@@ -7329,6 +8253,19 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
         assert!(text.contains("Analise parcial"));
         assert!(text.contains("demo"));
         assert!(!text.contains("vou agora ler"));
+    }
+
+    #[test]
+    fn action_promise_detector_catches_portuguese_remaining_tool_reads() {
+        assert!(looks_like_unexecuted_tool_action_promise(
+            "Estou com 4 chamadas de tool restantes. Vou priorizar leituras de alta evidência: entrypoints, módulos de segurança e testes. Primeiro, vou ler o entrypoint principal."
+        ));
+        assert!(looks_like_unexecuted_tool_action_promise(
+            "Tenho 4 tool calls restantes. Vou priorizar as leituras de maior sinal para segurança: entrypoints, módulos ofensivos, API e testes."
+        ));
+        assert!(looks_like_unexecuted_tool_action_promise(
+            "Vou continuar a exploração com 3 chamadas focadas para maximizar o entendimento da arquitetura, módulos principais e fluxo de execução."
+        ));
     }
 
     #[test]

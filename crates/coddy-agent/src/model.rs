@@ -10,6 +10,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 const DEFAULT_OPENAI_COMPATIBLE_TIMEOUT: Duration = Duration::from_secs(120);
+const OPENROUTER_OPENAI_COMPATIBLE_TIMEOUT: Duration = Duration::from_secs(300);
 const NVIDIA_OPENAI_COMPATIBLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -464,7 +465,9 @@ impl OpenAiCompatibleChatModelClient {
         Self::new(
             "openrouter",
             "https://openrouter.ai/api/v1",
-            Arc::new(HttpOpenAiCompatibleTransport::new()),
+            Arc::new(HttpOpenAiCompatibleTransport::with_timeout(
+                OPENROUTER_OPENAI_COMPATIBLE_TIMEOUT,
+            )),
         )
     }
 
@@ -1291,17 +1294,26 @@ pub fn decode_provider_safe_tool_name(name: &str) -> String {
     for namespace in ["filesystem", "subagent", "shell"] {
         if let Some(method) = alias.strip_prefix(&format!("{namespace}._")) {
             if !method.is_empty() {
-                return format!("{namespace}.{}", camel_or_kebab_to_snake(method));
+                return format!(
+                    "{namespace}.{}",
+                    camel_or_kebab_to_snake(strip_legacy_dot_method_prefix(method))
+                );
             }
         }
         if let Some(method) = alias.strip_prefix(&format!("{namespace}.")) {
             if !method.is_empty() {
-                return format!("{namespace}.{}", camel_or_kebab_to_snake(method));
+                return format!(
+                    "{namespace}.{}",
+                    camel_or_kebab_to_snake(strip_legacy_dot_method_prefix(method))
+                );
             }
         }
         if let Some(method) = alias.strip_prefix(&format!("{namespace}_")) {
             if !method.is_empty() {
-                return format!("{namespace}.{}", camel_or_kebab_to_snake(method));
+                return format!(
+                    "{namespace}.{}",
+                    camel_or_kebab_to_snake(strip_legacy_dot_method_prefix(method))
+                );
             }
         }
     }
@@ -1313,11 +1325,18 @@ fn normalize_provider_tool_method_alias(name: &str) -> String {
     for namespace in ["filesystem", "subagent", "shell"] {
         if let Some(method) = name.strip_prefix(&format!("{namespace}.")) {
             if !method.is_empty() {
-                return format!("{namespace}.{}", camel_or_kebab_to_snake(method));
+                return format!(
+                    "{namespace}.{}",
+                    camel_or_kebab_to_snake(strip_legacy_dot_method_prefix(method))
+                );
             }
         }
     }
     name.to_string()
+}
+
+fn strip_legacy_dot_method_prefix(method: &str) -> &str {
+    method.strip_prefix("dot_").unwrap_or(method)
 }
 
 fn camel_or_kebab_to_snake(method: &str) -> String {
@@ -3106,6 +3125,15 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_openai_compatible_timeout_is_extended_for_agentic_followups() {
+        let transport =
+            HttpOpenAiCompatibleTransport::with_timeout(OPENROUTER_OPENAI_COMPATIBLE_TIMEOUT);
+
+        assert!(OPENROUTER_OPENAI_COMPATIBLE_TIMEOUT > DEFAULT_OPENAI_COMPATIBLE_TIMEOUT);
+        assert_eq!(transport.timeout, Duration::from_secs(300));
+    }
+
+    #[test]
     fn openai_compatible_client_requires_provider_credential() {
         let client = OpenAiCompatibleChatModelClient::openai();
         let request = ChatRequest::new(
@@ -3196,6 +3224,10 @@ mod tests {
         assert_eq!(
             decode_provider_safe_tool_name("filesystem.dot.search_files"),
             "filesystem.search_files"
+        );
+        assert_eq!(
+            decode_provider_safe_tool_name("filesystem.dot_read_file"),
+            "filesystem.read_file"
         );
         assert_eq!(
             decode_provider_safe_tool_name("filesystem_read_file"),
