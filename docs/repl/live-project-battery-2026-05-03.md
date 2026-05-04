@@ -306,3 +306,80 @@ Latest focused measured results:
 - SWE-bench official preflight remains blocked on this machine:
   Docker socket access is denied for the current process and the cache-backed
   filesystem has about 32 GB free versus the 120 GB threshold.
+
+### 2026-05-04 expanded live hardening
+
+Additional live prompts used OpenRouter with `deepseek/deepseek-v4-flash`
+against the local workspaces `apex`, `Guardian`, `maker`, `visionclip` and
+`coddy`. Provider credentials were loaded from the local environment and only
+redacted credential metadata appeared in logs.
+
+New issues reproduced:
+
+1. Some models emitted JSON pseudo-tools with a top-level `"calls"` array.
+   - Fix: runtime and live harness now detect `{"calls":[{"name":
+     "filesystem.*","args":...}]}` as unsafe textual tool markup.
+2. Some models emitted `Request: filesystem.read_file ...` lines after tool
+   observations instead of using native structured tool calls.
+   - Fix: textual tool-call guard and harness detection now cover
+     `Request: filesystem.*`, `Request: shell.run` and `Request: subagent.*`.
+3. Formal Portuguese and English action promises were not always recovered.
+   - Fix: action-promise detection now covers `inspecionarei`, `analisarei`,
+     `verificarei`, `mapearei`, `let me now inspect`, `I'll now inspect`, and
+     agentic/security object terms such as policies, subagents, orchestration,
+     components and ML/math references.
+4. Long agentic follow-ups could still time out after many successful tool
+   calls, even with individual tool-output compaction.
+   - Fix: Coddy now compacts at three levels before provider follow-ups:
+     individual tool output, per-round tool observations and accumulated tool
+     messages across rounds. The most recent evidence is preserved first.
+5. The local Coddy client timeout could expire before the provider timeout.
+   - Fix: default client request timeout is now 420 seconds; live and patch
+     batteries inherit that value unless `CODDY_CLIENT_REQUEST_TIMEOUT_MS` is
+     explicitly set.
+6. Security-review grounding checks were over-triggered for scoped claims such
+   as “no direct evidence found in inspected files.”
+   - Fix: the guard still blocks absolute implementation absence claims made
+     without source inspection, but allows scoped no-direct-evidence language.
+
+Focused revalidation:
+
+```text
+/tmp/coddy-live-guardian-agentic-scorefix-20260504-011649
+/tmp/coddy-live-visionclip-agentic-contextfix-20260504-014806
+/tmp/coddy-live-coddy-security-groundingfix-20260504-015245
+```
+
+Measured focused results:
+
+- `Guardian/agentic_coding_quality`: score 96, provider errors 0, tool failures
+  0, pseudo-tool markup 0, secret hits 0.
+- `visionclip/agentic_coding_quality`: reproduced provider timeout at score 31
+  before accumulated compaction; after the fix, score 96, provider errors 0,
+  tool failures 0, pseudo-tool markup 0, secret hits 0.
+- `coddy/code_review_security`: grounding-check false positive removed; focused
+  rerun score 92, provider errors 0, tool failures 0, pseudo-tool markup 0,
+  secret hits 0.
+
+Intermediate five-project matrix before the final focused fixes:
+
+```text
+/tmp/coddy-live-five-projects-agentic-security-20260504-011822
+```
+
+Summary:
+
+- Prompts: 10.
+- CLI completions: 10/10.
+- Agent completed: 9/10 before accumulated compaction, with the remaining
+  failure isolated to `visionclip/agentic_coding_quality`.
+- Tool calls: 100.
+- Secret hits: 0.
+- Pseudo-tool markup: 0.
+- Provider errors: 1 before accumulated compaction; 0 on the focused
+  `visionclip` rerun.
+- Average score before final focused fixes: 80.7.
+
+This remains live provider sampling, not an official benchmark score. Official
+SWE-bench remains blocked by Docker socket permissions and the configured disk
+threshold on this machine.
