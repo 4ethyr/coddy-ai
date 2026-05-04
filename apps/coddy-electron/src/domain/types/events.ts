@@ -25,6 +25,20 @@ export type ReplIntent =
 
 export type ToolStatus = 'Succeeded' | 'Failed' | 'Cancelled' | 'Denied'
 
+export interface ToolExecutionRecord {
+  tool_name: string
+  call_id: string
+  status: ToolStatus
+  started_at_unix_ms: number
+  completed_at_unix_ms: number
+  duration_ms: number
+  output_chars: number
+  truncated: boolean
+  error_code: string | null
+  retryable: boolean | null
+  metadata: unknown
+}
+
 export type AgentRunPhase =
   | 'Received'
   | 'Planning'
@@ -150,6 +164,7 @@ export type ReplEvent =
   | { MessageAppended: { message: ReplMessage } }
   | { ToolStarted: { name: string } }
   | { ToolCompleted: { name: string; status: ToolStatus } }
+  | { ToolExecutionRecorded: { record: ToolExecutionRecord } }
   | { SubagentRouted: { recommendations: SubagentRouteRecommendation[] } }
   | { SubagentHandoffPrepared: { handoff: SubagentHandoffPrepared } }
   | { SubagentLifecycleUpdated: { update: SubagentLifecycleUpdate } }

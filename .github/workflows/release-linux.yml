@@ -20,11 +20,13 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: apps/coddy-electron/package-lock.json
 
@@ -50,12 +52,20 @@ jobs:
           ./scripts/guard_no_secrets.sh
           ./scripts/test_guard_no_secrets.sh
 
+      - name: Check Rust formatting
+        run: cargo fmt --check
+
+      - name: Lint Rust workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
       - name: Test Rust workspace
-        run: cargo test -p coddy -p coddy-agent -p coddy-runtime -p coddy-ipc
+        run: cargo test --workspace
 
       - name: Test Electron frontend
         working-directory: apps/coddy-electron
         run: |
+          npm audit --audit-level=high
+          npm run lint
           npm test
           npm run test:e2e
           npm run typecheck

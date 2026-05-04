@@ -25,6 +25,23 @@ describe('childProcessJson', () => {
     await expect(result).resolves.toEqual({ text: 'hello' })
   })
 
+  it('redacts provider credentials from non-zero child stderr', async () => {
+    const child = fakeChild()
+    const result = readJson(child)
+
+    child.stderr?.emit(
+      'data',
+      Buffer.from(
+        'provider failed with Authorization: Bearer sk-live-secret and {"token":"openrouter-secret"}',
+      ),
+    )
+    child.emit('close', 1)
+
+    await expect(result).rejects.toThrow('Bearer [REDACTED]')
+    await expect(result).rejects.not.toThrow('sk-live-secret')
+    await expect(result).rejects.not.toThrow('openrouter-secret')
+  })
+
   it('terminates a child process when JSON reading times out', async () => {
     vi.useFakeTimers()
     const child = fakeChild()

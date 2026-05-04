@@ -1,12 +1,27 @@
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{self, Write},
+    path::Path,
+};
+
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+
+use serde_json::Value;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-use crate::{ReplEvent, ReplEventEnvelope, ReplEventLog, ReplSession, ReplSessionSnapshot};
+use crate::{
+    redact_conversation_text, ReplEvent, ReplEventEnvelope, ReplEventLog, ReplSession,
+    ReplSessionSnapshot,
+};
 
 #[derive(Debug)]
 pub struct ReplEventBroker {
     log: ReplEventLog,
     sender: broadcast::Sender<ReplEventEnvelope>,
+    audit_log: Option<ReplEventAuditLog>,
+    audit_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -15,13 +30,40 @@ pub struct ReplEventSubscription {
     receiver: broadcast::Receiver<ReplEventEnvelope>,
 }
 
+#[derive(Debug)]
+struct ReplEventAuditLog {
+    file: File,
+}
+
 impl ReplEventBroker {
     pub fn new(session_id: Uuid, capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(capacity.max(1));
         Self {
             log: ReplEventLog::new(session_id),
             sender,
+            audit_log: None,
+            audit_error: None,
         }
+    }
+
+    pub fn new_with_audit_path(
+        session_id: Uuid,
+        capacity: usize,
+        path: impl AsRef<Path>,
+    ) -> io::Result<Self> {
+        let mut broker = Self::new(session_id, capacity);
+        broker.enable_audit_path(path)?;
+        Ok(broker)
+    }
+
+    pub fn enable_audit_path(&mut self, path: impl AsRef<Path>) -> io::Result<()> {
+        let mut audit_log = ReplEventAuditLog::open(path)?;
+        for envelope in self.log.events_after(0) {
+            audit_log.append(&envelope)?;
+        }
+        self.audit_log = Some(audit_log);
+        self.audit_error = None;
+        Ok(())
     }
 
     pub fn publish(
@@ -31,6 +73,7 @@ impl ReplEventBroker {
         captured_at_unix_ms: u64,
     ) -> ReplEventEnvelope {
         let envelope = self.log.append(event, run_id, captured_at_unix_ms);
+        self.append_audit_event(&envelope);
         let _ = self.sender.send(envelope.clone());
         envelope
     }
@@ -74,6 +117,18 @@ impl ReplEventBroker {
     pub fn log(&self) -> &ReplEventLog {
         &self.log
     }
+
+    pub fn last_audit_error(&self) -> Option<&str> {
+        self.audit_error.as_deref()
+    }
+
+    fn append_audit_event(&mut self, envelope: &ReplEventEnvelope) {
+        if let Some(audit_log) = &mut self.audit_log {
+            if let Err(error) = audit_log.append(envelope) {
+                self.audit_error = Some(error.to_string());
+            }
+        }
+    }
 }
 
 impl ReplEventSubscription {
@@ -92,9 +147,57 @@ impl ReplEventSubscription {
     }
 }
 
+impl ReplEventAuditLog {
+    fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            options.mode(0o600);
+        }
+
+        Ok(Self {
+            file: options.open(path)?,
+        })
+    }
+
+    fn append(&mut self, envelope: &ReplEventEnvelope) -> io::Result<()> {
+        let mut value = serde_json::to_value(envelope).map_err(io::Error::other)?;
+        redact_json_strings(&mut value);
+        serde_json::to_writer(&mut self.file, &value).map_err(io::Error::other)?;
+        self.file.write_all(b"\n")?;
+        self.file.flush()
+    }
+}
+
+fn redact_json_strings(value: &mut Value) {
+    match value {
+        Value::String(text) => {
+            *text = redact_conversation_text(text);
+        }
+        Value::Array(items) => {
+            for item in items {
+                redact_json_strings(item);
+            }
+        }
+        Value::Object(fields) => {
+            for value in fields.values_mut() {
+                redact_json_strings(value);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ReplMessage, ToolStatus};
 
     #[tokio::test]
     async fn subscription_replays_history_before_live_events() {
@@ -173,5 +276,43 @@ mod tests {
 
         assert_eq!(event.sequence, 1);
         assert!(matches!(event.event, ReplEvent::VoiceListeningStarted));
+    }
+
+    #[test]
+    fn audit_log_persists_redacted_jsonl_events() {
+        let session_id = Uuid::new_v4();
+        let path = std::env::temp_dir().join(format!("coddy-audit-{session_id}.jsonl"));
+        let mut broker =
+            ReplEventBroker::new_with_audit_path(session_id, 16, &path).expect("audit broker");
+
+        broker.publish(
+            ReplEvent::MessageAppended {
+                message: ReplMessage {
+                    id: Uuid::new_v4(),
+                    role: "user".to_string(),
+                    text: "Use OPENAI_API_KEY=sk-live-secret".to_string(),
+                },
+            },
+            None,
+            10,
+        );
+        broker.publish(
+            ReplEvent::ToolCompleted {
+                name: "shell.run".to_string(),
+                status: ToolStatus::Succeeded,
+            },
+            None,
+            11,
+        );
+
+        let raw = fs::read_to_string(&path).expect("audit log");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(raw.lines().count(), 2);
+        assert!(!raw.contains("sk-live-secret"));
+        assert!(raw.contains("[redacted]"));
+        assert!(raw.contains("\"sequence\":1"));
+        assert!(raw.contains("\"ToolCompleted\""));
+        assert!(broker.last_audit_error().is_none());
     }
 }

@@ -1,5 +1,6 @@
 import { spawn, ChildProcess } from 'child_process'
 import { resolveCoddyBinaryPath } from './coddyBinary'
+import { buildCoddySpawnEnv } from './coddySpawnEnv'
 import { redactSensitiveLogText } from './sensitiveLogRedaction'
 
 export type RuntimeSpawnPlan = {
@@ -21,16 +22,16 @@ let runtimeProcess: ChildProcess | null = null
 export function coddyRuntimeSpawnPlan(
   options: CoddyRuntimeProcessOptions,
 ): RuntimeSpawnPlan {
-  const env = options.env ?? process.env
+  const sourceEnv = options.env ?? process.env
   return {
     command: resolveCoddyBinaryPath({
       appPath: options.appPath,
-      env,
+      env: sourceEnv,
       exists: options.exists,
       resourcesPath: options.resourcesPath,
     }),
     args: ['runtime', 'serve'],
-    env,
+    env: buildCoddySpawnEnv(sourceEnv, {}, {}),
   }
 }
 

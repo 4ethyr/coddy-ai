@@ -403,6 +403,8 @@ impl Default for SubagentRegistry {
                     ],
                     &[
                         "test",
+                        "tests",
+                        "testing",
                         "fixture",
                         "coverage",
                         "edge case",
@@ -653,7 +655,8 @@ impl SubagentRegistry {
         if contains_any_term(
             &normalized_goal,
             &[
-                "test", "teste", "testar", "tdd", "coverage", "bateria", "prompt",
+                "test", "tests", "testing", "teste", "testar", "tdd", "coverage", "bateria",
+                "prompt",
             ],
         ) {
             push_team_name(&mut names, "test-writer");
@@ -1238,6 +1241,27 @@ mod tests {
             .matched_signals
             .iter()
             .any(|signal| signal == "harness"));
+    }
+
+    #[test]
+    fn routes_plural_tests_to_test_writer() {
+        let registry = SubagentRegistry::default();
+
+        let plan = registry
+            .plan_team(
+                "implement memory feature with tests and benchmark metrics",
+                8,
+            )
+            .expect("team plan");
+        let names = plan
+            .members
+            .iter()
+            .map(|member| member.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"coder"));
+        assert!(names.contains(&"test-writer"));
+        assert!(names.contains(&"eval-runner"));
     }
 
     #[test]

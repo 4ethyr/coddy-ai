@@ -13,7 +13,9 @@ apps/*/dist/
 apps/*/release/
 prints/
 texts/
-.agent/
+.agent/*
+!.agent/
+!.agent/*.md
 AGENT.md
 coddy-architecture-diagram.html
 .env

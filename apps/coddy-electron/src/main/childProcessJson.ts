@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'child_process'
+import { redactSensitiveLogText } from './sensitiveLogRedaction'
 
 const CHILD_KILL_GRACE_MS = 1_500
 
@@ -16,7 +17,7 @@ export async function readJson(child: ChildProcess): Promise<unknown> {
 
     child.on('close', (code) => {
       if (code !== 0) {
-        const detail = stderr.trim()
+        const detail = redactSensitiveLogText(stderr.trim())
         reject(
           new Error(
             detail

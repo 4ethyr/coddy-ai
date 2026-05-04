@@ -7,8 +7,10 @@ use crate::config::CoddyRuntimeConfig;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use coddy_agent::{
-    default_prompt_battery_cases, run_default_grounded_response_eval, run_default_prompt_battery,
-    run_live_prompt_battery_cases, DefaultChatModelClient, GroundedResponseReport,
+    default_prompt_battery_cases, run_default_capability_benchmark, run_default_deep_context_eval,
+    run_default_fixture_benchmark, run_default_fixture_smoke, run_default_grounded_response_eval,
+    run_default_prompt_battery, run_live_prompt_battery_cases, CapabilityBenchmarkReport,
+    DeepContextEvalReport, DefaultChatModelClient, FixtureBenchmarkReport, GroundedResponseReport,
     MultiagentEvalCase, MultiagentEvalRunner, MultiagentEvalSuiteReport, PromptBatteryReport,
 };
 use coddy_client::{CoddyClient, CoddyClientOptions};
@@ -27,6 +29,7 @@ use std::{
     io::{self, ErrorKind, Write},
     path::{Path, PathBuf},
     process::{Command as StdCommand, Stdio},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::net::UnixListener;
 use tokio::process::Command as TokioCommand;
@@ -296,6 +299,34 @@ enum EvalCommand {
         #[arg(long, default_value_t = false)]
         json: bool,
     },
+    CapabilityBenchmark {
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    DeepContext {
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    FixtureBenchmark {
+        #[arg(long, default_value_t = false)]
+        json: bool,
+
+        #[arg(long)]
+        write_report: Option<PathBuf>,
+
+        #[arg(long)]
+        run_id: Option<String>,
+    },
+    FixtureSmoke {
+        #[arg(long, default_value_t = false)]
+        json: bool,
+
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+
+        #[arg(long)]
+        run_id: Option<String>,
+    },
     Multiagent {
         #[arg(long)]
         baseline: Option<PathBuf>,
@@ -521,6 +552,28 @@ async fn main() -> Result<()> {
         Some(Command::Eval {
             command: EvalCommand::Quality { json },
         }) => run_eval_quality(json),
+        Some(Command::Eval {
+            command: EvalCommand::CapabilityBenchmark { json },
+        }) => run_eval_capability_benchmark(json),
+        Some(Command::Eval {
+            command: EvalCommand::DeepContext { json },
+        }) => run_eval_deep_context(json),
+        Some(Command::Eval {
+            command:
+                EvalCommand::FixtureBenchmark {
+                    json,
+                    write_report,
+                    run_id,
+                },
+        }) => run_eval_fixture_benchmark(json, write_report, run_id),
+        Some(Command::Eval {
+            command:
+                EvalCommand::FixtureSmoke {
+                    json,
+                    workspace,
+                    run_id,
+                },
+        }) => run_eval_fixture_smoke(json, workspace, run_id),
         Some(Command::Eval {
             command:
                 EvalCommand::Multiagent {
@@ -937,6 +990,9 @@ struct QualityEvalReport {
     score: u8,
     multiagent: MultiagentEvalSuiteReport,
     prompt_battery: PromptBatteryReport,
+    capability_benchmark: CapabilityBenchmarkReport,
+    fixture_benchmark: FixtureBenchmarkReport,
+    deep_context: DeepContextEvalReport,
     grounded_response: GroundedResponseReport,
 }
 
@@ -944,14 +1000,23 @@ impl QualityEvalReport {
     fn new(
         multiagent: MultiagentEvalSuiteReport,
         prompt_battery: PromptBatteryReport,
+        capability_benchmark: CapabilityBenchmarkReport,
+        fixture_benchmark: FixtureBenchmarkReport,
+        deep_context: DeepContextEvalReport,
         grounded_response: GroundedResponseReport,
     ) -> Self {
         let score = multiagent
             .score
             .min(prompt_battery.score)
+            .min(capability_benchmark.score)
+            .min(fixture_benchmark.score)
+            .min(deep_context.score)
             .min(grounded_response.score);
         let status = if multiagent.is_success()
             && prompt_battery.is_success()
+            && capability_benchmark.is_success()
+            && fixture_benchmark.is_success()
+            && deep_context.is_success()
             && grounded_response.is_success()
             && score == 100
         {
@@ -965,6 +1030,9 @@ impl QualityEvalReport {
             score,
             multiagent,
             prompt_battery,
+            capability_benchmark,
+            fixture_benchmark,
+            deep_context,
             grounded_response,
         }
     }
@@ -997,6 +1065,30 @@ impl QualityEvalReport {
                     "failed": self.prompt_battery.failed,
                 },
                 {
+                    "name": "capability-benchmark",
+                    "status": quality_check_status_label(self.capability_benchmark.is_success(), self.capability_benchmark.score),
+                    "score": self.capability_benchmark.score,
+                    "caseCount": self.capability_benchmark.case_count,
+                    "passed": self.capability_benchmark.passed,
+                    "failed": self.capability_benchmark.failed,
+                },
+                {
+                    "name": "fixture-benchmark",
+                    "status": quality_check_status_label(self.fixture_benchmark.is_success(), self.fixture_benchmark.score),
+                    "score": self.fixture_benchmark.score,
+                    "caseCount": self.fixture_benchmark.case_count,
+                    "passed": self.fixture_benchmark.passed,
+                    "failed": self.fixture_benchmark.failed,
+                },
+                {
+                    "name": "deep-context",
+                    "status": quality_check_status_label(self.deep_context.is_success(), self.deep_context.score),
+                    "score": self.deep_context.score,
+                    "caseCount": self.deep_context.case_count,
+                    "passed": self.deep_context.passed,
+                    "failed": self.deep_context.failed,
+                },
+                {
                     "name": "grounded-response",
                     "status": quality_check_status_label(self.grounded_response.is_success(), self.grounded_response.score),
                     "score": self.grounded_response.score,
@@ -1007,6 +1099,9 @@ impl QualityEvalReport {
             ],
             "multiagent": self.multiagent.public_metadata(),
             "promptBattery": self.prompt_battery.public_metadata(),
+            "capabilityBenchmark": self.capability_benchmark.public_metadata(),
+            "fixtureBenchmark": self.fixture_benchmark.public_metadata(),
+            "deepContext": self.deep_context.public_metadata(),
             "groundedResponse": self.grounded_response.public_metadata(),
         })
     }
@@ -1040,6 +1135,32 @@ fn run_eval_quality(json: bool) -> Result<()> {
         report.prompt_battery.failed
     );
     println!(
+        "- Capability benchmark: score {} | cases {} | capabilities {} | passed {} | failed {}",
+        report.capability_benchmark.score,
+        report.capability_benchmark.case_count,
+        report.capability_benchmark.capability_count,
+        report.capability_benchmark.passed,
+        report.capability_benchmark.failed
+    );
+    println!(
+        "- Fixture benchmark: score {} | cases {} | commands {} | expected files {} | security assertions {} | passed {} | failed {}",
+        report.fixture_benchmark.score,
+        report.fixture_benchmark.case_count,
+        report.fixture_benchmark.command_count,
+        report.fixture_benchmark.expected_file_count,
+        report.fixture_benchmark.security_assertion_count,
+        report.fixture_benchmark.passed,
+        report.fixture_benchmark.failed
+    );
+    println!(
+        "- Deep context: score {} | cases {} | context bytes {} | passed {} | failed {}",
+        report.deep_context.score,
+        report.deep_context.case_count,
+        report.deep_context.context_bytes,
+        report.deep_context.passed,
+        report.deep_context.failed
+    );
+    println!(
         "- Grounded response: score {} | cases {} | passed {} | failed {}",
         report.grounded_response.score,
         report.grounded_response.case_count,
@@ -1047,6 +1168,215 @@ fn run_eval_quality(json: bool) -> Result<()> {
         report.grounded_response.failed
     );
     Ok(())
+}
+
+fn run_eval_capability_benchmark(json: bool) -> Result<()> {
+    let report = run_default_capability_benchmark();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report.public_metadata())?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "Capability benchmark: score {} | cases {} | capabilities {} | benchmark families {} | stacks {} | passed {} | failed {}",
+        report.score,
+        report.case_count,
+        report.capability_count,
+        report.benchmark_family_count,
+        report.stack_count,
+        report.passed,
+        report.failed
+    );
+    for case in &report.reports {
+        println!(
+            "- {}: {} ({})",
+            case.id,
+            eval_status_label(&case.status),
+            case.score
+        );
+        for failure in &case.failures {
+            println!("  failure: {failure}");
+        }
+    }
+    Ok(())
+}
+
+fn run_eval_deep_context(json: bool) -> Result<()> {
+    let report = run_default_deep_context_eval();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report.public_metadata())?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "Deep context eval: score {} | cases {} | categories {} | context bytes {} | passed {} | failed {}",
+        report.score,
+        report.case_count,
+        report.category_count,
+        report.context_bytes,
+        report.passed,
+        report.failed
+    );
+    println!(
+        "Coverage: rag {} | memory {} | tools {} | subagents {} | coding {} | injection {}",
+        report.rag_case_count,
+        report.memory_case_count,
+        report.tool_case_count,
+        report.subagent_case_count,
+        report.coding_case_count,
+        report.injection_case_count
+    );
+    for case in &report.reports {
+        println!(
+            "- {}: {} ({}) | {} bytes",
+            case.id,
+            eval_status_label(&case.status),
+            case.score,
+            case.context_bytes
+        );
+        for failure in &case.failures {
+            println!("  failure: {failure}");
+        }
+    }
+    Ok(())
+}
+
+fn run_eval_fixture_benchmark(
+    json: bool,
+    write_report: Option<PathBuf>,
+    run_id: Option<String>,
+) -> Result<()> {
+    let report = run_default_fixture_benchmark();
+    let run_id = run_id.unwrap_or_else(default_eval_run_id);
+
+    if let Some(path) = write_report.as_ref() {
+        report.write_jsonl_report(path, &run_id)?;
+    }
+
+    if json {
+        let mut output = report.public_metadata();
+        output["runId"] = serde_json::json!(run_id);
+        if let Some(path) = write_report.as_ref() {
+            output["reportWritten"] = serde_json::json!(path.display().to_string());
+        }
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
+    println!(
+        "Fixture benchmark: score {} | cases {} | benchmark families {} | stacks {} | commands {} | expected files {} | security assertions {} | passed {} | failed {}",
+        report.score,
+        report.case_count,
+        report.benchmark_family_count,
+        report.stack_count,
+        report.command_count,
+        report.expected_file_count,
+        report.security_assertion_count,
+        report.passed,
+        report.failed
+    );
+    println!("Run id: {run_id}");
+    if let Some(path) = write_report {
+        println!("JSONL report written: {}", path.display());
+    }
+    for case in &report.reports {
+        println!(
+            "- {}: {} ({})",
+            case.id,
+            eval_status_label(&case.status),
+            case.score
+        );
+        for failure in &case.failures {
+            println!("  failure: {failure}");
+        }
+    }
+    Ok(())
+}
+
+fn run_eval_fixture_smoke(
+    json: bool,
+    workspace: Option<PathBuf>,
+    run_id: Option<String>,
+) -> Result<()> {
+    let run_id = run_id.unwrap_or_else(default_eval_run_id);
+    let workspace = workspace.unwrap_or_else(|| {
+        PathBuf::from("target")
+            .join("coddy-fixture-smoke")
+            .join(sanitize_eval_run_id_path_segment(&run_id))
+    });
+    let report = run_default_fixture_smoke(&workspace)?;
+
+    if json {
+        let mut output = report.public_metadata();
+        output["runId"] = serde_json::json!(run_id);
+        output["workspace"] = serde_json::json!(workspace.display().to_string());
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
+    println!(
+        "Fixture smoke: score {} | cases {} | materialized files {} | verifiers {} | passed {} | failed {}",
+        report.score,
+        report.case_count,
+        report.materialized_file_count,
+        report.verifier_count,
+        report.passed,
+        report.failed
+    );
+    println!("Run id: {run_id}");
+    println!("Workspace: {}", workspace.display());
+    if !report.tag_coverage.is_empty() {
+        println!("Tag coverage:");
+        for (tag, count) in &report.tag_coverage {
+            println!("- {tag}: {count}");
+        }
+    }
+    for case in &report.reports {
+        println!(
+            "- {}: {} ({})",
+            case.id,
+            eval_status_label(&case.status),
+            case.score
+        );
+        for failure in &case.failures {
+            println!("  failure: {failure}");
+        }
+    }
+    Ok(())
+}
+
+fn default_eval_run_id() -> String {
+    let unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    format!("fixture-benchmark-{unix_ms}")
+}
+
+fn sanitize_eval_run_id_path_segment(run_id: &str) -> String {
+    let sanitized = run_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "unspecified".to_string()
+    } else {
+        sanitized
+    }
 }
 
 fn run_eval_multiagent(
@@ -1441,6 +1771,9 @@ fn default_quality_eval_report() -> QualityEvalReport {
     QualityEvalReport::new(
         default_multiagent_eval_suite(),
         run_default_prompt_battery(),
+        run_default_capability_benchmark(),
+        run_default_fixture_benchmark(),
+        run_default_deep_context_eval(),
         run_default_grounded_response_eval(),
     )
 }
@@ -1483,8 +1816,12 @@ async fn run_runtime_serve(config: &CoddyRuntimeConfig, socket: Option<PathBuf>)
             socket_path.display()
         )
     })?;
-    let runtime = coddy_runtime::CoddyRuntime::default()
-        .with_conversation_history_path(CoddyRuntimeConfig::conversation_history_path()?);
+    let runtime = coddy_runtime::CoddyRuntime::with_shell_config(
+        coddy_agent::AgentToolRegistry::default(),
+        config.shell_execution_config()?,
+    )
+    .with_conversation_history_path(CoddyRuntimeConfig::conversation_history_path()?)
+    .with_event_audit_path(CoddyRuntimeConfig::event_audit_log_path()?)?;
 
     info!(socket = %socket_path.display(), "serving local Coddy runtime");
     runtime.serve_unix_listener(listener).await?;
@@ -1914,6 +2251,12 @@ mod tests {
         assert_eq!(report.multiagent.failed, 0);
         assert_eq!(report.prompt_battery.prompt_count, 1200);
         assert_eq!(report.prompt_battery.failed, 0);
+        assert_eq!(report.capability_benchmark.case_count, 12);
+        assert_eq!(report.capability_benchmark.failed, 0);
+        assert_eq!(report.fixture_benchmark.case_count, 6);
+        assert_eq!(report.fixture_benchmark.failed, 0);
+        assert_eq!(report.deep_context.case_count, 6);
+        assert_eq!(report.deep_context.failed, 0);
         assert_eq!(report.grounded_response.case_count, 3);
         assert_eq!(report.grounded_response.failed, 0);
 
@@ -1933,12 +2276,127 @@ mod tests {
         );
         assert_eq!(
             metadata["checks"][2]["name"],
+            serde_json::json!("capability-benchmark")
+        );
+        assert_eq!(
+            metadata["checks"][3]["name"],
+            serde_json::json!("fixture-benchmark")
+        );
+        assert_eq!(
+            metadata["checks"][4]["name"],
+            serde_json::json!("deep-context")
+        );
+        assert_eq!(
+            metadata["checks"][5]["name"],
             serde_json::json!("grounded-response")
+        );
+        assert_eq!(metadata["deepContext"]["score"], serde_json::json!(100));
+        assert_eq!(
+            metadata["fixtureBenchmark"]["score"],
+            serde_json::json!(100)
+        );
+        assert_eq!(
+            metadata["capabilityBenchmark"]["score"],
+            serde_json::json!(100)
         );
         assert_eq!(
             metadata["groundedResponse"]["score"],
             serde_json::json!(100)
         );
+    }
+
+    #[test]
+    fn parses_eval_capability_benchmark_command() {
+        let cli = Cli::try_parse_from(["coddy", "eval", "capability-benchmark", "--json"])
+            .expect("parse capability benchmark");
+
+        match cli.command {
+            Some(Command::Eval {
+                command: EvalCommand::CapabilityBenchmark { json },
+            }) => assert!(json),
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_eval_deep_context_command() {
+        let cli = Cli::try_parse_from(["coddy", "eval", "deep-context", "--json"])
+            .expect("parse deep context");
+
+        match cli.command {
+            Some(Command::Eval {
+                command: EvalCommand::DeepContext { json },
+            }) => assert!(json),
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_eval_fixture_benchmark_command() {
+        let cli = Cli::try_parse_from([
+            "coddy",
+            "eval",
+            "fixture-benchmark",
+            "--json",
+            "--write-report",
+            "evals/reports/fixture.jsonl",
+            "--run-id",
+            "run-fixture-1",
+        ])
+        .expect("parse fixture benchmark");
+
+        match cli.command {
+            Some(Command::Eval {
+                command:
+                    EvalCommand::FixtureBenchmark {
+                        json,
+                        write_report,
+                        run_id,
+                    },
+            }) => {
+                assert!(json);
+                assert_eq!(
+                    write_report,
+                    Some(PathBuf::from("evals/reports/fixture.jsonl"))
+                );
+                assert_eq!(run_id, Some("run-fixture-1".to_string()));
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+
+    #[test]
+    fn parses_eval_fixture_smoke_command() {
+        let cli = Cli::try_parse_from([
+            "coddy",
+            "eval",
+            "fixture-smoke",
+            "--json",
+            "--workspace",
+            "target/coddy-fixture-smoke/test-run",
+            "--run-id",
+            "fixture-smoke-test",
+        ])
+        .expect("parse fixture smoke");
+
+        match cli.command {
+            Some(Command::Eval {
+                command:
+                    EvalCommand::FixtureSmoke {
+                        json,
+                        workspace,
+                        run_id,
+                    },
+            }) => {
+                assert!(json);
+                assert_eq!(
+                    workspace,
+                    Some(PathBuf::from("target/coddy-fixture-smoke/test-run"))
+                );
+                assert_eq!(run_id, Some("fixture-smoke-test".to_string()));
+            }
+            _ => panic!("unexpected command"),
+        }
     }
 
     #[test]

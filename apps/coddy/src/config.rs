@@ -1,13 +1,18 @@
 use anyhow::{Context, Result};
+use coddy_agent::{ShellExecutionConfig, ShellSandboxPolicy};
 use coddy_voice_input::VoiceInputConfig;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::{env, ffi::OsString, fs, path::PathBuf};
 
+const CODDY_SHELL_SANDBOX_POLICY_ENV: &str = "CODDY_SHELL_SANDBOX_POLICY";
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CoddyRuntimeConfig {
     #[serde(default)]
     pub general: CoddyGeneralConfig,
+    #[serde(default)]
+    pub security: CoddySecurityConfig,
     #[serde(default)]
     pub voice: VoiceInputConfig,
 }
@@ -16,6 +21,20 @@ pub struct CoddyRuntimeConfig {
 pub struct CoddyGeneralConfig {
     #[serde(default = "default_log_level")]
     pub log_level: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CoddySecurityConfig {
+    #[serde(default)]
+    pub shell_sandbox_policy: CoddyShellSandboxPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CoddyShellSandboxPolicy {
+    #[default]
+    Process,
+    RequireKernelIsolation,
 }
 
 impl CoddyRuntimeConfig {
@@ -60,6 +79,10 @@ impl CoddyRuntimeConfig {
         Ok(coddy_data_dir()?.join("conversation-history.json"))
     }
 
+    pub fn event_audit_log_path() -> Result<PathBuf> {
+        Ok(coddy_data_dir()?.join("event-audit.jsonl"))
+    }
+
     pub fn socket_path(&self) -> Result<PathBuf> {
         if let Some(path) = env::var_os("CODDY_DAEMON_SOCKET").map(PathBuf::from) {
             return Ok(path);
@@ -74,6 +97,25 @@ impl CoddyRuntimeConfig {
     pub fn log_level(&self) -> &str {
         self.general.log_level.as_str()
     }
+
+    pub fn shell_execution_config(&self) -> Result<ShellExecutionConfig> {
+        self.shell_execution_config_with_env(env::var_os(CODDY_SHELL_SANDBOX_POLICY_ENV))
+    }
+
+    fn shell_execution_config_with_env(
+        &self,
+        shell_sandbox_policy_env: Option<OsString>,
+    ) -> Result<ShellExecutionConfig> {
+        let sandbox_policy = match shell_sandbox_policy_env {
+            Some(value) => parse_shell_sandbox_policy_env(&value)?,
+            None => self.security.shell_sandbox_policy,
+        };
+
+        Ok(ShellExecutionConfig {
+            sandbox_policy: sandbox_policy.into(),
+            ..ShellExecutionConfig::default()
+        })
+    }
 }
 
 impl Default for CoddyGeneralConfig {
@@ -81,6 +123,30 @@ impl Default for CoddyGeneralConfig {
         Self {
             log_level: default_log_level(),
         }
+    }
+}
+
+impl From<CoddyShellSandboxPolicy> for ShellSandboxPolicy {
+    fn from(policy: CoddyShellSandboxPolicy) -> Self {
+        match policy {
+            CoddyShellSandboxPolicy::Process => ShellSandboxPolicy::Process,
+            CoddyShellSandboxPolicy::RequireKernelIsolation => {
+                ShellSandboxPolicy::RequireKernelIsolation
+            }
+        }
+    }
+}
+
+fn parse_shell_sandbox_policy_env(value: &OsString) -> Result<CoddyShellSandboxPolicy> {
+    let value = value
+        .to_str()
+        .context("CODDY_SHELL_SANDBOX_POLICY must be valid UTF-8")?;
+    match value {
+        "process" => Ok(CoddyShellSandboxPolicy::Process),
+        "require-kernel-isolation" => Ok(CoddyShellSandboxPolicy::RequireKernelIsolation),
+        other => anyhow::bail!(
+            "invalid CODDY_SHELL_SANDBOX_POLICY value {other:?}; expected \"process\" or \"require-kernel-isolation\""
+        ),
     }
 }
 
@@ -168,6 +234,57 @@ mod tests {
     }
 
     #[test]
+    fn parses_security_shell_sandbox_policy_from_toml() {
+        let config = CoddyRuntimeConfig::from_toml(
+            r#"
+            [security]
+            shell_sandbox_policy = "require-kernel-isolation"
+            "#,
+        )
+        .expect("parse config");
+
+        assert_eq!(
+            config
+                .shell_execution_config_with_env(None)
+                .expect("shell config")
+                .sandbox_policy,
+            ShellSandboxPolicy::RequireKernelIsolation
+        );
+    }
+
+    #[test]
+    fn shell_sandbox_policy_env_overrides_toml_config() {
+        let config = CoddyRuntimeConfig::from_toml(
+            r#"
+            [security]
+            shell_sandbox_policy = "process"
+            "#,
+        )
+        .expect("parse config");
+
+        let shell_config = config
+            .shell_execution_config_with_env(Some(OsString::from("require-kernel-isolation")))
+            .expect("shell config");
+
+        assert_eq!(
+            shell_config.sandbox_policy,
+            ShellSandboxPolicy::RequireKernelIsolation
+        );
+    }
+
+    #[test]
+    fn invalid_shell_sandbox_policy_env_is_rejected() {
+        let config = CoddyRuntimeConfig::default();
+
+        let result = config.shell_execution_config_with_env(Some(OsString::from("strict")));
+
+        assert!(result
+            .expect_err("invalid env")
+            .to_string()
+            .contains("CODDY_SHELL_SANDBOX_POLICY"));
+    }
+
+    #[test]
     fn socket_path_uses_coddy_daemon_location() {
         let runtime_dir = unique_runtime_dir();
         let socket_path = socket_path_from_runtime_dir(runtime_dir.clone()).expect("socket path");
@@ -206,6 +323,15 @@ mod tests {
 
         assert!(rendered.contains("coddy"));
         assert!(rendered.ends_with("conversation-history.json"));
+    }
+
+    #[test]
+    fn event_audit_log_path_uses_coddy_data_location() {
+        let path = CoddyRuntimeConfig::event_audit_log_path().expect("audit path");
+        let rendered = path.to_string_lossy().to_ascii_lowercase();
+
+        assert!(rendered.contains("coddy"));
+        assert!(rendered.ends_with("event-audit.jsonl"));
     }
 
     fn unique_runtime_dir() -> PathBuf {

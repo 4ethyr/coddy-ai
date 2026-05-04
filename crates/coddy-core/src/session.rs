@@ -205,6 +205,7 @@ impl ReplSession {
             crate::ReplEvent::ToolCompleted { .. } => {
                 self.status = SessionStatus::Thinking;
             }
+            crate::ReplEvent::ToolExecutionRecorded { .. } => {}
             crate::ReplEvent::SubagentRouted { .. } => {
                 self.status = SessionStatus::Thinking;
             }

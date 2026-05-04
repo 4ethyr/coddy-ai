@@ -9,6 +9,10 @@ describe('buildCoddySpawnEnv', () => {
     const env = buildCoddySpawnEnv(
       {
         PATH: '/usr/bin',
+        HOME: '/home/user',
+        DISPLAY: ':0',
+        OPENAI_API_KEY: 'sk-should-not-cross-process-boundary',
+        RANDOM_DEBUG_FLAG: 'debug',
         CODDY_SKIP_DESKTOP_LAUNCH: '0',
       },
       { CODDY_WORKSPACE: '/home/user/project' },
@@ -16,10 +20,14 @@ describe('buildCoddySpawnEnv', () => {
     )
 
     expect(env.PATH).toBe('/usr/bin')
+    expect(env.HOME).toBe('/home/user')
+    expect(env.DISPLAY).toBe(':0')
     expect(env.CODDY_WORKSPACE).toBe('/home/user/project')
     expect(env.CODDY_EPHEMERAL_MODEL_CREDENTIAL).toBe(
       '{"provider":"openrouter"}',
     )
     expect(env[CODDY_SKIP_DESKTOP_LAUNCH_ENV]).toBe('1')
+    expect(env.OPENAI_API_KEY).toBeUndefined()
+    expect(env.RANDOM_DEBUG_FLAG).toBeUndefined()
   })
 })

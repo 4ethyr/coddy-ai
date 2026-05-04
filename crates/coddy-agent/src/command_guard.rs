@@ -222,26 +222,11 @@ fn classify_risk(normalized: &str) -> CommandRisk {
         return CommandRisk::High;
     }
 
-    if tokens.iter().any(|token| {
-        matches!(
-            token.as_str(),
-            "curl"
-                | "wget"
-                | "ssh"
-                | "scp"
-                | "rsync"
-                | "nc"
-                | "ncat"
-                | "telnet"
-                | "ftp"
-                | "sftp"
-                | "sh"
-                | "bash"
-                | "zsh"
-                | "fish"
-                | "dash"
-        )
-    }) {
+    if command_uses_network(normalized)
+        || tokens
+            .iter()
+            .any(|token| matches!(token.as_str(), "sh" | "bash" | "zsh" | "fish" | "dash"))
+    {
         return CommandRisk::High;
     }
 
@@ -357,6 +342,61 @@ fn shellish_tokens(command: &str) -> Vec<String> {
         .filter(|token| !token.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+pub fn command_uses_network(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    let tokens = shellish_tokens(&lower);
+
+    if tokens.iter().any(|token| {
+        matches!(
+            token.as_str(),
+            "curl"
+                | "wget"
+                | "ssh"
+                | "scp"
+                | "rsync"
+                | "nc"
+                | "ncat"
+                | "telnet"
+                | "ftp"
+                | "sftp"
+                | "npx"
+        )
+    }) {
+        return true;
+    }
+
+    tokens.windows(2).any(|window| {
+        matches!(
+            (window[0].as_str(), window[1].as_str()),
+            ("git", "clone")
+                | ("git", "fetch")
+                | ("git", "pull")
+                | ("git", "push")
+                | ("npm", "install")
+                | ("npm", "i")
+                | ("npm", "add")
+                | ("npm", "ci")
+                | ("npm", "update")
+                | ("pnpm", "install")
+                | ("pnpm", "i")
+                | ("pnpm", "add")
+                | ("pnpm", "update")
+                | ("yarn", "install")
+                | ("yarn", "add")
+                | ("yarn", "upgrade")
+                | ("cargo", "fetch")
+                | ("cargo", "install")
+                | ("cargo", "update")
+                | ("pip", "install")
+        )
+    }) || tokens.windows(3).any(|window| {
+        matches!(
+            (window[0].as_str(), window[1].as_str(), window[2].as_str()),
+            ("python", "-m", "pip") | ("python3", "-m", "pip")
+        )
+    })
 }
 
 fn has_network_pipe_to_shell(lower: &str) -> bool {
@@ -711,6 +751,34 @@ mod tests {
             assess("cargo fmt --check").decision,
             CommandDecision::AllowReadOnly
         );
+    }
+
+    #[test]
+    fn detects_network_using_commands_for_executor_policy() {
+        for command in [
+            "curl -I https://example.invalid",
+            "wget https://example.invalid/file",
+            "ssh user@example.invalid",
+            "git clone https://example.invalid/repo.git",
+            "git fetch origin",
+            "npm ci",
+            "pnpm add react",
+            "yarn upgrade",
+            "cargo fetch",
+            "python -m pip install pytest",
+        ] {
+            assert!(command_uses_network(command), "{command}");
+        }
+
+        for command in [
+            "pwd",
+            "npm test",
+            "cargo test -p coddy-core",
+            "git status --short",
+            "rg network crates",
+        ] {
+            assert!(!command_uses_network(command), "{command}");
+        }
     }
 
     #[test]

@@ -240,6 +240,7 @@ name = "coddy-agent"
 version = "0.1.0"
 dependencies = [
  "coddy-core",
+ "libc",
  "serde_json",
  "thiserror 2.0.18",
  "ureq",

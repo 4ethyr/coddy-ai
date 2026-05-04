@@ -596,6 +596,36 @@ describe('sessionReducer', () => {
       ])
     })
 
+    it('ToolExecutionRecorded is audit-only and does not mutate session state', () => {
+      const session = testSession({
+        status: 'Thinking',
+        tool_activity: [
+          { id: 'shell.run-1', name: 'shell.run', status: 'Succeeded' },
+        ],
+      })
+      const event: ReplEvent = {
+        ToolExecutionRecorded: {
+          record: {
+            tool_name: 'shell.run',
+            call_id: 'tool-call-1',
+            status: 'Succeeded',
+            started_at_unix_ms: 1775000000000,
+            completed_at_unix_ms: 1775000000020,
+            duration_ms: 20,
+            output_chars: 5,
+            truncated: false,
+            error_code: null,
+            retryable: null,
+            metadata: { command: 'printf coddy', cwd: '.', success: true },
+          },
+        },
+      }
+
+      const result = sessionReducer(session, event)
+
+      expect(result).toBe(session)
+    })
+
     it('SubagentRouted keeps thinking state without mutating tool activity', () => {
       const session = testSession({
         status: 'Thinking',

@@ -294,6 +294,7 @@ export function sessionReducer(session: ReplSession, event: ReplEvent): ReplSess
     case 'ShortcutTriggered':
     case 'ScreenCaptured':
     case 'OcrCompleted':
+    case 'ToolExecutionRecorded':
     case 'TtsQueued':
       return session
 
