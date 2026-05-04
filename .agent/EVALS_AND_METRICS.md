@@ -23,6 +23,12 @@ Coddy must be evaluated as an engineering system, not only as a chat interface.
 - fixture benchmark JSONL metrics with summary and per-case records;
 - fixture smoke materialization with read-only shell verifier metrics and
   RAG/memory tag coverage;
+- live project battery missing-workspace records that do not distort prompt
+  metrics;
+- live project and patch battery detectors for pseudo-tool markup and
+  incomplete action promises in English and Portuguese;
+- patch battery application with hunk recount for model-generated diffs whose
+  line counts are stale;
 - eval baseline regression;
 - UI e2e smoke for model, tool approval and subagent activity.
 

@@ -2554,6 +2554,23 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
         return true;
     }
 
+    if normalized.contains("\"action\"")
+        && normalized.contains("\"parameters\"")
+        && contains_any(
+            &normalized,
+            &[
+                "filesystem.read_file",
+                "filesystem.list_files",
+                "filesystem.search_files",
+                "filesystem.apply_edit",
+                "shell.run",
+                "subagent.",
+            ],
+        )
+    {
+        return true;
+    }
+
     if looks_like_bare_tool_arguments_object(text) {
         return true;
     }
@@ -2749,6 +2766,12 @@ fn looks_like_unexecuted_tool_action_promise(text: &str) -> bool {
             "vou continuar a exploração",
             "vou continuar a revisao",
             "vou continuar a revisão",
+            "continuando a inspecao",
+            "continuando a inspeção",
+            "continuando a exploracao",
+            "continuando a exploração",
+            "continuando a revisao",
+            "continuando a revisão",
             "a revisao continua",
             "a revisão continua",
             "preciso identificar",
@@ -2814,7 +2837,12 @@ fn looks_like_unexecuted_tool_action_promise(text: &str) -> bool {
             "subagentes",
             "subagent",
             "subagents",
+            "agente",
+            "agentes",
             "agentic",
+            "roteamento",
+            "execucao",
+            "execução",
             "orquestracao",
             "orquestração",
             "registro",
@@ -3280,6 +3308,7 @@ fn contains_numbered_tool_step_header(text: &str) -> bool {
         let Some(rest) = trimmed
             .strip_prefix("tool ")
             .or_else(|| trimmed.strip_prefix("call "))
+            .or_else(|| trimmed.strip_prefix("chamada "))
         else {
             return false;
         };
@@ -3309,7 +3338,19 @@ fn contains_numbered_tool_step_header(text: &str) -> bool {
             ],
         ) || contains_any(
             trimmed,
-            &["search for", "read ", "list ", "inspect ", "grep ", "find "],
+            &[
+                "search for",
+                "read ",
+                "list ",
+                "inspect ",
+                "grep ",
+                "find ",
+                "buscar ",
+                "ler ",
+                "listar ",
+                "inspecionar ",
+                "localizar ",
+            ],
         )
     })
 }
@@ -6213,6 +6254,31 @@ filesystem.list_files {"path": "apex_framework/apex"}
     }
 
     #[test]
+    fn assistant_response_blocks_portuguese_action_json_pseudo_tool_calls() {
+        let response = ChatResponse::from_text(
+            r#"Boa estratégia. Vou começar listando diretórios-chave e lendo os arquivos de maior risco primeiro. Tenho 10 chamadas de ferramenta disponíveis.
+
+## Chamada 1: Listar guardian/src
+```json
+{
+  "action": "filesystem.list_files",
+  "parameters": {
+    "path": "crates/guardian/src"
+  }
+}
+```"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("crates/guardian/src"));
+    }
+
+    #[test]
     fn assistant_response_blocks_request_prefixed_textual_tool_calls() {
         let response = ChatResponse::from_text(
             r#"I'll use my remaining tool budget to inspect the key config files.
@@ -9046,6 +9112,9 @@ Conclusao: o runtime policy guard nao esta implementado.",
         ));
         assert!(looks_like_unexecuted_tool_action_promise(
             "I'll now inspect the codebase for mathematical, scientific, and ML components."
+        ));
+        assert!(looks_like_unexecuted_tool_action_promise(
+            "Continuando a inspeção das camadas críticas de agente, roteamento e execução."
         ));
     }
 

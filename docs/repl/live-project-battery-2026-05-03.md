@@ -383,3 +383,135 @@ Summary:
 This remains live provider sampling, not an official benchmark score. Official
 SWE-bench remains blocked by Docker socket permissions and the configured disk
 threshold on this machine.
+
+### 2026-05-04 Documents matrix and detector follow-up
+
+Live matrix requested for local projects in `/home/aethyr/Documents` using
+OpenRouter with `deepseek/deepseek-v4-flash`. The local `pytorch` workspace was
+not present; the harness now records missing projects separately instead of
+counting them as prompt executions.
+
+Primary artifacts:
+
+```text
+/tmp/coddy-live-documents-matrix-20260504-160318
+/tmp/coddy-live-guardian-pseudo-recheck-20260504-164545
+/tmp/coddy-live-pytorch-missing-20260504-164922
+/tmp/coddy-patch-task-recount-20260504-165655
+```
+
+Primary matrix scope:
+
+- Projects: `apex`, `Guardian`, `maker`, `visionclip`, `coddy`.
+- Categories: `code_review_security`, `codegen_tdd`,
+  `long_context_reverse_engineering`, `scientific_math_reasoning`,
+  `agentic_coding_quality`.
+- Prompts: 25.
+- CLI completions: 25/25.
+- Agent completions: 21/25.
+- Tool calls: 214.
+- Tool failures: 2.
+- Provider errors: 4.
+- Secret hits: 0.
+- Grounding checks: 4.
+- Average quality score: 78.64.
+- Quality passed: 17/25.
+
+Category summary:
+
+| Category | Agent completed | Provider errors | Tool failures | Grounding checks | Average score |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `codegen_tdd` | 5/5 | 0 | 0 | 0 | 98.8 |
+| `agentic_coding_quality` | 5/5 | 0 | 1 | 2 | 83.4 |
+| `scientific_math_reasoning` | 4/5 | 1 | 0 | 0 | 81.0 |
+| `code_review_security` | 4/5 | 1 | 1 | 1 | 66.4 |
+| `long_context_reverse_engineering` | 3/5 | 2 | 0 | 1 | 63.6 |
+
+Project summary:
+
+| Project | Agent completed | Provider errors | Tool failures | Grounding checks | Average score |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `Guardian` | 5/5 | 0 | 0 | 0 | 89.6 |
+| `visionclip` | 5/5 | 0 | 0 | 2 | 86.6 |
+| `maker` | 4/5 | 1 | 0 | 1 | 79.4 |
+| `apex` | 4/5 | 1 | 2 | 1 | 74.4 |
+| `coddy` | 3/5 | 2 | 0 | 0 | 63.2 |
+
+Issues reproduced and fixed:
+
+1. Portuguese pseudo-tool output was not detected when a model wrote
+   `## Chamada 1` plus JSON with `"action": "filesystem.list_files"` and
+   `"parameters"`.
+   - Fix: runtime and live/patch harness detectors now treat this as textual
+     tool-call markup.
+   - Regression test:
+     `assistant_response_blocks_portuguese_action_json_pseudo_tool_calls`.
+2. Portuguese incomplete-action output such as `Continuando a inspeção...` was
+   not detected as an unfinished analysis promise.
+   - Fix: runtime and live harness detectors now cover `continuando a inspeção`,
+     `continuando a exploração` and `continuando a revisão`, including agent,
+     routing and execution terms.
+   - Regression test:
+     `action_promise_detector_catches_portuguese_remaining_tool_reads`.
+3. Missing workspaces could not be represented without risking distorted
+   aggregate metrics.
+   - Fix: `scripts/run_live_project_battery.sh` includes `pytorch` in the
+     default inventory, emits `status: "missing"` records, and excludes missing
+     projects from prompt metrics.
+   - Regression test: `scripts/test_live_project_battery_summary.sh`.
+4. SWE-style patch diffs from live models can contain stale hunk counts. A
+   Python fixture patch included `return value`, but plain `git apply` accepted
+   the malformed hunk count and omitted the final line, causing tests to fail.
+   - Fix: `scripts/run_coddy_patch_task_battery.sh` now applies model patches
+     with `git apply --recount` first and falls back to plain apply only if
+     recount fails.
+   - Regression test: `scripts/test_patch_task_battery_apply_recount.sh`.
+
+Focused revalidation after rebuilding `target/debug/coddy`:
+
+```text
+project=Guardian
+categories=code_review_security,agentic_coding_quality
+prompts=2
+agentCompleted=2
+providerErrors=0
+pseudoToolMarkup=0
+incompleteAnswers=0
+secretHits=0
+averageQualityScore=98
+qualityPassed=2
+```
+
+Missing `pytorch` validation:
+
+```text
+project=pytorch
+records=1
+prompts=0
+missingProjects=[/home/aethyr/Documents/pytorch]
+byProject=[]
+```
+
+SWE-style patch battery after recount fix:
+
+```text
+tasks=3
+resolved=3
+resolutionRate=100
+patchExtracted=3
+applyFailures=0
+testFailures=0
+providerErrors=0
+toolFailures=0
+pseudoToolMarkup=0
+secretHits=0
+averageDurationMs=92452
+```
+
+Residual risks:
+
+- Provider/follow-up failures still dominate low scores for large self-analysis
+  and long-context categories, especially `coddy` and `maker`.
+- The live matrix is provider sampling, not an official SWE-bench score.
+- Existing JSONL records are not retroactively rescored after detector changes;
+  use focused reruns or new matrix runs for post-fix metrics.

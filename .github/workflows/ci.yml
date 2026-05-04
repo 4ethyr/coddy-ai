@@ -43,6 +43,8 @@ jobs:
         run: |
           ./scripts/guard_no_secrets.sh
           ./scripts/test_guard_no_secrets.sh
+          ./scripts/test_live_project_battery_summary.sh
+          ./scripts/test_patch_task_battery_apply_recount.sh
 
       - name: Check Rust formatting
         run: cargo fmt --check
