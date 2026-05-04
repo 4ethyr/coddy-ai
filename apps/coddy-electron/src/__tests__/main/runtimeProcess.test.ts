@@ -35,4 +35,18 @@ describe('runtimeProcess', () => {
 
     expect(plan.env.CODDY_WORKSPACE).toBe('/home/user/project')
   })
+
+  it('does not pass provider API keys to the runtime server process environment', () => {
+    const plan = coddyRuntimeSpawnPlan({
+      appPath: '/repo/apps/coddy-electron/dist/main',
+      env: {
+        CODDY_BIN: '/repo/target/debug/coddy',
+        HOME: '/home/user',
+        OPENROUTER_API_KEY: 'sk-or-secret',
+      },
+    })
+
+    expect(plan.env.HOME).toBe('/home/user')
+    expect(plan.env.OPENROUTER_API_KEY).toBeUndefined()
+  })
 })

@@ -3,6 +3,7 @@
 export type {
   ShortcutSource,
   ReplIntent,
+  ToolExecutionRecord,
   ToolStatus,
   AgentRunPhase,
   AgentRunStopReason,

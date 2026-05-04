@@ -54,6 +54,23 @@ describe('Domain type contracts', () => {
         MessageAppended: { MessageAppended: { message: { id: 'm1', role: 'user', text: 'hi' } } },
         ToolStarted: { ToolStarted: { name: 'search_web' } },
         ToolCompleted: { ToolCompleted: { name: 'search_web', status: 'Denied' as ToolStatus } },
+        ToolExecutionRecorded: {
+          ToolExecutionRecorded: {
+            record: {
+              tool_name: 'search_web',
+              call_id: 'tool-call-1',
+              status: 'Denied' as ToolStatus,
+              started_at_unix_ms: 1775000000000,
+              completed_at_unix_ms: 1775000000004,
+              duration_ms: 4,
+              output_chars: 0,
+              truncated: false,
+              error_code: 'permission_rejected',
+              retryable: false,
+              metadata: { query: 'Rust docs' },
+            },
+          },
+        },
         SubagentRouted: {
           SubagentRouted: {
             recommendations: [
@@ -124,7 +141,7 @@ describe('Domain type contracts', () => {
         Error: { Error: { code: 'E001', message: 'Something went wrong' } },
       }
 
-      expect(Object.keys(events)).toHaveLength(31)
+      expect(Object.keys(events)).toHaveLength(32)
 
       // Verify each event is correctly typed
       for (const [key, event] of Object.entries(events)) {

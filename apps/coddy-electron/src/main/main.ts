@@ -5,6 +5,7 @@ import { app, BrowserWindow } from 'electron'
 import * as path from 'path'
 import { registerIpcHandlers, cleanupStreams } from './ipcBridge'
 import { startCoddyRuntimeProcess, stopCoddyRuntimeProcess } from './runtimeProcess'
+import { coddyBrowserWindowWebPreferences } from './browserWindowSecurity'
 import {
   activeWorkspaceEnvironment,
   loadPersistedWorkspaceSelection,
@@ -26,12 +27,9 @@ function createWindow(): void {
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
+    webPreferences: coddyBrowserWindowWebPreferences(
+      path.join(__dirname, 'preload.js'),
+    ),
   })
 
   if (process.env.VITE_DEV_SERVER_URL) {
