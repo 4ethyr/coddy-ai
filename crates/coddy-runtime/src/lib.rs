@@ -110,6 +110,7 @@ struct EvidenceBootstrapToolRequest<'a> {
 enum EvidenceBootstrapKind {
     CodingPlan,
     CodebaseReview,
+    SecurityReview,
     LongContext,
 }
 
@@ -893,6 +894,16 @@ impl CoddyRuntime {
                 *remaining = remaining.saturating_sub(round.executed_tool_calls);
             }
             if round.pending_permission {
+                let tool_summary = summarize_chat_tool_calls(&response.tool_calls);
+                if let Some(final_response) = self.synthesize_after_unexecuted_tool_requests(
+                    &context,
+                    &messages,
+                    response.text.trim(),
+                    &round.response.text,
+                    &tool_summary,
+                ) {
+                    return final_response;
+                }
                 return round.response;
             }
             last_tool_observations = Some(round.response.text.clone());
@@ -1664,11 +1675,32 @@ impl CoddyRuntime {
                             if output.truncated {
                                 text.push_str("\n  Source tool result truncated by executor.");
                             }
-                            text
+                            let source = output
+                                .metadata
+                                .get("path")
+                                .and_then(serde_json::Value::as_str)
+                                .or_else(|| {
+                                    output
+                                        .metadata
+                                        .get("query")
+                                        .and_then(serde_json::Value::as_str)
+                                })
+                                .filter(|value| !value.trim().is_empty())
+                                .map(|value| format!(" `{}`", redact_context_text(value)))
+                                .unwrap_or_default();
+                            if source.is_empty() && text.is_empty() {
+                                String::new()
+                            } else if source.is_empty() {
+                                format!(":\n{text}")
+                            } else if text.is_empty() {
+                                source
+                            } else {
+                                format!("{source}:\n{text}")
+                            }
                         })
                         .filter(|text| !text.is_empty())
                         .unwrap_or_else(|| "no structured output".to_string());
-                    observations.push(format!("- `{tool_name}` succeeded:\n{text}"));
+                    observations.push(format!("- `{tool_name}` succeeded{text}"));
                 }
                 ToolResultStatus::Failed
                 | ToolResultStatus::Cancelled
@@ -2236,7 +2268,7 @@ fn build_grounding_recovery_prompt(unverified_answer: &str) -> String {
         "Your previous answer made a strong implementation-status claim while admitting that current source, router, executor, guard, policy, or test files were not inspected.",
         "Before finalizing, request native structured tool_calls now for the highest-signal current source or test files needed to verify the claim.",
         "Prioritize current source/tests over README, roadmap, or historical docs.",
-        "Do not answer without tool calls unless no relevant safe workspace file exists; if none exists, explicitly say so.",
+        "If the tool budget is exhausted or no relevant safe workspace file exists, do not repeat the strong claim; revise the final answer by downgrading unverified findings to Potential/Unverified, removing claims that files/tests are absent unless directly verified, and listing the exact next reads needed.",
         "Previous unverified answer excerpt:",
         &excerpt,
     ]
@@ -2390,6 +2422,15 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
             "```tool",
             "<tool_call",
             "</tool_call",
+            "<function name=\"filesystem.read_file\"",
+            "<function name=\"filesystem.list_files\"",
+            "<function name=\"filesystem.search_files\"",
+            "<function name=\"filesystem.apply_edit\"",
+            "<function name=\"shell.run\"",
+            "<function name=\"subagent.",
+            "<param name=\"path\"",
+            "<param name=\"file_path\"",
+            "<param name=\"query\"",
             "<｜dsml｜invoke",
             "</｜dsml｜invoke",
             "<invoke name=",
@@ -2415,6 +2456,23 @@ fn looks_like_textual_tool_call(text: &str) -> bool {
             "filesystem.apply_edit {",
         ],
     ) {
+        return true;
+    }
+
+    if normalized.contains("dsml")
+        && contains_any(&normalized, &["tool_calls", "invoke name="])
+        && contains_any(
+            &normalized,
+            &[
+                "filesystem.read_file",
+                "filesystem.list_files",
+                "filesystem.search_files",
+                "filesystem.apply_edit",
+                "shell.run",
+                "subagent.",
+            ],
+        )
+    {
         return true;
     }
 
@@ -2618,6 +2676,14 @@ fn looks_like_unexecuted_tool_action_promise(text: &str) -> bool {
             "vou priorizar as leituras",
             "vou continuar a exploracao",
             "vou continuar a exploração",
+            "vou continuar a revisao",
+            "vou continuar a revisão",
+            "a revisao continua",
+            "a revisão continua",
+            "preciso identificar",
+            "vou focar",
+            "vou me concentrar",
+            "vou me ater",
             "tool calls restantes",
             "chamadas restantes",
             "chamadas focadas",
@@ -2696,6 +2762,28 @@ fn classify_evidence_bootstrap_goal(goal: &str) -> Option<EvidenceBootstrapKind>
     if contains_any(
         &normalized,
         &[
+            "revisao de seguranca",
+            "revisao adversarial de seguranca",
+            "seguranca",
+            "security review",
+            "adversarial security",
+            "security",
+            "prompt injection",
+            "path traversal",
+            "supply chain",
+            "exposicao de chaves",
+            "key exposure",
+            "secrets",
+            "permissoes",
+            "permissions",
+        ],
+    ) {
+        return Some(EvidenceBootstrapKind::SecurityReview);
+    }
+
+    if contains_any(
+        &normalized,
+        &[
             "plano tdd",
             "plan tdd",
             "tdd",
@@ -2753,6 +2841,7 @@ fn evidence_bootstrap_tool_budget(
 ) -> Option<usize> {
     let desired = match kind {
         EvidenceBootstrapKind::CodingPlan | EvidenceBootstrapKind::CodebaseReview => 4,
+        EvidenceBootstrapKind::SecurityReview => 6,
         EvidenceBootstrapKind::LongContext => 3,
     };
     let budget = tool_use_policy
@@ -2766,6 +2855,7 @@ fn evidence_bootstrap_kind_label(kind: EvidenceBootstrapKind) -> &'static str {
     match kind {
         EvidenceBootstrapKind::CodingPlan => "coding-plan",
         EvidenceBootstrapKind::CodebaseReview => "codebase-review",
+        EvidenceBootstrapKind::SecurityReview => "security-review",
         EvidenceBootstrapKind::LongContext => "long-context",
     }
 }
@@ -2780,6 +2870,14 @@ fn evidence_bootstrap_read_candidates(
 
     let mut selected = Vec::new();
     push_first_matching(&files, &mut selected, is_evidence_manifest_file);
+    if matches!(kind, EvidenceBootstrapKind::SecurityReview) {
+        push_security_matching_limit(&files, &mut selected, 3);
+        push_first_matching(&files, &mut selected, is_evidence_test_file);
+        if selected.is_empty() {
+            push_first_matching(&files, &mut selected, is_evidence_readme_file);
+        }
+        return selected;
+    }
     push_first_matching(&files, &mut selected, is_evidence_source_file);
     if matches!(
         kind,
@@ -2852,6 +2950,18 @@ fn push_first_matching(files: &[String], selected: &mut Vec<String>, predicate: 
     }
 }
 
+fn push_security_matching_limit(files: &[String], selected: &mut Vec<String>, limit: usize) {
+    let mut candidates = files
+        .iter()
+        .filter(|path| !selected.iter().any(|selected| selected == *path))
+        .filter(|path| is_evidence_security_file(path))
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|path| security_evidence_path_score(path));
+    for path in candidates.into_iter().take(limit) {
+        selected.push(path.clone());
+    }
+}
+
 fn evidence_path_score(path: &str) -> usize {
     let path = path.to_ascii_lowercase();
     if matches!(
@@ -2878,6 +2988,38 @@ fn evidence_path_score(path: &str) -> usize {
     10 + path.matches('/').count()
 }
 
+fn security_evidence_path_score(path: &str) -> usize {
+    let lower = path.to_ascii_lowercase();
+    let basename = Path::new(&lower)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(lower.as_str());
+    let keyword_score = if basename.contains("security") || basename.contains("policy") {
+        0
+    } else if basename.contains("config")
+        || basename.contains("credential")
+        || basename.contains("secret")
+        || basename.contains("token")
+    {
+        1
+    } else if basename.contains("ipc")
+        || basename.contains("router")
+        || basename.contains("action")
+        || basename.contains("tool")
+        || basename.contains("command")
+    {
+        2
+    } else if basename.contains("provider")
+        || basename.contains("auth")
+        || basename.contains("audit")
+    {
+        3
+    } else {
+        4
+    };
+    keyword_score * 100 + evidence_path_score(path)
+}
+
 fn is_evidence_manifest_file(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     matches!(
@@ -2894,6 +3036,36 @@ fn is_evidence_manifest_file(path: &str) -> bool {
             | "next.config.js"
             | "next.config.mjs"
     )
+}
+
+fn is_evidence_security_file(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    is_evidence_source_file(&lower)
+        && contains_any(
+            &lower,
+            &[
+                "security",
+                "policy",
+                "config",
+                "credential",
+                "secret",
+                "token",
+                "ipc",
+                "router",
+                "action",
+                "actions",
+                "tool",
+                "tools",
+                "command",
+                "provider",
+                "auth",
+                "audit",
+                "sandbox",
+                "permission",
+                "voice",
+                "process",
+            ],
+        )
 }
 
 fn is_evidence_source_file(path: &str) -> bool {
@@ -3284,6 +3456,10 @@ fn format_task_specific_tool_guidance(goal: &str) -> Option<String> {
         &normalized,
         &[
             "revisao adversarial de seguranca",
+            "revisao de seguranca",
+            "revisão de segurança",
+            "seguranca",
+            "segurança",
             "security review",
             "adversarial security",
             "prompt injection",
@@ -3301,6 +3477,10 @@ fn format_task_specific_tool_guidance(goal: &str) -> Option<String> {
                 "- If a secret-like path exists, report its presence as a risk without printing or requesting its contents.",
                 "- Prioritize executable entrypoints, command execution surfaces, path handling, dependency manifests, prompt/system instruction files, and tests.",
                 "- If a security-relevant file was not read because of safety policy or tool budget, mark that finding as unverified instead of presenting it as confirmed.",
+                "- Do not assign High or Critical severity from file names, diagnostics, or conventional expectations alone; use Potential/Unverified until the relevant source or tests are read.",
+                "- Avoid `Confirmed`/`Confirmado` labels in broad reviews when any required router, executor, policy, guard, or test file remains unread; use `Observed evidence` plus limitations instead.",
+                "- Prefer fewer, evidence-backed findings over broad speculative lists; each confirmed finding needs a concrete inspected file and impact.",
+                "- Never claim security tests are absent unless you searched or read test paths in this turn; if evidence is partial, list observed tests and remaining test gaps separately.",
             ]
             .join("\n"),
         );
@@ -5409,6 +5589,74 @@ mod tests {
         assert!(system_prompt.contains("do not read `.env`"));
         assert!(system_prompt.contains("report its presence as a risk without printing"));
         assert!(system_prompt.contains("mark that finding as unverified"));
+        assert!(system_prompt.contains("Do not assign High or Critical severity"));
+        assert!(system_prompt.contains("Avoid `Confirmed`/`Confirmado` labels"));
+        assert!(system_prompt.contains("Never claim security tests are absent"));
+    }
+
+    #[test]
+    fn ask_command_bootstraps_security_review_with_security_files() {
+        let request_id = Uuid::new_v4();
+        let workspace = TempWorkspace::new();
+        workspace.write(
+            "Cargo.toml",
+            "[package]\nname = \"security-demo\"\nversion = \"0.1.0\"\n",
+        );
+        workspace.write(
+            "crates/common/src/security.rs",
+            "pub fn validate_policy() -> bool { true }\n",
+        );
+        workspace.write(
+            "crates/common/src/config.rs",
+            "pub struct AppConfig { pub token: Option<String> }\n",
+        );
+        workspace.write("crates/common/src/actions.rs", "pub fn run_action() {}\n");
+        workspace.write(
+            "crates/common/tests/security_tests.rs",
+            "#[test]\nfn policy_is_valid() { assert!(true); }\n",
+        );
+        let (chat_client, requests) =
+            RecordingChatClient::new(ChatResponse::from_text("security bootstrap accepted"));
+        let runtime = CoddyRuntime::with_workspace_and_chat_client(
+            AgentToolRegistry::default(),
+            &workspace.path,
+            Arc::new(chat_client),
+        )
+        .expect("runtime");
+        runtime.publish_event(
+            ReplEvent::ModelSelected {
+                model: ModelRef {
+                    provider: "openai".to_string(),
+                    name: "gpt-test".to_string(),
+                },
+                role: ModelRole::Chat,
+            },
+            None,
+            1_775_000_000_100,
+        );
+
+        let result = runtime.handle_request(CoddyRequest::Command(ReplCommandJob {
+            request_id,
+            command: ReplCommand::Ask {
+                text: "Faça uma revisão de segurança read-only desta codebase, focando secrets, permissões, IPC e execução de comandos.".to_string(),
+                context_policy: coddy_core::ContextPolicy::WorkspaceOnly,
+                model_credential: None,
+            },
+            speak: false,
+        }));
+
+        assert!(matches!(result, CoddyResult::Text { .. }));
+        let captured_requests = requests.lock().expect("requests mutex poisoned");
+        let system_prompt = &captured_requests[0].messages[0].content;
+
+        assert!(system_prompt.contains("- Bootstrap type: security-review."));
+        assert!(system_prompt.contains("`filesystem.read_file` `Cargo.toml` succeeded"));
+        assert!(system_prompt
+            .contains("`filesystem.read_file` `crates/common/src/security.rs` succeeded"));
+        assert!(system_prompt
+            .contains("`filesystem.read_file` `crates/common/src/config.rs` succeeded"));
+        assert!(system_prompt
+            .contains("`filesystem.read_file` `crates/common/tests/security_tests.rs` succeeded"));
     }
 
     #[test]
@@ -5595,6 +5843,25 @@ mod tests {
     }
 
     #[test]
+    fn assistant_response_blocks_variant_dsml_tool_call_markup() {
+        let response = ChatResponse::from_text(
+            r#"<｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="filesystem.read_file">
+<｜｜DSML｜｜parameter name="file_path" string="true">crates/common/src/security.rs</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+</｜｜DSML｜｜tool_calls>"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("security.rs"));
+    }
+
+    #[test]
     fn assistant_response_blocks_simple_xml_tool_markup() {
         let response = ChatResponse::from_text(
             r#"Search results show relevant files.
@@ -5611,6 +5878,25 @@ mod tests {
             .contains("textual tool-call attempt from the model"));
         assert!(response.text.contains("not executed for safety"));
         assert!(!response.text.contains("toolSafety.ts"));
+    }
+
+    #[test]
+    fn assistant_response_blocks_function_xml_tool_markup() {
+        let response = ChatResponse::from_text(
+            r#"<function>
+<function name="filesystem.list_files">
+<param name="path" value="packages/config/src"></param>
+</function>
+</function>"#,
+        );
+
+        let response = AssistantResponse::from_chat_response(response);
+
+        assert!(response
+            .text
+            .contains("textual tool-call attempt from the model"));
+        assert!(response.text.contains("not executed for safety"));
+        assert!(!response.text.contains("packages/config/src"));
     }
 
     #[test]
@@ -7218,7 +7504,7 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
             .as_ref()
             .expect("pending sensitive read permission");
 
-        assert_eq!(captured_requests.len(), 1);
+        assert_eq!(captured_requests.len(), 2);
         assert!(text.contains("requires approval before accessing sensitive workspace content"));
         assert!(text
             .contains("Coddy needs your approval before it can read sensitive workspace content"));
@@ -8265,6 +8551,12 @@ Conclusao: o filesystem guard nao esta implementado como capability de runtime."
         ));
         assert!(looks_like_unexecuted_tool_action_promise(
             "Vou continuar a exploração com 3 chamadas focadas para maximizar o entendimento da arquitetura, módulos principais e fluxo de execução."
+        ));
+        assert!(looks_like_unexecuted_tool_action_promise(
+            "Com 4 ferramentas restantes, vou focar nos entrypoints reais, módulos principais e um arquivo de teste para medir complexidade."
+        ));
+        assert!(looks_like_unexecuted_tool_action_promise(
+            "Com base na exploração inicial, preciso identificar entrypoints executáveis, tratamento de credenciais, superfícies de comando e testes. Vou continuar a revisão com mais ferramentas focadas."
         ));
     }
 

@@ -635,6 +635,34 @@ diffs, extracts patches, applies them with `git apply` and runs fixture tests.
 It is not an official SWE-bench score; official SWE-bench requires the upstream
 Docker harness and benchmark dataset.
 
+Official SWE-bench preflight and harness wrapper:
+
+```bash
+SWE_BENCH_PREFLIGHT_ONLY=1 ./scripts/run_swebench_official.sh
+```
+
+The official wrapper follows the upstream SWE-bench Docker harness contract:
+predictions are JSONL rows with `instance_id`, `model_name_or_path` and
+`model_patch`, and evaluation is performed by
+`swebench.harness.run_evaluation`. By default the script validates the
+ground-truth patch path for `sympy__sympy-20590` on SWE-bench Lite using
+`--predictions_path gold`, `--max_workers 1` and a cache-backed workdir outside
+the repository. Set `SWE_BENCH_PREDICTIONS=/path/to/predictions.jsonl` to grade
+Coddy-generated predictions, or keep the default gold run to validate the local
+Docker/harness setup first.
+
+Useful variables:
+
+- `SWE_BENCH_DATASET`, `SWE_BENCH_SPLIT`, `SWE_BENCH_INSTANCE_IDS`.
+- `SWE_BENCH_PREDICTIONS`, `SWE_BENCH_RUN_ID`, `SWE_BENCH_MAX_WORKERS`.
+- `SWE_BENCH_WORKDIR`, `SWE_BENCH_MIN_FREE_GB`, `SWE_BENCH_CACHE_LEVEL`,
+  `SWE_BENCH_CLEAN`.
+
+The wrapper writes a JSON report with Docker permission, disk and dependency
+checks before running the upstream harness. If Docker is installed but the
+current process cannot access `/var/run/docker.sock`, fix group/session access
+before treating any SWE-bench result as valid.
+
 Latest validated local suite on this branch:
 
 - `cargo test -p coddy-core -p coddy-agent -p coddy-client -p coddy-runtime -p coddy -- --test-threads=1`.
@@ -643,6 +671,22 @@ Latest validated local suite on this branch:
 - `./target/debug/coddy eval quality --json`: score 100.
 - `./target/debug/coddy eval prompt-battery --json`: 1200/1200 passed.
 - `./scripts/run_coddy_patch_task_battery.sh`: 3/3 local patch tasks resolved.
+- `./scripts/run_swebench_official.sh` preflight: currently blocked on local
+  Docker socket permissions and available disk threshold; the JSON report
+  records both blockers before any upstream benchmark work starts.
+
+Recent live hardening added:
+
+- provider-safe recovery for XML `<function name="filesystem.*">` and variant
+  DSML pseudo-tool outputs;
+- incomplete Portuguese action-promise recovery for phrases such as
+  `vou focar` and `vou continuar a revisão`;
+- security-review bootstrap that reads high-signal policy/config/security/test
+  files before the model turn;
+- short `/tmp` socket paths for live and patch batteries to avoid Unix socket
+  `SUN_LEN` failures with long artifact directories;
+- tool observation headers that include the executed path/query, improving
+  answer grounding after follow-up tool calls.
 
 ## Security Model
 
